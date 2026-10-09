@@ -7,24 +7,26 @@ exports.createPrintingColor = async (req, res) => {
 
     if (Array.isArray(data)) {
       // Bulk create
-      const results = [];
-      for (const item of data) {
-        const existing = await PrintingColor.findOne({
-          printingTypeId: item.printingTypeId,
-          name: { $regex: new RegExp("^" + item.name.trim() + "$", "i") },
-          isDeleted: { $ne: true }
-        });
-        if (existing) {
-          // Skip or error? The user said "if beardo is created then Beardo should cant created".
-          // I'll error out to be safe.
-          return res.status(400).json(`Color "${item.name}" already exists for this printing type.`);
-        }
-        results.push({
-          printingTypeId: item.printingTypeId,
-          name: item.name.trim(),
-          status: typeof item.status === 'string' ? item.status === 'active' : item.status ?? true
-        });
+
+      const orConditions = data.map(item => ({
+        printingTypeId: item.printingTypeId,
+        name: { $regex: new RegExp("^" + item.name.trim() + "$", "i") }
+      }));
+      
+      const existingColors = await PrintingColor.find({
+        isDeleted: { $ne: true },
+        $or: orConditions
+      }).lean();
+
+      if (existingColors.length > 0) {
+        return res.status(400).json(`Color "${existingColors[0].name}" already exists for this printing type.`);
       }
+
+      const results = data.map(item => ({
+        printingTypeId: item.printingTypeId,
+        name: item.name.trim(),
+        status: typeof item.status === 'string' ? item.status === 'active' : item.status ?? true
+      }));
       const colors = await PrintingColor.insertMany(results);
       return res.json(colors);
     } else {

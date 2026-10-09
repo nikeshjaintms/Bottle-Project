@@ -55,7 +55,7 @@ exports.getRawMaterials = async (req, res) => {
     }
 
     if (pagination === "false") {
-      const items = await RawMaterial.find(query).sort({ createdAt: -1 });
+      const items = await RawMaterial.find(query).sort({ createdAt: -1 }).lean();
       return res.json({ success: true, data: items });
     }
 
@@ -73,7 +73,7 @@ exports.getRawMaterials = async (req, res) => {
     const items = await RawMaterial.find(query)
       .sort({ createdAt: -1 })
       .skip(skip)
-      .limit(parsedLimit);
+      .limit(parsedLimit).lean();
 
     const total = await RawMaterial.countDocuments(query);
 

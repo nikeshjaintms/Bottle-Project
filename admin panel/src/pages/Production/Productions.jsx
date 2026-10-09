@@ -458,8 +458,8 @@ export default function Productions() {
             <div className="col-12 col-sm-6 col-md-4 col-lg-3">
               <label className="small text-muted fw-bold mb-1 d-block">Bottle Spec</label>
               <Select
-                options={[{ value: '', label: 'All Specs' }, ...filteredBottleSpecs.map(s => ({ value: s._id, label: `${s.bottleName} (${s.code})` }))]}
-                value={selectedSpec ? { value: selectedSpec, label: filteredBottleSpecs.find(s => s._id === selectedSpec) ? `${filteredBottleSpecs.find(s => s._id === selectedSpec).bottleName} (${filteredBottleSpecs.find(s => s._id === selectedSpec).code})` : 'Unknown' } : { value: '', label: 'All Specs' }}
+                options={[{ value: '', label: 'All Specs' }, ...filteredBottleSpecs.map(s => ({ value: s._id, label: `${s.bottleName} (${s.code || 'No Code'})` }))]}
+                value={selectedSpec ? { value: selectedSpec, label: filteredBottleSpecs.find(s => s._id === selectedSpec) ? `${filteredBottleSpecs.find(s => s._id === selectedSpec).bottleName} (${filteredBottleSpecs.find(s => s._id === selectedSpec).code || 'No Code'})` : 'Unknown' } : { value: '', label: 'All Specs' }}
                 onChange={(option) => {
                   setSearchParams({ page: 1 });
                   setSelectedSpec(option.value);
@@ -623,7 +623,7 @@ export default function Productions() {
                     <div className="small text-muted">
                       {p.brandId?.companyId?.name || p.bottleSpecId?.brandId?.companyId?.name || 'N/A'} · {p.brandId?.name || p.bottleSpecId?.brandId?.name || 'N/A'}
                     </div>
-                    <div className="small fw-600 text-truncate">{p.bottleSpecId?.bottleName}</div>
+                    <div className="small fw-600 text-truncate">{p.bottleSpecId?.bottleName || '—'}</div>
                     <div className="small text-muted">
                       {p.variantId?.variantName} {p.variantId?.variantSize ? `(${p.variantId.variantSize})` : ''}
                     </div>
@@ -716,7 +716,7 @@ export default function Productions() {
                       <div className="fw-600 text-accent" style={{ fontSize: 13 }}>
                         {p.brandId?.name || p.bottleSpecId?.brandId?.name || 'Deleted Brand'}
                       </div>
-                      <div className="fw-500 text-dark small">{p.bottleSpecId?.bottleName}</div>
+                      <div className="fw-500 text-dark small">{p.bottleSpecId?.bottleName || '—'}</div>
                       <div className="small text-muted" style={{ fontSize: 11 }}>
                         {p.bottleSpecId?.printingTypeId?.name || 'N/A'} — {p.bottleSpecId?.printingColorId?.name || 'No Color'}
                       </div>
@@ -821,3 +821,4 @@ export default function Productions() {
     </div>
   );
 }
+

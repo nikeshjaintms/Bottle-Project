@@ -18,7 +18,7 @@ exports.createTemplate = async (req, res) => {
 // Get all templates
 exports.getTemplates = async (req, res) => {
   try {
-    const templates = await SgLabelTwoTemplate.find().sort({ createdAt: -1 });
+    const templates = await SgLabelTwoTemplate.find();
     res.json(templates);
   } catch (error) {
     res.status(500).json({ message: 'Error fetching templates', error: error.message });

@@ -105,7 +105,7 @@ export default function AddVariant() {
   const location = useLocation();
 
   useEffect(() => {
-    dispatch(fetchBottleSpecs({ pagination: 'false' }));
+    dispatch(fetchBottleSpecs({ pagination: 'false', type: 'all' }));
     dispatch(fetchVariants({ pagination: 'false' }));
     if (location.state?.autoSelectSpecId) {
       setFormData(prev => ({ 
@@ -207,7 +207,7 @@ export default function AddVariant() {
                     <SearchableSelect
                       options={bottleSpecs.filter(s => s.status && s.brandId?.status).map(s => ({
                         value: s._id,
-                        label: `${s.bottleName} (${s.brandId?.name || 'N/A'}) - ${s.printingTypeId?.name || 'N/A'} [${s.printingColorId?.name || 'N/A'}]`
+                        label: `${s.bottleName} (${s.brandId?.name || 'N/A'})${s.isCoating ? ' [Coating]' : ` - ${s.printingTypeId?.name || 'N/A'} [${s.printingColorId?.name || 'N/A'}]`}`
                       }))}
                       value={formData.bottleSpecId}
                       onChange={(val) => {

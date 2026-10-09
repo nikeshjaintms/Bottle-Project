@@ -119,6 +119,9 @@ export default function Units() {
                   <div className="small text-muted mt-1">
                     Created {b.createdAt ? new Date(b.createdAt).toLocaleDateString() : 'N/A'}
                   </div>
+                  <div className="small text-muted mt-1">
+                    Operators: {b.operators && b.operators.length > 0 ? b.operators.map(op => op.name).join(', ') : 'None'}
+                  </div>
                 </div>
               </div>
               <div className="units-mobile-actions brands-mobile-actions">
@@ -156,6 +159,7 @@ export default function Units() {
                 <th className="py-3 text-uppercase small fw-bold text-muted ps-5 text-start" style={{ width: 150 }}>Sr No</th>
                 <th className="py-3 text-uppercase small fw-bold text-muted text-center">Unit Name</th>
                 <th className="py-3 text-uppercase small fw-bold text-muted text-center">Status</th>
+                <th className="py-3 text-uppercase small fw-bold text-muted text-center">Operators</th>
                 <th className="py-3 text-uppercase small fw-bold text-muted text-center">Created At</th>
                 <th className="py-3 text-uppercase small fw-bold text-muted text-center" style={{ width: 150 }}>Actions</th>
               </tr>
@@ -171,6 +175,9 @@ export default function Units() {
                     <span className={`badge-status badge-${isUnitActive(b) ? 'active' : 'inactive'}`}>
                       {isUnitActive(b) ? 'ACTIVE' : 'INACTIVE'}
                     </span>
+                  </td>
+                  <td className="py-3 text-center text-muted small">
+                    {b.operators && b.operators.length > 0 ? b.operators.map(op => op.name).join(', ') : 'None'}
                   </td>
                   <td className="py-3 text-center text-muted">
                     {b.createdAt ? new Date(b.createdAt).toLocaleDateString() : 'N/A'}
@@ -192,7 +199,7 @@ export default function Units() {
                 </tr>
               ))}
               {units.length === 0 && !loading && (
-                <tr><td colSpan={5} className="text-center py-5 text-muted">No units found</td></tr>
+                <tr><td colSpan={6} className="text-center py-5 text-muted">No units found</td></tr>
               )}
             </tbody>
           </table>

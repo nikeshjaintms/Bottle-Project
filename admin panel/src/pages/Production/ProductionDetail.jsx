@@ -126,7 +126,7 @@ export default function ProductionDetail() {
                 <div className="col-md-6">
                   <div className="p-3 bg-light rounded-4 border border-light-subtle h-100">
                     <span className="text-uppercase small fw-bold text-muted d-block mb-1">Bottle Spec Name</span>
-                    <span className="fw-bold fs-6">{production.bottleSpecId?.bottleName || 'N/A'}</span>
+                    <span className="fw-bold fs-6">{production.bottleSpecId?.bottlePerBox || 'N/A'}</span>
                   </div>
                 </div>
                 <div className="col-md-6">
@@ -174,3 +174,4 @@ export default function ProductionDetail() {
     </div>
   );
 }
+

@@ -5,6 +5,6 @@ const { parseInvoice } = require("../controllers/invoiceVision.controller");
 const { auth } = require("../middleware/auth.middleware");
 const checkAbility = require("../middleware/checkAbility");
 
-router.post("/parse", auth, checkAbility("use", "vision"), upload.single("image"), parseInvoice);
+router.post("/parse", auth, checkAbility("use", "vision"), upload.array("images", 5), parseInvoice);
 
 module.exports = router;

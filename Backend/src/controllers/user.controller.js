@@ -90,7 +90,8 @@ exports.getUsers = async (req, res) => {
       const users = await User.find(filter)
         .select("-password")
         .populate(populateOpts)
-        .sort(sort);
+        .sort(sort)
+        .lean();
       return res.json({ success: true, data: users, total: users.length });
     }
 
@@ -102,7 +103,7 @@ exports.getUsers = async (req, res) => {
       .populate(populateOpts)
       .sort(sort)
       .skip(skip)
-      .limit(parsedLimit);
+      .limit(parsedLimit).lean();
 
     const total = await User.countDocuments(filter);
 

@@ -175,11 +175,11 @@ exports.getSgLabels = async (req, res) => {
     } else if (bottleId) {
       query.bottleSpecId = bottleId;
     } else if (brandId) {
-      const specs = await BottleSpec.find({ brandId, isDeleted: false }).select('_id');
+      const specs = await BottleSpec.find(query);
       query.bottleSpecId = { $in: specs.map(s => s._id) };
     } else if (companyId) {
-      const brands = await Brand.find({ companyId, isDeleted: false }).select('_id');
-      const specs = await BottleSpec.find({ brandId: { $in: brands.map(b => b._id) }, isDeleted: false }).select('_id');
+      const brands = await Brand.find(query);
+      const specs = await BottleSpec.find(query);
       query.bottleSpecId = { $in: specs.map(s => s._id) };
     }
 
@@ -193,11 +193,11 @@ exports.getSgLabels = async (req, res) => {
 
     // 1. Fetch Auto-Imported Variants
     let variants = await Variant.find(query)
-      .populate(populateOpts)
-      .sort({ createdAt: -1 });
+        .populate(populateOpts)
+      .sort({ createdAt: -1 }).lean();
 
     const mappedVariants = variants.map(v => ({
-      ...v.toObject(),
+      ...v,
       isCustom: false
     }));
 
@@ -210,8 +210,8 @@ exports.getSgLabels = async (req, res) => {
        if (query.bottleSpecId) customQuery.bottleId = query.bottleSpecId;
     }
 
-    const customLabels = await SgLabel.find(customQuery)
-      .populate({
+    const customLabels = await SgLabel.find(query)
+        .populate({
         path: "bottleId",
         populate: {
           path: "brandId",
@@ -219,7 +219,7 @@ exports.getSgLabels = async (req, res) => {
         }
       })
       .populate("variantId")
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 }).lean();
 
     const mappedCustom = customLabels.map(cl => ({
       _id: cl._id,

@@ -24,7 +24,7 @@ export default function Production() {
         (v.bottleSpecId?.brandId?.name || '').toLowerCase().includes(s) ||
         (v.bottleSpecId?.printingTypeId?.name || '').toLowerCase().includes(s) ||
         (v.bottleSpecId?.printingColorId?.name || '').toLowerCase().includes(s) ||
-        (v.bottleSpecId?.bottleName || '').toLowerCase().includes(s) ||
+        (v.bottleSpecId?.bottlePerBox || '').toLowerCase().includes(s) ||
         (v.bottleSpecId?.code || '').toLowerCase().includes(s) ||
         (v.productName || '').toLowerCase().includes(s) ||
         (v.variantName || '').toLowerCase().includes(s) ||
@@ -42,7 +42,7 @@ export default function Production() {
         v.bottleSpecId?.brandId?.name,
         v.bottleSpecId?.printingTypeId?.name,
         v.bottleSpecId?.printingColorId?.name,
-        v.bottleSpecId?.bottleName,
+        v.bottleSpecId?.bottlePerBox,
         v.bottleSpecId?.code,
         v.productName,
         v.variantName,
@@ -73,7 +73,7 @@ export default function Production() {
     const data = uniqueVariants.map((v, i) => ({
       'Sr No': i + 1,
       'Brand Name': v.bottleSpecId?.brandId?.name || 'N/A',
-      'Bottle Name': v.bottleSpecId?.bottleName || 'N/A',
+      'Bottle Name': v.bottleSpecId?.bottlePerBox || 'N/A',
       'Variant Name': v.variantName || 'N/A',
       'Coating Shade': v.coatingShade || 'N/A',
     }));
@@ -256,7 +256,7 @@ export default function Production() {
                     </td>
                     <td style={{ padding: '13px 16px' }}>
                       <span className="fw-500 text-dark small">
-                        {v.bottleSpecId?.bottleName || <span className="text-muted">—</span>}
+                        {v.bottleSpecId?.bottlePerBox || <span className="text-muted">—</span>}
                       </span>
                     </td>
                     <td style={{ padding: '13px 16px' }}>
@@ -353,3 +353,4 @@ export default function Production() {
     </div>
   );
 }
+

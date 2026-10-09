@@ -7,23 +7,12 @@ import Swal from 'sweetalert2';
 
 export default function Operators() {
   const dispatch = useDispatch();
-  const { operators,
-
-    loading,
-
-    page,
-
-    totalPages,
-
-    total, searchTerm } = useSelector((state) => state.operators);
+  const { operators, loading, page, totalPages, total, searchTerm } = useSelector((state) => state.operators);
   const search = searchTerm || "";
   const [searchParams, setSearchParams] = useSearchParams();
   const urlPage = searchParams.get('page') || '';
   const currentPage = Number(urlPage) || page || 1;
   const [itemsPerPage, setItemsPerPage] = useState(10);
-
-
-
 
   const handledeleteOperator = (id, name) => {
     Swal.fire({
@@ -43,31 +32,13 @@ export default function Operators() {
     });
   };
 
-
-
   useEffect(() => {
-
     dispatch(fetchOperators({
-
       page: urlPage,
-
       limit: itemsPerPage,
-
       search,
-
     }));
-
-  }, [
-
-    dispatch,
-
-    urlPage,
-
-    itemsPerPage,
-
-    search,
-
-  ]);
+  }, [dispatch, urlPage, itemsPerPage, search]);
 
   const isOperatorActive = (b) =>
     b.status === true || b.status === 'active' || b.status === undefined;
@@ -102,15 +73,8 @@ export default function Operators() {
               style={{ width: 70, borderRadius: 8, cursor: 'pointer' }}
               value={itemsPerPage}
               onChange={(e) => {
-
-                setSearchParams({
-                  page: 1,
-                });
-
-                setItemsPerPage(
-                  Number(e.target.value)
-                );
-
+                setSearchParams({ page: 1 });
+                setItemsPerPage(Number(e.target.value));
               }}
             >
               <option value="10">10</option>
@@ -149,6 +113,9 @@ export default function Operators() {
                   <div className="d-flex align-items-center gap-2 mb-1 flex-wrap">
                     <span className="text-muted small fw-bold">#{String((currentPage - 1) * itemsPerPage + index + 1).padStart(2, '0')}</span>
                     <span className="fw-semibold text-truncate">{b.name}</span>
+                  </div>
+                  <div className="small text-muted mb-1">
+                    Shift: <span className="fw-500 text-dark">{b.shift?.name || 'N/A'}</span>
                   </div>
                   <span className={`badge-status badge-${isOperatorActive(b) ? 'active' : 'inactive'}`}>
                     {isOperatorActive(b) ? 'ACTIVE' : 'INACTIVE'}
@@ -192,6 +159,7 @@ export default function Operators() {
               <tr>
                 <th className="py-3 text-uppercase small fw-bold text-muted ps-5 text-start" style={{ width: 150 }}>Sr No</th>
                 <th className="py-3 text-uppercase small fw-bold text-muted text-center">Operator Name</th>
+                <th className="py-3 text-uppercase small fw-bold text-muted text-center">Shift</th>
                 <th className="py-3 text-uppercase small fw-bold text-muted text-center">Status</th>
                 <th className="py-3 text-uppercase small fw-bold text-muted text-center">Created At</th>
                 <th className="py-3 text-uppercase small fw-bold text-muted text-center" style={{ width: 150 }}>Actions</th>
@@ -204,6 +172,9 @@ export default function Operators() {
                     <span className="text-muted fw-bold" style={{ fontSize: 13 }}>{String((currentPage - 1) * itemsPerPage + index + 1).padStart(2, '0')}</span>
                   </td>
                   <td className="py-3 text-center fw-600">{b.name}</td>
+                  <td className="py-3 text-center text-muted fw-500">
+                    {b.shift?.name || 'N/A'}
+                  </td>
                   <td className="py-3 text-center">
                     <span className={`badge-status badge-${isOperatorActive(b) ? 'active' : 'inactive'}`}>
                       {isOperatorActive(b) ? 'ACTIVE' : 'INACTIVE'}
@@ -229,14 +200,13 @@ export default function Operators() {
                 </tr>
               ))}
               {operators.length === 0 && !loading && (
-                <tr><td colSpan={5} className="text-center py-5 text-muted">No operators found</td></tr>
+                <tr><td colSpan={6} className="text-center py-5 text-muted">No operators found</td></tr>
               )}
             </tbody>
           </table>
         </div>
 
         <div className="dash-card-footer d-flex align-items-center justify-content-between p-3 border-top bg-white operators-dash-footer">
-
           <div className="text-muted small fw-500">
             Showing <b>{total === 0 ? 0 : (currentPage - 1) * itemsPerPage + 1}</b> to <b>{Math.min(currentPage * itemsPerPage, total)}</b> of <b>{total}</b> entries
           </div>
@@ -275,7 +245,6 @@ export default function Operators() {
               Next
             </button>
           </div>
-
         </div>
       </div>
     </div>

@@ -77,7 +77,7 @@ export default function CreateRole() {
   }
 
   const groupOrder = [
-    'dashboard', 'user', 'operator', 'shift', 'company', 'brand', 'printing-type', 'printing-color', 'bottlespec', 'variant', 'formula', 'production', 'coating-type','coatingspec',  'coatingproduction', 'permission', 'role', 'vision', 'all'
+    'dashboard', 'user', 'operator', 'shift', 'unit', 'company', 'brand', 'printing-type', 'printing-color', 'bottlespec', 'variant', 'formula', 'production', 'incoming', 'coating-type','coatingspec',  'coatingproduction', 'permission', 'role', 'vision', 'all'
   ];
 
   const groupedPermissions = permissions.reduce((acc, p) => {

@@ -8,7 +8,7 @@ exports.addUnit = async (req, res) => {
       ? rawStatus === 'active'
       : rawStatus ?? true;
 
-    const { name } = req.body;
+    const { name, operators } = req.body;
     
     // Check if ANY unit with this name exists (deleted or not)
     const existing = await Unit.findOne({ name: { $regex: new RegExp("^" + name.trim() + "$", "i") } });
@@ -27,7 +27,8 @@ exports.addUnit = async (req, res) => {
 
     const unit = await Unit.create({
       name: name.trim(),
-      status
+      status,
+      operators: operators || []
     });
     res.json(unit);
   } catch (err) {
@@ -62,7 +63,7 @@ exports.getAllUnits = async (req, res) => {
       };
     }
 
-    let query = Unit.find(filter).sort({ createdAt: -1 });
+    let query = Unit.find(filter).populate("operators").sort({ createdAt: -1 });
 
     if (pagination !== "false") {
       query = query.skip(skip).limit(parsedLimit);
@@ -95,7 +96,7 @@ exports.getAllUnits = async (req, res) => {
 // ✅ GET SINGLE
 exports.getSingleUnit = async (req, res) => {
   try {
-    const unit = await Unit.findOne({ _id: req.params.id, isDeleted: { $ne: true } });
+    const unit = await Unit.findOne({ _id: req.params.id, isDeleted: { $ne: true } }).populate("operators");
     if (!unit) return res.status(404).json("Unit not found");
     res.json(unit);
   } catch (err) {

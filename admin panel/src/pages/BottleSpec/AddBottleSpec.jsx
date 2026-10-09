@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
 import { createBottleSpec, fetchBottleSpecs } from '../../redux/slices/bottleSpecSlice';
+import { fetchBottlePerBoxes } from '../../redux/slices/bottlePerBoxSlice';
 import { fetchCoatingSpecs } from '../../redux/slices/coatingSpecSlice';
 import { fetchBrands } from '../../redux/slices/brandSlice';
 import { fetchCompanies } from '../../redux/slices/companySlice';
@@ -20,6 +21,7 @@ export default function AddBottleSpec() {
   const { items: printingColors } = useSelector((state) => state.printingColor);
   const { bottleSpecs, loading } = useSelector((state) => state.bottleSpecs);
   const { coatingSpecs } = useSelector((state) => state.coatingSpecs);
+  const { items: bottlePerBoxes } = useSelector((state) => state.bottlePerBox);
 
   const [formData, setFormData] = useState({
     companyId: '',
@@ -48,6 +50,7 @@ export default function AddBottleSpec() {
     dispatch(fetchPrintingColors({ pagination: 'false' }));
     dispatch(fetchBottleSpecs({ pagination: 'false' }));
     dispatch(fetchCoatingSpecs({ pagination: 'false', type: 'all' }));
+    dispatch(fetchBottlePerBoxes({ pagination: 'false' }));
   }, [dispatch]);
 
   // Combine specs to extract unique names and codes
@@ -57,11 +60,10 @@ export default function AddBottleSpec() {
     ? allSpecs.filter(s => (s.brandId?._id || s.brandId) === formData.brandId)
     : allSpecs;
 
-  const uniqueBottleNames = Array.from(new Set(
-    filteredSpecs
-      .map(s => s.bottleName)
-      .filter(name => name && name.trim() !== '')
-  )).map(name => ({ value: name, label: name }));
+  const uniqueBottleNames = Array.from(new Set([
+    ...filteredSpecs.map(s => s.bottleName).filter(name => name && name.trim() !== ''),
+    ...(bottlePerBoxes || []).map(b => b.bottleName).filter(name => name && name.trim() !== '')
+  ])).map(name => ({ value: name, label: name }));
 
   const uniqueBottleCodes = Array.from(new Set(
     filteredSpecs

@@ -64,7 +64,7 @@ exports.getBrands = async (req, res) => {
         .sort({
           createdAt: -1,
         })
-        .lean();
+        ;
 
     if (search) {
       const searchText =

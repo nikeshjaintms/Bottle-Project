@@ -22,10 +22,14 @@ const seedRBAC = async () => {
       "create-company", "edit-company", "delete-company", "sidebar-company", "read-company",
       "create-operator", "edit-operator", "delete-operator", "sidebar-operator", "read-operator",
       "create-shift", "edit-shift", "delete-shift", "sidebar-shift", "read-shift",
+      "create-unit", "edit-unit", "delete-unit", "sidebar-unit", "read-unit",
       "create-sg-label", "edit-sg-label", "delete-sg-label", "sidebar-sg-label", "read-sg-label",
       "create-sg-label-2", "edit-sg-label-2", "delete-sg-label-2", "sidebar-sg-label-2", "read-sg-label-2",
       "create-formula", "edit-formula", "delete-formula", "sidebar-formula", "read-formula",
       "create-stock_entry", "edit-stock_entry", "delete-stock_entry", "sidebar-stock_entry", "read-stock_entry", "rate-stock_entry", "ledger-stock_entry", "stockout-stock_entry",
+      "create-incoming", "edit-incoming", "delete-incoming", "sidebar-incoming", "read-incoming",
+      "create-itemType", "edit-itemType", "delete-itemType", "sidebar-itemType", "read-itemType",
+      "create-gst", "edit-gst", "delete-gst", "sidebar-gst", "read-gst",
       "use-vision", "manage-all",
       "production-date-validation", "coating-production-date-validation",
       "production-record-unlock", "coating-production-record-unlock"
@@ -58,6 +62,7 @@ const seedRBAC = async () => {
         permissionNames: [
           "sidebar-dashboard", "read-dashboard",
           "show-user", "sidebar-user", "read-user",
+          "sidebar-unit", "read-unit",
           "create-brand", "edit-brand", "sidebar-brand", "read-brand", "read-company",
           "create-bottlespec", "edit-bottlespec", "sidebar-bottlespec", "read-bottlespec", "read-bottlespecdetail",
           "read-printing-type", "read-printing-color", "read-coating-type",
@@ -66,6 +71,9 @@ const seedRBAC = async () => {
           "create-production", "edit-production", "sidebar-production", "read-production", "read-productiondetail", "use-vision",
           "create-coatingproduction", "edit-coatingproduction", "sidebar-coatingproduction", "read-coatingproduction", "read-coatingproductiondetail",
           "create-coatingspec", "edit-coatingspec", "sidebar-coatingspec", "read-coatingspec",
+          "create-incoming", "edit-incoming", "sidebar-incoming", "read-incoming",
+          "create-itemType", "edit-itemType", "sidebar-itemType", "read-itemType",
+          "create-gst", "edit-gst", "sidebar-gst", "read-gst",
           "create-sg-label", "edit-sg-label", "delete-sg-label", "sidebar-sg-label", "read-sg-label",
           "create-sg-label-2", "edit-sg-label-2", "delete-sg-label-2", "sidebar-sg-label-2", "read-sg-label-2",
           "create-stock_entry", "edit-stock_entry", "delete-stock_entry", "sidebar-stock_entry", "read-stock_entry", "rate-stock_entry", "ledger-stock_entry", "stockout-stock_entry"
@@ -75,6 +83,7 @@ const seedRBAC = async () => {
         name: "Operator",
         permissionNames: [
           "sidebar-dashboard", "read-dashboard",
+          "sidebar-unit", "read-unit",
           "sidebar-brand", "read-brand", "read-company",
           "sidebar-bottlespec", "read-bottlespec",
           "read-printing-type", "read-printing-color", "read-coating-type",
@@ -83,6 +92,7 @@ const seedRBAC = async () => {
           "sidebar-production", "read-production", "create-production", "use-vision",
           "sidebar-coatingproduction", "read-coatingproduction", "create-coatingproduction",
           "sidebar-coatingspec", "read-coatingspec",
+          "sidebar-incoming", "read-incoming",
           "show-user", "read-user",
           "sidebar-stock_entry", "read-stock_entry"
         ]

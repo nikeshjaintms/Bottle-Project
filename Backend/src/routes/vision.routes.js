@@ -14,7 +14,7 @@ router.post(
     "/match",
     auth,
     checkAbility("use", "vision"),
-    upload.single("image"),
+    upload.array("images", 5),
     matchBottle
 );
 

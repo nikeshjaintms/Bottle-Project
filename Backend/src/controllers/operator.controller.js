@@ -16,7 +16,8 @@ exports.createOperator = async (req, res) => {
 
     const operator = await Operator.create({
       name: name.trim(),
-      status
+      status,
+      shift: req.body.shift || null
     });
     res.json(operator);
   } catch (err) {
@@ -51,7 +52,7 @@ exports.getOperators = async (req, res) => {
       };
     }
 
-    let query = Operator.find(filter).sort({ createdAt: -1 });
+    let query = Operator.find(filter).populate("shift").sort({ createdAt: -1 });
 
     if (pagination !== "false") {
       query = query.skip(skip).limit(parsedLimit);

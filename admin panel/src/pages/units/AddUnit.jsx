@@ -2,18 +2,23 @@ import { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
 import { createUnit, fetchUnits } from '../../redux/slices/unitSlice';
+import { fetchOperators } from '../../redux/slices/operatorSlice';
+import Select from 'react-select';
 import Swal from 'sweetalert2';
 
 export default function AddUnit() {
   const navigate = useNavigate();
   const dispatch = useDispatch();
   const { units = [], loading } = useSelector((state) => state.units);
+  const { operators = [] } = useSelector((state) => state.operators);
   const [name, setName] = useState('');
   const [status, setStatus] = useState('active');
+  const [selectedOperators, setSelectedOperators] = useState([]);
   const [error, setError] = useState('');
 
   useEffect(() => {
     dispatch(fetchUnits({ pagination: 'false' }));
+    dispatch(fetchOperators({ pagination: 'false' }));
   }, [dispatch]);
 
   const validateField = (value) => {
@@ -59,7 +64,7 @@ export default function AddUnit() {
       return Swal.fire('Validation Error', msg, 'error');
     }
 
-    dispatch(createUnit({ name, status })).then((res) => {
+    dispatch(createUnit({ name, status, operators: selectedOperators.map(o => o.value) })).then((res) => {
       if (!res.error) {
         Swal.fire('Success!', `unit "${name}" added successfully!`, 'success');
         navigate('/units');
@@ -101,6 +106,20 @@ export default function AddUnit() {
                     style={{ borderRadius: 12 }}
                   />
                   {error && <div className="invalid-feedback">{error}</div>}
+                </div>
+
+                <div className="mb-4">
+                  <label className="form-label fw-600 small text-uppercase text-muted">
+                    Assign Operators
+                  </label>
+                  <Select
+                    isMulti
+                    options={operators.filter(o => o.status).map(o => ({ value: o._id, label: o.name }))}
+                    value={selectedOperators}
+                    onChange={setSelectedOperators}
+                    placeholder="Select operators..."
+                    classNamePrefix="react-select"
+                  />
                 </div>
 
                 <div className="mb-4">

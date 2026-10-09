@@ -4,6 +4,7 @@ import { useDispatch, useSelector } from 'react-redux';
 import { fetchBrands } from '../../redux/slices/brandSlice';
 import { fetchBottleSpecs } from '../../redux/slices/bottleSpecSlice';
 import { fetchVariants } from '../../redux/slices/variantSlice';
+import { fetchBottlePerBoxes } from '../../redux/slices/bottlePerBoxSlice';
 import { createProduction } from '../../redux/slices/productionSlice';
 import { matchBottle, clearMatchResult } from '../../redux/slices/visionSlice';
 import API from '../../services/api';
@@ -27,6 +28,7 @@ export default function AddProduction() {
   const { brands } = useSelector((state) => state.brands);
   const { bottleSpecs: specs } = useSelector((state) => state.bottleSpecs);
   const { variants } = useSelector((state) => state.variants);
+  const { items: bottlePerBoxes } = useSelector((state) => state.bottlePerBox);
   const { loading: saving } = useSelector((state) => state.productions);
   const { loading: matching, matchResult } = useSelector((state) => state.vision);
 
@@ -126,6 +128,7 @@ export default function AddProduction() {
     dispatch(fetchBrands({ pagination: 'false' }));
     dispatch(fetchBottleSpecs({ pagination: 'false' }));
     dispatch(fetchVariants({ pagination: 'false' }));
+    dispatch(fetchBottlePerBoxes({ pagination: 'false' }));
   }, [dispatch]);
 
   // Hierarchical Filtering Logic
@@ -191,11 +194,22 @@ export default function AddProduction() {
   }, []);
 
   const applyVisionMatchToForm = (data) => {
+    let autoBoxValue = '';
+    if (data.bottleSpecId && bottlePerBoxes) {
+      const spec = availableSpecs.find(s => s._id === data.bottleSpecId);
+      if (spec && spec.bottleName) {
+        const foundBox = bottlePerBoxes.find(b => b.bottleName === spec.bottleName);
+        if (foundBox && foundBox.bottlePerBox != null) {
+          autoBoxValue = foundBox.bottlePerBox.toString();
+        }
+      }
+    }
     setFormData((prev) => ({
       ...prev,
       brandId: data.brandId || '',
       bottleSpecId: data.bottleSpecId || '',
-      variantId: data.variantId || ''
+      variantId: data.variantId || '',
+      ...(autoBoxValue ? { bottlePerBox: autoBoxValue } : {})
     }));
   };
 
@@ -482,8 +496,17 @@ export default function AddProduction() {
                         }))}
                         value={formData.bottleSpecId}
                         onChange={(val) => {
-                          setFormData({ ...formData, bottleSpecId: val, variantId: '' });
+                          let newFormData = { ...formData, bottleSpecId: val, variantId: '' };
+                          const spec = availableSpecs.find(s => s._id === val);
+                          if (spec && spec.bottleName && bottlePerBoxes) {
+                            const foundBox = bottlePerBoxes.find(b => b.bottleName === spec.bottleName);
+                            if (foundBox && foundBox.bottlePerBox != null) {
+                              newFormData.bottlePerBox = foundBox.bottlePerBox.toString();
+                            }
+                          }
+                          setFormData(newFormData);
                           if (errors.bottleSpecId) setErrors(prev => ({ ...prev, bottleSpecId: '' }));
+                          if (errors.bottlePerBox) setErrors(prev => ({ ...prev, bottlePerBox: '' }));
                         }}
                         placeholder="-- Choose Specification --"
                         disabled={!formData.brandId}
@@ -619,3 +642,4 @@ export default function AddProduction() {
     </div>
   );
 }
+

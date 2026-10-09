@@ -57,6 +57,24 @@ import MaterialHistory from './pages/StockEntry/MaterialHistory';
 import AddStockIn from './pages/StockEntry/AddStockIn';
 import ViewStockIn from './pages/StockEntry/ViewStockIn';
 import EditStockIn from './pages/StockEntry/EditStockIn';
+import IncomingCompanies from './pages/Incoming/IncomingCompanies';
+import IncomingList from './pages/Incoming/IncomingList';
+import AddIncoming from './pages/Incoming/AddIncoming';
+import EditIncoming from './pages/Incoming/EditIncoming';
+import ViewIncoming from './pages/Incoming/ViewIncoming';
+import ShrenoIncomingList from './pages/ShrenoIncoming/ShrenoIncomingList';
+import AddShrenoIncoming from './pages/ShrenoIncoming/AddShrenoIncoming';
+import EditShrenoIncoming from './pages/ShrenoIncoming/EditShrenoIncoming';
+import ViewShrenoIncoming from './pages/ShrenoIncoming/ViewShrenoIncoming';
+import ItemTypes from './pages/ItemType/ItemTypes';
+import AddItemType from './pages/ItemType/AddItemType';
+import EditItemType from './pages/ItemType/EditItemType';
+import GstList from './pages/Gst/GstList';
+import AddGst from './pages/Gst/AddGst';
+import EditGst from './pages/Gst/EditGst';
+import BottlePerBoxes from './pages/BottlePerBox/BottlePerBoxes';
+import AddBottlePerBox from './pages/BottlePerBox/AddBottlePerBox';
+import EditBottlePerBox from './pages/BottlePerBox/EditBottlePerBox';
 import Productions from './pages/Production/Productions';
 import Production from './pages/Production/Production';
 import AddProduction from './pages/Production/AddProduction';
@@ -87,6 +105,23 @@ import RoleList from './pages/Roles&Permission/RoleList';
 import CreateRole from './pages/Roles&Permission/CreateRole';
 import PermissionList from './pages/Roles&Permission/PermissionList';
 import CreatePermission from './pages/Roles&Permission/CreatePermission';
+import LacquerPlan from './pages/LacquerPlan/LacquerPlan';
+import AddLacquerPlan from './pages/LacquerPlan/AddLacquerPlan';
+import EditLacquerPlan from './pages/LacquerPlan/EditLacquerPlan';
+import ViewLacquerPlan from './pages/LacquerPlan/ViewLacquerPlan';
+import PrintingPlanCompanies from './pages/PrintingPlan/PrintingPlanCompanies';
+import PrintingPlan from './pages/PrintingPlan/PrintingPlan';
+import AddPrintingPlan from './pages/PrintingPlan/AddPrintingPlan';
+import EditPrintingPlan from './pages/PrintingPlan/EditPrintingPlan';
+import ViewPrintingPlan from './pages/PrintingPlan/ViewPrintingPlan';
+import PendingSheet from './pages/PendingSheet/PendingSheet';
+import AddPendingSheet from './pages/PendingSheet/AddPendingSheet';
+import EditPendingSheet from './pages/PendingSheet/EditPendingSheet';
+import ViewPendingSheet from './pages/PendingSheet/ViewPendingSheet';
+import DispatchList from './pages/Dispatch/DispatchList';
+import AddDispatch from './pages/Dispatch/AddDispatch';
+import EditDispatch from './pages/Dispatch/EditDispatch';
+import ViewDispatch from './pages/Dispatch/ViewDispatch';
 import './App.css';
 
 export default function App() {
@@ -166,6 +201,50 @@ export default function App() {
               <Route path="/stock-entries/add" element={<AddStockIn />} />
               <Route path="/stock-entries/view/:id" element={<ViewStockIn />} />
               <Route path="/stock-entries/edit/:id" element={<EditStockIn />} />
+              
+              <Route path="/incoming" element={<IncomingCompanies />} />
+              <Route path="/incoming/company/:companyId" element={<IncomingList />} />
+              <Route path="/incoming/add" element={<AddIncoming />} />
+              <Route path="/incoming/edit/:id" element={<EditIncoming />} />
+              <Route path="/incoming/view/:id" element={<ViewIncoming />} />
+
+              <Route path="/shreno-incoming" element={<ShrenoIncomingList />} />
+              <Route path="/shreno-incoming/add" element={<AddShrenoIncoming />} />
+              <Route path="/shreno-incoming/edit/:id" element={<EditShrenoIncoming />} />
+              <Route path="/shreno-incoming/view/:id" element={<ViewShrenoIncoming />} />
+
+              <Route path="/item-types" element={<ItemTypes />} />
+              <Route path="/item-types/add" element={<AddItemType />} />
+              <Route path="/item-types/edit/:id" element={<EditItemType />} />
+              
+              <Route path="/lacquer-plan" element={<LacquerPlan />} />
+              <Route path="/lacquer-plan/add" element={<AddLacquerPlan />} />
+              <Route path="/lacquer-plan/edit/:id" element={<EditLacquerPlan />} />
+              <Route path="/lacquer-plan/view/:id" element={<ViewLacquerPlan />} />
+
+              <Route path="/printing-plan" element={<PrintingPlan />} />
+              <Route path="/printing-plan/add" element={<AddPrintingPlan />} />
+              <Route path="/printing-plan/edit/:id" element={<EditPrintingPlan />} />
+              <Route path="/printing-plan/view/:id" element={<ViewPrintingPlan />} />
+              
+              <Route path="/pending-sheet" element={<PendingSheet />} />
+              <Route path="/pending-sheet/add" element={<AddPendingSheet />} />
+              <Route path="/pending-sheet/edit/:id" element={<EditPendingSheet />} />
+              <Route path="/pending-sheet/view/:id" element={<ViewPendingSheet />} />
+              
+              <Route path="/dispatch" element={<DispatchList />} />
+              <Route path="/dispatch/add" element={<AddDispatch />} />
+              <Route path="/dispatch/edit/:id" element={<EditDispatch />} />
+              <Route path="/dispatch/view/:id" element={<ViewDispatch />} />
+
+              <Route path="/gst" element={<GstList />} />
+              <Route path="/gst/add" element={<AddGst />} />
+              <Route path="/gst/edit/:id" element={<EditGst />} />
+              
+              <Route path="/bottle-per-box" element={<BottlePerBoxes />} />
+              <Route path="/bottle-per-box/add" element={<AddBottlePerBox />} />
+              <Route path="/bottle-per-box/edit/:id" element={<EditBottlePerBox />} />
+              
               <Route path="/productions" element={<Productions />} />
               <Route path="/production" element={<Production />} />
               <Route path="/productions/add" element={<AddProduction />} />

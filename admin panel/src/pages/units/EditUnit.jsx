@@ -1,7 +1,9 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useParams, Link } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
-import { updateUnit } from '../../redux/slices/unitSlice';
+import { updateUnit, fetchUnits } from '../../redux/slices/unitSlice';
+import { fetchOperators } from '../../redux/slices/operatorSlice';
+import Select from 'react-select';
 import Swal from 'sweetalert2';
 
 export default function EditUnit() {
@@ -9,9 +11,18 @@ export default function EditUnit() {
   const navigate = useNavigate();
   const dispatch = useDispatch();
   const { units, loading } = useSelector((state) => state.units);
+  const { operators = [] } = useSelector((state) => state.operators);
   const [name, setName] = useState('');
   const [status, setStatus] = useState('active');
+  const [selectedOperators, setSelectedOperators] = useState([]);
   const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (units.length === 0) {
+      dispatch(fetchUnits({ pagination: 'false' }));
+    }
+    dispatch(fetchOperators({ pagination: 'false' }));
+  }, [dispatch, units.length]);
 
   const validateField = (value) => {
     let msg = '';
@@ -57,8 +68,16 @@ export default function EditUnit() {
     if (unit) {
       setName(unit.name);
       setStatus(unit.status === true ? 'active' : 'inactive');
+      if (unit.operators && unit.operators.length > 0) {
+        setSelectedOperators(
+          unit.operators.map(op => ({
+            value: op._id || op,
+            label: op.name || operators.find(o => o._id === (op._id || op))?.name || 'Unknown'
+          }))
+        );
+      }
     }
-  }, [id, units]);
+  }, [id, units, operators]);
 
   const handleSubmit = (e) => {
     e.preventDefault();
@@ -67,7 +86,7 @@ export default function EditUnit() {
       return Swal.fire('Validation Error', msg, 'error');
     }
 
-    dispatch(updateUnit({ id, formData: { name, status } })).then((res) => {
+    dispatch(updateUnit({ id, formData: { name, status, operators: selectedOperators.map(o => o.value) } })).then((res) => {
       if (!res.error) {
         Swal.fire('Updated!', 'unit updated successfully!', 'success');
         navigate('/units');
@@ -108,6 +127,20 @@ export default function EditUnit() {
                     style={{ borderRadius: 12 }}
                   />
                   {error && <div className="invalid-feedback">{error}</div>}
+                </div>
+
+                <div className="mb-4">
+                  <label className="form-label fw-600 small text-uppercase text-muted">
+                    Assign Operators
+                  </label>
+                  <Select
+                    isMulti
+                    options={operators.filter(o => o.status).map(o => ({ value: o._id, label: o.name }))}
+                    value={selectedOperators}
+                    onChange={setSelectedOperators}
+                    placeholder="Select operators..."
+                    classNamePrefix="react-select"
+                  />
                 </div>
 
                 <div className="mb-4">

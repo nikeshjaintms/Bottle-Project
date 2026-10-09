@@ -4,6 +4,7 @@ import { useDispatch, useSelector } from 'react-redux';
 import { fetchBrands } from '../../redux/slices/brandSlice';
 import { fetchBottleSpecs } from '../../redux/slices/bottleSpecSlice';
 import { fetchVariants } from '../../redux/slices/variantSlice';
+import { fetchBottlePerBoxes } from '../../redux/slices/bottlePerBoxSlice';
 import { fetchProductions, updateProduction } from '../../redux/slices/productionSlice';
 import Swal from 'sweetalert2';
 import SearchableSelect from '../../components/SearchableSelect';
@@ -22,6 +23,7 @@ export default function EditProduction() {
   const { brands } = useSelector((state) => state.brands);
   const { bottleSpecs: specs } = useSelector((state) => state.bottleSpecs);
   const { variants } = useSelector((state) => state.variants);
+  const { items: bottlePerBoxes } = useSelector((state) => state.bottlePerBox);
   const { productions, loading } = useSelector((state) => state.productions);
   const { user: authUser } = useSelector((state) => state.auth);
 
@@ -128,6 +130,7 @@ export default function EditProduction() {
     dispatch(fetchBrands({ pagination: 'false' }));
     dispatch(fetchBottleSpecs({ pagination: 'false' }));
     dispatch(fetchVariants({ pagination: 'false' }));
+    dispatch(fetchBottlePerBoxes({ pagination: 'false' }));
     dispatch(fetchProductions({ pagination: 'false' })); // ensure productions are loaded if navigated directly
   }, [dispatch]);
 
@@ -261,8 +264,17 @@ export default function EditProduction() {
                       }))}
                       value={formData.bottleSpecId}
                       onChange={(val) => {
-                        setFormData({ ...formData, bottleSpecId: val, variantId: '' });
+                        let newFormData = { ...formData, bottleSpecId: val, variantId: '' };
+                        const spec = availableSpecs.find(s => s._id === val);
+                        if (spec && spec.bottleName && bottlePerBoxes) {
+                          const foundBox = bottlePerBoxes.find(b => b.bottleName === spec.bottleName);
+                          if (foundBox && foundBox.bottlePerBox != null) {
+                            newFormData.bottlePerBox = foundBox.bottlePerBox.toString();
+                          }
+                        }
+                        setFormData(newFormData);
                         if (errors.bottleSpecId) setErrors(prev => ({ ...prev, bottleSpecId: '' }));
+                        if (errors.bottlePerBox) setErrors(prev => ({ ...prev, bottlePerBox: '' }));
                       }}
                       placeholder="-- Choose Specification --"
                       disabled={!formData.brandId}
@@ -400,3 +412,4 @@ export default function EditProduction() {
     </div>
   );
 }
+

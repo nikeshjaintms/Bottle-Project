@@ -68,7 +68,7 @@ export default function ViewCoatingProduction() {
               {specImage ? (
                 <img 
                   src={`${V_URL}${specImage}`} 
-                  alt={spec.bottleName || 'Bottle'} 
+                  alt={spec.bottlePerBox || 'Bottle'} 
                   className="img-fluid rounded-4 shadow-sm mb-3"
                   style={{ maxHeight: 250, objectFit: 'contain' }}
                 />
@@ -78,7 +78,7 @@ export default function ViewCoatingProduction() {
                 </div>
               )}
 
-              <h6 className="fw-bold text-dark mt-3">{spec.bottleName || 'N/A'}</h6>
+              <h6 className="fw-bold text-dark mt-3">{spec.bottlePerBox || 'N/A'}</h6>
               
               <div className="mt-3 d-flex flex-wrap gap-2 justify-content-center">
                 {spec.code && (
@@ -134,7 +134,7 @@ export default function ViewCoatingProduction() {
                 <div className="col-md-3">
                   <div className="p-3 bg-light rounded-4 border border-light-subtle h-100">
                     <span className="text-uppercase small fw-bold text-muted d-block mb-1">Bottle Spec Name</span>
-                    <span className="fw-bold fs-6">{production.coatingSpecId?.bottleName || 'N/A'}</span>
+                    <span className="fw-bold fs-6">{production.coatingSpecId?.bottlePerBox || 'N/A'}</span>
                   </div>
                 </div>
                 <div className="col-md-3">
@@ -246,3 +246,4 @@ export default function ViewCoatingProduction() {
     </div>
   );
 }
+

@@ -13,8 +13,8 @@ exports.createFormula = async (req, res) => {
       return res.status(400).json({ message: "Company, Brand, Bottle Name, Variant, and Coating Type are required." });
     }
 
-    const variants = await Variant.find({ _id: { $in: variantIds } })
-      .populate({
+    const variants = await Variant.find(query)
+        .populate({
         path: 'bottleSpecId',
         populate: {
           path: 'brandId'
@@ -69,8 +69,8 @@ exports.createFormula = async (req, res) => {
 
     const createdFormulas = await Formula.insertMany(formulasToCreate);
 
-    const populatedFormulas = await Formula.find({ _id: { $in: createdFormulas.map(f => f._id) } })
-      .populate("companyId", "name")
+    const populatedFormulas = await Formula.find(query)
+        .populate("companyId", "name")
       .populate("brandId", "name")
       .populate("bottleId", "bottleName")
       .populate("variantId", "variantName coatingShade variantSize image")
@@ -117,10 +117,10 @@ exports.getFormulas = async (req, res) => {
       
       const wholeWordRegex = new RegExp(`(?:^|\\W)${regexStr}(?:\\W|$)`, "i");
 
-      const matchingBrands = await Brand.find({ isDeleted: { $ne: true }, name: { $regex: wholeWordRegex } }).select('_id');
+      const matchingBrands = await Brand.find(query);
       const brandIds = matchingBrands.map(b => b._id);
 
-      const matchingSpecs = await BottleSpec.find({ isDeleted: { $ne: true }, bottleName: { $regex: wholeWordRegex } }).select('_id');
+      const matchingSpecs = await BottleSpec.find(query);
       const specIds = matchingSpecs.map(s => s._id);
 
       const matchingVariants = await Variant.find({
@@ -132,7 +132,7 @@ exports.getFormulas = async (req, res) => {
       }).select('_id');
       const variantIds = matchingVariants.map(v => v._id);
 
-      const matchingCoatingTypes = await CoatingType.find({ isDeleted: { $ne: true }, name: { $regex: wholeWordRegex } }).select('_id');
+      const matchingCoatingTypes = await CoatingType.find(query);
       const coatingTypeIds = matchingCoatingTypes.map(c => c._id);
 
       filter.$or = [
@@ -205,8 +205,8 @@ exports.updateFormula = async (req, res) => {
       return res.status(400).json({ message: "Company, Brand, Bottle Names, Variants, and Coating Type are required." });
     }
 
-    const variants = await Variant.find({ _id: { $in: variantIds } })
-      .populate({
+    const variants = await Variant.find(query)
+        .populate({
         path: 'bottleSpecId',
         populate: {
           path: 'brandId'

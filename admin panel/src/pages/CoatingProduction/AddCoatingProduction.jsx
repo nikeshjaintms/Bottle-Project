@@ -4,7 +4,8 @@ import { useDispatch, useSelector } from 'react-redux';
 import { fetchBrands } from '../../redux/slices/brandSlice';
 import { fetchCompanies } from '../../redux/slices/companySlice';
 import { fetchCoatingSpecs } from '../../redux/slices/coatingSpecSlice';
-import { createCoatingProduction } from '../../redux/slices/coatingProductionSlice';
+import { fetchBottlePerBoxes } from '../../redux/slices/bottlePerBoxSlice';
+import { createCoatingProduction, fetchCoatingProductions } from '../../redux/slices/coatingProductionSlice';
 import { fetchOperators, createOperator } from '../../redux/slices/operatorSlice';
 import { fetchShifts } from '../../redux/slices/shiftSlice';
 import { fetchUnits } from '../../redux/slices/unitSlice';
@@ -32,7 +33,8 @@ export default function AddCoatingProduction() {
   const { companies } = useSelector((state) => state.companies);
   const { brands } = useSelector((state) => state.brands);
   const { coatingSpecs } = useSelector((state) => state.coatingSpecs);
-  const { loading: saving } = useSelector((state) => state.coatingProductions);
+  const { loading: saving, coatingProductions = [] } = useSelector((state) => state.coatingProductions);
+  const { items: bottlePerBoxes } = useSelector((state) => state.bottlePerBox);
   const { operators } = useSelector((state) => state.operators);
   const { shifts } = useSelector((state) => state.shifts);
   const { units } = useSelector((state) => state.units);
@@ -74,7 +76,16 @@ export default function AddCoatingProduction() {
     dispatch(fetchOperators({ pagination: 'false' }));
     dispatch(fetchShifts({ pagination: 'false' }));
     dispatch(fetchUnits({ limit: 1000 }));
+    dispatch(fetchBottlePerBoxes({ pagination: 'false' }));
+    dispatch(fetchCoatingProductions({ pagination: 'false' }));
   }, [dispatch]);
+
+  const rejectionReasonOptions = useMemo(() => {
+    const reasons = coatingProductions
+      .map(p => p.rejectionReason)
+      .filter(r => r && r.trim() !== '');
+    return [...new Set(reasons)].map(r => ({ value: r, label: r }));
+  }, [coatingProductions]);
 
   // Brands filtered by selected company
   const availableBrands = brands.filter(b =>
@@ -96,6 +107,35 @@ export default function AddCoatingProduction() {
       }
     }
   }, [formData.coatingSpecId, coatingSpecs]);
+
+  useEffect(() => {
+    if (formData.unit && units.length > 0 && operators.length > 0) {
+      const activeUnits = (units || []).filter(u => u.status !== false && !u.isDeleted);
+      const currentUnitObj = activeUnits.find(u => getUnitNumberByName(u.name) === Number(formData.unit));
+      
+      if (currentUnitObj && currentUnitObj.operators && currentUnitObj.operators.length > 0) {
+        // Determine the latest operator (last in the array)
+        const latestOpRaw = currentUnitObj.operators[currentUnitObj.operators.length - 1];
+        const latestOpId = typeof latestOpRaw === 'object' ? latestOpRaw._id : latestOpRaw;
+        
+        setFormData(prev => ({
+          ...prev,
+          operatorId: latestOpId
+        }));
+      }
+    }
+  }, [formData.unit, units, operators]);
+
+  // Auto-populate shift based on selected operator
+  useEffect(() => {
+    if (formData.operatorId && operators.length > 0) {
+      const fullOp = operators.find(o => o._id === formData.operatorId);
+      if (fullOp && fullOp.shift) {
+        const shiftId = typeof fullOp.shift === 'object' ? fullOp.shift._id : fullOp.shift;
+        setFormData(prev => ({ ...prev, shift: shiftId }));
+      }
+    }
+  }, [formData.operatorId, operators]);
 
   useEffect(() => {
     const actual = parseInt(formData.actualQuantity) || 0;
@@ -132,6 +172,16 @@ export default function AddCoatingProduction() {
     setFormData(prev => ({ ...prev, [name]: cleanValue }));
     if (errors[name]) setErrors(prev => ({ ...prev, [name]: '' }));
   };
+
+  const activeUnits = (units || []).filter(u => u.status !== false && !u.isDeleted);
+  const currentUnitObj = activeUnits.find(u => getUnitNumberByName(u.name) === Number(formData.unit));
+  
+  let validOperatorIds = [];
+  if (currentUnitObj) {
+    if (currentUnitObj.operators && currentUnitObj.operators.length > 0) {
+      validOperatorIds = currentUnitObj.operators.map(op => typeof op === 'object' ? op._id : op);
+    }
+  }
 
   const handleSubmit = (e) => {
     e.preventDefault();
@@ -235,8 +285,17 @@ export default function AddCoatingProduction() {
                       }))}
                       value={formData.coatingSpecId}
                       onChange={(val) => {
-                        setFormData(prev => ({ ...prev, coatingSpecId: val }));
+                        let newFormData = { ...formData, coatingSpecId: val };
+                        const spec = availableSpecs.find(s => s._id === val);
+                        if (spec && spec.bottleName && bottlePerBoxes) {
+                          const foundBox = bottlePerBoxes.find(b => b.bottleName === spec.bottleName);
+                          if (foundBox && foundBox.bottlePerBox != null) {
+                            newFormData.bottlePerBox = foundBox.bottlePerBox.toString();
+                          }
+                        }
+                        setFormData(newFormData);
                         if (errors.coatingSpecId) setErrors(prev => ({ ...prev, coatingSpecId: '' }));
+                        if (errors.bottlePerBox) setErrors(prev => ({ ...prev, bottlePerBox: '' }));
                       }}
                       placeholder="-- Choose Coating Spec --"
                       disabled={!formData.brandId}
@@ -289,15 +348,27 @@ export default function AddCoatingProduction() {
                     </label>
                     <CreatableSelect
                       isClearable
-                      options={operators.filter(o => o.status).map(o => ({ value: o._id, label: o.name }))}
+                      options={operators
+                        .filter(o => o.status)
+                        .filter(o => validOperatorIds.length > 0 ? validOperatorIds.includes(o._id) : true)
+                        .map(o => ({ value: o._id, label: o.name }))}
                       value={
                         formData.operatorId
                           ? { value: formData.operatorId, label: operators.find(o => o._id === formData.operatorId)?.name || '' }
                           : null
                       }
                       onChange={(selected) => {
-                        setFormData(prev => ({ ...prev, operatorId: selected ? selected.value : '' }));
+                        const newOperatorId = selected ? selected.value : '';
+                        let newShift = formData.shift;
+                        if (newOperatorId) {
+                          const op = operators.find(o => o._id === newOperatorId);
+                          if (op && op.shift) {
+                            newShift = op.shift._id || op.shift;
+                          }
+                        }
+                        setFormData(prev => ({ ...prev, operatorId: newOperatorId, shift: newShift }));
                         if (errors.operatorId) setErrors(prev => ({ ...prev, operatorId: '' }));
+                        if (newShift && errors.shift) setErrors(prev => ({ ...prev, shift: '' }));
                       }}
                       onCreateOption={(inputValue) => {
                         dispatch(createOperator({ name: inputValue, status: true })).then((res) => {
@@ -417,7 +488,39 @@ export default function AddCoatingProduction() {
                   {/* Rejection Reason */}
                   <div className="col-md-12">
                     <label className="form-label fw-600 small text-uppercase text-muted">Rejection Reason</label>
-                    <textarea name="rejectionReason" rows="3" className="form-control custom-input-field" value={formData.rejectionReason} onChange={handleChange} placeholder="Enter rejection reason..." />
+                    <CreatableSelect
+                      isClearable
+                      options={rejectionReasonOptions}
+                      value={formData.rejectionReason ? { value: formData.rejectionReason, label: formData.rejectionReason } : null}
+                      onChange={(selected) => {
+                        setFormData(prev => ({ ...prev, rejectionReason: selected ? selected.value : '' }));
+                      }}
+                      onCreateOption={(inputValue) => {
+                        setFormData(prev => ({ ...prev, rejectionReason: inputValue }));
+                      }}
+                      placeholder="Select or type rejection reason..."
+                      styles={{
+                        control: (base, state) => ({
+                          ...base,
+                          borderRadius: '12px',
+                          padding: '2px',
+                          minHeight: '86px',
+                          alignItems: 'flex-start',
+                          borderColor: state.isFocused ? '#86b7fe' : '#dee2e6',
+                          boxShadow: state.isFocused ? '0 0 0 0.25rem rgba(13, 110, 253, 0.25)' : 'none',
+                        }),
+                        valueContainer: (base) => ({
+                          ...base,
+                          alignItems: 'flex-start',
+                          paddingTop: '8px'
+                        }),
+                        indicatorsContainer: (base) => ({
+                          ...base,
+                          alignItems: 'flex-start',
+                          paddingTop: '4px'
+                        })
+                      }}
+                    />
                   </div>
                 </div>
 
@@ -460,3 +563,4 @@ export default function AddCoatingProduction() {
     </div>
   );
 }
+

@@ -4,6 +4,7 @@ import { useDispatch, useSelector } from 'react-redux';
 import { fetchUnits } from '../redux/slices/unitSlice';
 import { getUnitNumberByName } from '../utils/unitMapper';
 import { AbilityContext, Can } from '../context/AbilityContext';
+import { PO_REQUIRED_COMPANY } from '../config/incomingConfig';
 import logo from '../assets/hero.png';
 
 const navItems = [
@@ -17,12 +18,15 @@ const navItems = [
     section: 'Management',
     links: [
       { to: '/users', icon: 'bi-people-fill', label: 'Users', action: 'sidebar', subject: 'user' },
-      { to: '/operators', icon: 'bi-person-badge-fill', label: 'Operator Name', action: 'sidebar', subject: 'operator' },
       { to: '/shifts', icon: 'bi-clock-fill', label: 'Shift', action: 'sidebar', subject: 'shift' },
+      { to: '/operators', icon: 'bi-person-badge-fill', label: 'Operator Name', action: 'sidebar', subject: 'operator' },
       { to: '/units', icon: 'bi-hdd-network-fill', label: 'Units', action: 'sidebar', subject: 'unit' },
       { to: '/raw-materials', icon: 'bi-box-seam', label: 'Raw Material', action: 'sidebar', subject: 'raw-material' },
+      { to: '/item-types', icon: 'bi-tags', label: 'Item Types', action: 'sidebar', subject: 'itemType' },
       { to: '/companies', icon: 'bi-building-fill', label: 'Companies', action: 'sidebar', subject: 'company' },
       { to: '/brands', icon: 'bi-award-fill', label: 'Brands', action: 'sidebar', subject: 'brand' },
+      { to: '/bottle-per-box', icon: 'bi-box-fill', label: 'Bottle Per Box', action: 'sidebar', subject: 'bottleperbox' },
+
       { to: '/printing-types', icon: 'bi-printer-fill', label: 'Printing Types', action: 'sidebar', subject: 'printing-type' },
       { to: '/printing-colors', icon: 'bi-palette-fill', label: 'Printing Colors', action: 'sidebar', subject: 'printing-color' },
       { to: '/bottle-specs', icon: 'bi-droplet-fill', label: 'Bottle Specs', action: 'sidebar', subject: 'bottlespec' },
@@ -54,6 +58,21 @@ const navItems = [
           { to: '/sg-labels-2', label: 'SG Label 2', icon: 'bi-sticky-fill', action: 'read', subject: 'sg-label-2' }
         ]
       },
+      { to: '/gst', icon: 'bi-percent', label: 'GST Master', action: 'sidebar', subject: 'gst' },
+      {
+        icon: 'bi-box-arrow-in-down-right',
+        label: 'Incoming',
+        action: 'sidebar',
+        subject: 'incoming',
+        subLinks: [
+          { to: '/incoming', label: 'Incoming', icon: 'bi-list-ul', action: 'read', subject: 'incoming' },
+          { to: `/shreno-incoming`, label: 'Shreno Incoming', icon: 'bi-building-fill-down', action: 'read', subject: 'incoming' }
+        ]
+      },
+      { to: '/lacquer-plan', icon: 'bi-calendar-check-fill', label: 'Lacquer Plan', action: 'sidebar', subject: 'lacquerplan' },
+      { to: '/printing-plan', icon: 'bi-printer-fill', label: 'Printing Plan', action: 'sidebar', subject: 'printingplan' },
+      { to: '/pending-sheet', icon: 'bi-clipboard-data-fill', label: 'Pending Sheet', action: 'sidebar', subject: 'pending-sheet' },
+      { to: '/dispatch', icon: 'bi-truck', label: 'Dispatch', action: 'sidebar', subject: 'dispatch' },
 
     ],
   },
@@ -128,9 +147,9 @@ export default function Sidebar({ collapsed, onClose }) {
   return (
     <aside className={`sidebar ${collapsed ? 'collapsed' : ''}`}>
       {/* Brand */}
-      <div className="sidebar-brand" style={{ justifyContent: 'space-between', position: 'relative' }}>
-        <div style={{ flex: 1, display: 'flex', justifyContent: 'center' }}>
-          <img src={logo} alt="Logo" style={{ height: '60px', maxWidth: '100%', objectFit: 'contain' }} />
+      <div className="sidebar-brand" style={{ justifyContent: 'space-between', position: 'relative', overflow: 'visible' }}>
+        <div style={{ flex: 1, display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+          <img src={logo} alt="Logo" style={{ height: '60px', transform: 'scale(1.8) translateY(3px)', maxWidth: '100%', objectFit: 'contain' }} />
         </div>
         <button className="mobile-close-btn btn btn-sm btn-link text-white shadow-none p-0" onClick={onClose} style={{ position: 'absolute', right: '15px' }}>
           <i className="bi bi-x-lg fs-5"></i>

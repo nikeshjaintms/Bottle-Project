@@ -200,7 +200,7 @@ const getAllProduction = async (req, res) => {
           ],
         })
         .sort({ createdAt: -1 })
-        .lean();
+        ;
 
     // ================= COMPANY FILTER =================
 

@@ -2,18 +2,23 @@ import { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
 import { createOperator, fetchOperators } from '../../redux/slices/operatorSlice';
+import { fetchShifts } from '../../redux/slices/shiftSlice';
 import Swal from 'sweetalert2';
+import SearchableSelect from '../../components/SearchableSelect';
 
 export default function AddOperator() {
   const navigate = useNavigate();
   const dispatch = useDispatch();
   const { operators = [], loading } = useSelector((state) => state.operators);
+  const { shifts = [] } = useSelector((state) => state.shifts);
   const [name, setName] = useState('');
+  const [shift, setShift] = useState('');
   const [status, setStatus] = useState('active');
   const [error, setError] = useState('');
 
   useEffect(() => {
     dispatch(fetchOperators({ pagination: 'false' }));
+    dispatch(fetchShifts({ pagination: 'false' }));
   }, [dispatch]);
 
   const validateField = (value) => {
@@ -59,7 +64,7 @@ export default function AddOperator() {
       return Swal.fire('Validation Error', msg, 'error');
     }
 
-    dispatch(createOperator({ name, status })).then((res) => {
+    dispatch(createOperator({ name, status, shift: shift || null })).then((res) => {
       if (!res.error) {
         Swal.fire('Success!', `operator "${name}" added successfully!`, 'success');
         navigate('/operators');
@@ -114,6 +119,16 @@ export default function AddOperator() {
                     <option value="active">Active</option>
                     <option value="inactive">Inactive</option>
                   </select>
+                </div>
+
+                <div className="mb-4">
+                  <label className="form-label fw-600 small text-uppercase text-muted">Shift</label>
+                  <SearchableSelect
+                    options={shifts.filter(s => s.status).map(s => ({ value: s._id, label: s.name }))}
+                    value={shift}
+                    onChange={(val) => setShift(val)}
+                    placeholder="-- Choose Default Shift --"
+                  />
                 </div>
 
                 <div className="d-flex gap-2 mt-4 user-form-actions">

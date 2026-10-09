@@ -4,43 +4,64 @@ const { parseInvoiceData, callGoogleVisionFull, callGoogleVisionForPdf, extractP
 
 exports.parseInvoice = async (req, res) => {
   try {
-    if (!req.file) {
-      return res.status(400).json({ success: false, message: "File required" });
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({ success: false, message: "At least one file required" });
     }
 
-    const filePath = req.file.path;
-    const fileBuffer = fs.readFileSync(filePath);
-    const mimeType = req.file.mimetype;
+    const rawMaterials = await RawMaterial.find();
+    
+    let finalData = {
+      deliveryNumber: null,
+      documentDate: null,
+      poNo: null,
+      poDate: null,
+      items: [],
+      unmatchedItems: []
+    };
 
-    let ocrResult = null;
+    const fileUrls = [];
 
-    if (mimeType === "application/pdf") {
-      // Position-aware extraction — reconstructs true visual rows instead
-      // of relying on pdf-parse's raw content-stream text order.
-      const words = await extractPdfWords(fileBuffer);
-      if (words && words.length > 0) {
-        ocrResult = { type: 'pdf', data: words };
+    for (const file of req.files) {
+      const filePath = file.path;
+      const fileBuffer = fs.readFileSync(filePath);
+      const mimeType = file.mimetype;
+      fileUrls.push("/uploads/" + file.filename);
+
+      let ocrResult = null;
+
+      if (mimeType === "application/pdf") {
+        const words = await extractPdfWords(fileBuffer);
+        if (words && words.length > 0) {
+          ocrResult = { type: 'pdf', data: words };
+        } else {
+          const visionResult = await callGoogleVisionForPdf(filePath);
+          ocrResult = { type: 'vision', data: visionResult };
+        }
       } else {
-        // Fallback to Google Vision for scanned PDFs
-        const visionResult = await callGoogleVisionForPdf(filePath);
+        const visionResult = await callGoogleVisionFull(fileBuffer);
         ocrResult = { type: 'vision', data: visionResult };
       }
-    } else {
-      // Google Vision full response (with bounding boxes)
-      const visionResult = await callGoogleVisionFull(fileBuffer);
-      ocrResult = { type: 'vision', data: visionResult };
+
+      if (!ocrResult || !ocrResult.data || (Array.isArray(ocrResult.data) && ocrResult.data.length === 0)) {
+        continue;
+      }
+
+      const parsedData = parseInvoiceData(ocrResult, rawMaterials);
+
+      if (parsedData.deliveryNumber && !finalData.deliveryNumber) finalData.deliveryNumber = parsedData.deliveryNumber;
+      if (parsedData.documentDate && !finalData.documentDate) finalData.documentDate = parsedData.documentDate;
+      if (parsedData.poNo && !finalData.poNo) finalData.poNo = parsedData.poNo;
+      if (parsedData.poDate && !finalData.poDate) finalData.poDate = parsedData.poDate;
+      
+      if (parsedData.items && parsedData.items.length > 0) {
+        finalData.items = [...finalData.items, ...parsedData.items];
+      }
+      if (parsedData.unmatchedItems && parsedData.unmatchedItems.length > 0) {
+        finalData.unmatchedItems = [...finalData.unmatchedItems, ...parsedData.unmatchedItems];
+      }
     }
 
-    if (!ocrResult || !ocrResult.data || (Array.isArray(ocrResult.data) && ocrResult.data.length === 0)) {
-      return res.status(400).json({ success: false, message: "Could not extract text from the file" });
-    }
-
-    const rawMaterials = await RawMaterial.find({ status: true, isDeleted: false });
-    const parsedData = parseInvoiceData(ocrResult, rawMaterials);
-
-    const fileUrl = "/uploads/" + req.file.filename;
-
-    res.json({ success: true, ...parsedData, fileUrl });
+    res.json({ success: true, ...finalData, fileUrls });
 
   } catch (err) {
     console.error("PARSE INVOICE ERROR:", err.message);

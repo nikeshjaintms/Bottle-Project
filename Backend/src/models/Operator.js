@@ -10,6 +10,10 @@ const operatorSchema = new mongoose.Schema({
     type: Boolean,
     default: true
   },
+  shift: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Shift"
+  },
   isDeleted: {
     type: Boolean,
     default: false

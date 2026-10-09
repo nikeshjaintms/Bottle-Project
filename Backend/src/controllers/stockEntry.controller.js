@@ -58,10 +58,10 @@ exports.getInvoices = async (req, res) => {
     const skip = (parsedPage - 1) * parsedLimit;
 
     const invoices = await StockEntry.find(filter)
-      .populate("items.rawMaterialId")
+        .populate("items.rawMaterialId")
       .sort({ date: -1, createdAt: -1 })
       .skip(skip)
-      .limit(parsedLimit);
+      .limit(parsedLimit).lean();
 
     res.json({
       success: true,
@@ -92,10 +92,10 @@ exports.getSummary = async (req, res) => {
     const parsedPage = parseInt(page);
     const parsedLimit = parseInt(limit);
     const rawMaterials = await RawMaterial.find(rmFilter)
-      .sort({ name: 1 })
+        .sort({ name: 1 })
       .skip((parsedPage - 1) * parsedLimit)
       .limit(parsedLimit)
-      .lean();
+      ;
 
     const rawMaterialIds = rawMaterials.map(rm => rm._id);
 
@@ -206,7 +206,7 @@ exports.getHistory = async (req, res) => {
     }
 
     const entries = await StockEntry.find(filter)
-      .populate("items.rawMaterialId")
+        .populate("items.rawMaterialId")
       .sort({ date: 1, createdAt: 1 }); // Sort ascending to build running balance
 
     let runningBalance = 0;
@@ -283,7 +283,7 @@ exports.getHistory = async (req, res) => {
 exports.getSingleEntry = async (req, res) => {
   try {
     const entry = await StockEntry.findOne({ _id: req.params.id, isDeleted: false })
-      .populate("items.rawMaterialId");
+      .populate("items.rawMaterialId").lean();
     
     if (!entry) return res.status(404).json({ success: false, message: "Stock entry not found" });
 

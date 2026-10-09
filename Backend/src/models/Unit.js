@@ -10,6 +10,10 @@ const unitSchema = new mongoose.Schema({
     type: Boolean,
     default: true
   },
+  operators: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Operator"
+  }],
   isDeleted: {
     type: Boolean,
     default: false

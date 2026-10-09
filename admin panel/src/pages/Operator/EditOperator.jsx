@@ -2,15 +2,19 @@ import { useState, useEffect } from 'react';
 import { useNavigate, useParams, Link } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
 import { updateOperator } from '../../redux/slices/operatorSlice';
+import { fetchShifts } from '../../redux/slices/shiftSlice';
 import Swal from 'sweetalert2';
+import SearchableSelect from '../../components/SearchableSelect';
 
 export default function EditOperator() {
   const { id } = useParams();
   const navigate = useNavigate();
   const dispatch = useDispatch();
   const { operators, loading } = useSelector((state) => state.operators);
+  const { shifts = [] } = useSelector((state) => state.shifts);
   const [name, setName] = useState('');
   const [status, setStatus] = useState('active');
+  const [shift, setShift] = useState('');
   const [error, setError] = useState('');
 
   const validateField = (value) => {
@@ -53,10 +57,15 @@ export default function EditOperator() {
   };
 
   useEffect(() => {
+    dispatch(fetchShifts({ pagination: 'false' }));
+  }, [dispatch]);
+
+  useEffect(() => {
     const operator = operators.find(b => b._id === id);
     if (operator) {
       setName(operator.name);
       setStatus(operator.status === true ? 'active' : 'inactive');
+      setShift(operator.shift?._id || operator.shift || '');
     }
   }, [id, operators]);
 
@@ -67,7 +76,7 @@ export default function EditOperator() {
       return Swal.fire('Validation Error', msg, 'error');
     }
 
-    dispatch(updateOperator({ id, formData: { name, status } })).then((res) => {
+    dispatch(updateOperator({ id, formData: { name, status, shift: shift || null } })).then((res) => {
       if (!res.error) {
         Swal.fire('Updated!', 'operator updated successfully!', 'success');
         navigate('/operators');
@@ -121,6 +130,16 @@ export default function EditOperator() {
                     <option value="active">Active</option>
                     <option value="inactive">Inactive</option>
                   </select>
+                </div>
+
+                <div className="mb-4">
+                  <label className="form-label fw-600 small text-uppercase text-muted">Shift</label>
+                  <SearchableSelect
+                    options={shifts.filter(s => s.status).map(s => ({ value: s._id, label: s.name }))}
+                    value={shift}
+                    onChange={(val) => setShift(val)}
+                    placeholder="-- Choose Default Shift --"
+                  />
                 </div>
 
                 <div className="d-flex gap-2 mt-4 user-form-actions">

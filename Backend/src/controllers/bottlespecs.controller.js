@@ -13,6 +13,9 @@ exports.createSpec = async (req, res) => {
     if (req.file) {
       body.image = `/uploads/${req.file.filename}`;
     }
+    if (body.variantId === '') {
+      body.variantId = null;
+    }
 
     // Duplicate check for coating specs
     if (body.isCoating === 'true' || body.isCoating === true) {
@@ -27,7 +30,6 @@ exports.createSpec = async (req, res) => {
         if (!body.variantId) {
           dupQuery.$or = [
             { variantId: null },
-            { variantId: '' },
             { variantId: { $exists: false } }
           ];
         } else {
@@ -64,6 +66,30 @@ exports.createSpec = async (req, res) => {
     }
 
     const spec = await BottleSpec.create(body);
+
+    // Automatically create or update a corresponding BottlePerBox entry
+    if (body.bottleName) {
+      const BottlePerBox = require("../models/BottlePerBox");
+      const normalizedName = body.bottleName.trim().replace(/\s+/g, ' ');
+      const existingPerBox = await BottlePerBox.findOne({
+        bottleName: { $regex: new RegExp(`^${normalizedName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') }
+      });
+      
+      const newBpbValue = body.bottlePerBox !== undefined && body.bottlePerBox !== null && body.bottlePerBox !== "" ? parseFloat(body.bottlePerBox) : null;
+
+      if (!existingPerBox) {
+        await BottlePerBox.create({
+          bottleName: normalizedName,
+          bottlePerBox: newBpbValue,
+          status: true
+        });
+      } else if (newBpbValue !== null && (existingPerBox.bottlePerBox === null || existingPerBox.bottlePerBox === undefined)) {
+        // Do not overwrite an existing non-null bottlePerBox value, just set it if it was missing
+        existingPerBox.bottlePerBox = newBpbValue;
+        await existingPerBox.save();
+      }
+    }
+
     const populated = await BottleSpec.findById(spec._id)
       .populate({
         path: "brandId",

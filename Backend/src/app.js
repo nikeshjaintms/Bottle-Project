@@ -53,7 +53,18 @@ app.use("/api/sg-label", require("./routes/sgLabel.routes"));
 app.use("/api/sg-label-2", require("./routes/sgLabelTwoRoutes"));
 app.use("/api/stock-entry", require("./routes/stockEntry.routes"));
 app.use("/api/invoice-vision", require("./routes/invoiceVision.routes"));
+app.use("/api/challan-vision", require("./routes/challanVision.routes"));
+app.use("/api/shreno-vision", require("./routes/shrenoVision.routes"));
 app.use("/api/unit", require("./routes/unit.routes"));
+app.use("/api/incoming", require("./routes/incoming.routes"));
+app.use("/api/gst", require("./routes/gst.routes"));
+app.use("/api/bottle-per-box", require("./routes/bottlePerBox.routes"));
+app.use("/api/item-type", require("./routes/itemType.routes"));
+app.use("/api/lacquer-plan", require("./routes/lacquerPlan.routes"));
+app.use("/api/printing-plan", require("./routes/printingPlan.routes"));
+app.use("/api/pending-sheet", require("./routes/pendingSheet.routes"));
+app.use("/api/shreno-incoming", require("./routes/shrenoIncoming.routes"));
+app.use("/api/dispatch", require("./routes/dispatch.routes"));
 
 // Added testing routes for the browser
 app.get("/", (req, res) => {

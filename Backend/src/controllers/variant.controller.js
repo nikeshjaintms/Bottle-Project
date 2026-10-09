@@ -122,7 +122,7 @@ exports.getVariants = async (req, res) => {
       const matchingCompanies = await Company.find({
         isDeleted: { $ne: true },
         name: { $regex: wholeWordRegex }
-      }).select('_id');
+      }).select('_id').lean();
       const companyIds = matchingCompanies.map(c => c._id);
       
       // Search brands matching brand name OR matching companyId
@@ -132,7 +132,7 @@ exports.getVariants = async (req, res) => {
           { name: { $regex: wholeWordRegex } },
           { companyId: { $in: companyIds } }
         ]
-      }).select('_id');
+      }).select('_id').lean();
       const brandIds = matchingBrands.map(b => b._id);
 
       const matchingSpecs = await BottleSpec.find({
@@ -141,7 +141,7 @@ exports.getVariants = async (req, res) => {
           { bottleName: { $regex: wholeWordRegex } },
           { brandId: { $in: brandIds } }
         ]
-      }).select('_id');
+      }).select('_id').lean();
       const specIds = matchingSpecs.map(s => s._id);
 
       query.$or = [
@@ -163,14 +163,14 @@ exports.getVariants = async (req, res) => {
 
     let variants;
     if (pagination === "false") {
-      variants = await Variant.find(query).sort({ createdAt: -1 }).populate(populateOpts);
+      variants = await Variant.find(query).sort({ createdAt: -1 }).populate(populateOpts).lean();
       return res.json({ success: true, data: variants, total });
     } else {
       variants = await Variant.find(query)
         .sort({ createdAt: -1 })
         .populate(populateOpts)
         .skip(skip)
-        .limit(parsedLimit);
+        .limit(parsedLimit).lean();
     }
 
     res.json({
