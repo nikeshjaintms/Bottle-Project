@@ -33,6 +33,7 @@ app.use("/uploads", express.static("uploads"));
 app.use("/api/auth", require("./routes/auth.routes"));
 app.use("/api/users", require("./routes/user.routes"));
 app.use("/api/company", require("./routes/company.routes"));
+app.use("/api/company-address", require("./routes/companyAddress.routes"));
 app.use("/api/brand", require("./routes/brand.routes"));
 app.use("/api/variant", require("./routes/variant.routes"));
 app.use("/api/bottle-spec", require("./routes/bottlespecs.routes"));
@@ -65,6 +66,7 @@ app.use("/api/printing-plan", require("./routes/printingPlan.routes"));
 app.use("/api/pending-sheet", require("./routes/pendingSheet.routes"));
 app.use("/api/shreno-incoming", require("./routes/shrenoIncoming.routes"));
 app.use("/api/dispatch", require("./routes/dispatch.routes"));
+app.use("/api/delivery-challan", require("./routes/deliveryChallan.routes"));
 
 // Added testing routes for the browser
 app.get("/", (req, res) => {

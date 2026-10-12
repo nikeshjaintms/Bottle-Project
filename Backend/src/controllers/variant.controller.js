@@ -101,11 +101,11 @@ exports.getVariants = async (req, res) => {
 
     if (search && search.trim() !== "") {
       const searchWord = search.trim();
-      
+
       // Split into alphanumeric words to allow flexible matching of spaces/special chars
       const searchTokens = searchWord.split(/[\W_]+/).filter(Boolean);
       let regexStr = "";
-      
+
       if (searchTokens.length > 0) {
         // Escape each token and join with a pattern that matches any space or special character
         const escapeRegExp = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -114,17 +114,17 @@ exports.getVariants = async (req, res) => {
         // Fallback for purely special character searches
         regexStr = searchWord.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       }
-      
+
       // (?:^|\W) acts like \b but supports matching next to special characters
       const wholeWordRegex = new RegExp(`(?:^|\\W)${regexStr}(?:\\W|$)`, "i");
-      
+
       // Search companies with whole word match
       const matchingCompanies = await Company.find({
         isDeleted: { $ne: true },
         name: { $regex: wholeWordRegex }
       }).select('_id').lean();
       const companyIds = matchingCompanies.map(c => c._id);
-      
+
       // Search brands matching brand name OR matching companyId
       const matchingBrands = await Brand.find({
         isDeleted: { $ne: true },

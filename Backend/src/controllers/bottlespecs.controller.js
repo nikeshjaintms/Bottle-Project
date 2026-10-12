@@ -74,7 +74,7 @@ exports.createSpec = async (req, res) => {
       const existingPerBox = await BottlePerBox.findOne({
         bottleName: { $regex: new RegExp(`^${normalizedName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') }
       });
-      
+
       const newBpbValue = body.bottlePerBox !== undefined && body.bottlePerBox !== null && body.bottlePerBox !== "" ? parseFloat(body.bottlePerBox) : null;
 
       if (!existingPerBox) {
@@ -140,19 +140,19 @@ exports.getSpecs = async (req, res) => {
 
     if (search && search.trim() !== "") {
       const searchWord = search.trim();
-      
+
       const searchTokens = searchWord.split(/[\W_]+/).filter(Boolean);
       let regexStr = "";
-      
+
       if (searchTokens.length > 0) {
         const escapeRegExp = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         regexStr = searchTokens.map(escapeRegExp).join('[\\W_]+');
       } else {
         regexStr = searchWord.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       }
-      
+
       const wholeWordRegex = new RegExp(`(?:^|\\W)${regexStr}(?:\\W|$)`, "i");
-      
+
       const matchingCompanies = await Company.find({
         isDeleted: { $ne: true },
         name: { $regex: wholeWordRegex }
@@ -175,7 +175,7 @@ exports.getSpecs = async (req, res) => {
           { variantSize: { $regex: wholeWordRegex } }
         ]
       }).select('_id bottleSpecId');
-      
+
       const variantIds = matchingVariants.map(v => v._id);
       const parentSpecIds = matchingVariants.map(v => v.bottleSpecId).filter(id => id);
 
@@ -251,8 +251,8 @@ exports.updateSpec = async (req, res) => {
       path: "brandId",
       populate: { path: "companyId" }
     })
-    .populate("printingTypeId")
-    .populate("printingColorId");
+      .populate("printingTypeId")
+      .populate("printingColorId");
     res.json(spec);
   } catch (err) {
     res.status(500).json(err.message);

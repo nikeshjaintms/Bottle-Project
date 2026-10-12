@@ -24,6 +24,7 @@ const navItems = [
       { to: '/raw-materials', icon: 'bi-box-seam', label: 'Raw Material', action: 'sidebar', subject: 'raw-material' },
       { to: '/item-types', icon: 'bi-tags', label: 'Item Types', action: 'sidebar', subject: 'itemType' },
       { to: '/companies', icon: 'bi-building-fill', label: 'Companies', action: 'sidebar', subject: 'company' },
+      { to: '/company-addresses', icon: 'bi-geo-alt-fill', label: 'Company Addresses', action: 'sidebar', subject: 'company-address' },
       { to: '/brands', icon: 'bi-award-fill', label: 'Brands', action: 'sidebar', subject: 'brand' },
       { to: '/bottle-per-box', icon: 'bi-box-fill', label: 'Bottle Per Box', action: 'sidebar', subject: 'bottleperbox' },
 
@@ -73,7 +74,17 @@ const navItems = [
       { to: '/printing-plan', icon: 'bi-printer-fill', label: 'Printing Plan', action: 'sidebar', subject: 'printingplan' },
       { to: '/pending-sheet', icon: 'bi-clipboard-data-fill', label: 'Pending Sheet', action: 'sidebar', subject: 'pending-sheet' },
       { to: '/dispatch', icon: 'bi-truck', label: 'Dispatch', action: 'sidebar', subject: 'dispatch' },
-
+      {
+        icon: 'bi-receipt-cutoff',
+        label: 'Delivery Challan',
+        action: 'sidebar',
+        subject: 'delivery-challan',
+        subLinks: [
+          { to: '/delivery-challan/mcnore', label: 'Mcnore', icon: 'bi-file-earmark-text', action: 'read', subject: 'delivery-challan-mcnore' },
+          { to: '/delivery-challan/sherno', label: 'Sherno', icon: 'bi-file-earmark-text', action: 'read', subject: 'delivery-challan-sherno' },
+          { to: '/delivery-challan/shayoona', label: 'Shayoona', icon: 'bi-file-earmark-text', action: 'read', subject: 'delivery-challan-shayoona' }
+        ]
+      },
     ],
   },
   {
@@ -98,7 +109,7 @@ export default function Sidebar({ collapsed, onClose }) {
 
   const dynamicNavItems = useMemo(() => {
     const activeUnits = (units || []).filter(u => u.status !== false && !u.isDeleted);
-    
+
     const coatingProductionSubLinks = activeUnits
       .map(u => {
         const num = getUnitNumberByName(u.name);
@@ -159,12 +170,12 @@ export default function Sidebar({ collapsed, onClose }) {
       {/* Nav */}
       <nav className="sidebar-nav">
         {dynamicNavItems.map((section) => {
-            const visibleLinks = section.links.filter(link => {
-              if (link.subLinks) {
-                return link.subLinks.some(sub => ability.can(sub.action || 'read', sub.subject || link.subject)) || ability.can(link.action || 'read', link.subject || 'all');
-              }
-              return ability.can(link.action || 'read', link.subject || 'all');
-            });
+          const visibleLinks = section.links.filter(link => {
+            if (link.subLinks) {
+              return link.subLinks.some(sub => ability.can(sub.action || 'read', sub.subject || link.subject)) || ability.can(link.action || 'read', link.subject || 'all');
+            }
+            return ability.can(link.action || 'read', link.subject || 'all');
+          });
 
           if (visibleLinks.length === 0) return null;
 

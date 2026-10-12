@@ -15,6 +15,13 @@ import UserDetail from './pages/Users/UserDetail';
 import Companies from './pages/Company/Companies';
 import AddCompany from './pages/Company/AddCompany';
 import EditCompany from './pages/Company/EditCompany';
+import CompanyAddresses from './pages/CompanyAddress/CompanyAddresses';
+import AddCompanyAddress from './pages/CompanyAddress/AddCompanyAddress';
+import EditCompanyAddress from './pages/CompanyAddress/EditCompanyAddress';
+import ShayonaChallanList from './pages/DeliveryChallan/Shayona/ShayonaChallanList';
+import AddShayonaChallan from './pages/DeliveryChallan/Shayona/AddShayonaChallan';
+import EditShayonaChallan from './pages/DeliveryChallan/Shayona/EditShayonaChallan';
+import ViewShayonaChallan from './pages/DeliveryChallan/Shayona/ViewShayonaChallan';
 import Brands from './pages/Brands/Brands';
 import AddBrand from './pages/Brands/AddBrand';
 import EditBrand from './pages/Brands/EditBrand';
@@ -160,6 +167,9 @@ export default function App() {
               <Route path="/companies" element={<Companies />} />
               <Route path="/companies/add" element={<AddCompany />} />
               <Route path="/companies/edit/:id" element={<EditCompany />} />
+              <Route path="/company-addresses" element={<CompanyAddresses />} />
+              <Route path="/company-addresses/add" element={<AddCompanyAddress />} />
+              <Route path="/company-addresses/edit/:id" element={<EditCompanyAddress />} />
               <Route path="/brands" element={<Brands />} />
               <Route path="/brands/add" element={<AddBrand />} />
               <Route path="/brands/edit/:id" element={<EditBrand />} />
@@ -236,6 +246,11 @@ export default function App() {
               <Route path="/dispatch/add" element={<AddDispatch />} />
               <Route path="/dispatch/edit/:id" element={<EditDispatch />} />
               <Route path="/dispatch/view/:id" element={<ViewDispatch />} />
+
+              <Route path="/delivery-challan/shayoona" element={<ShayonaChallanList />} />
+              <Route path="/delivery-challan/shayoona/add" element={<AddShayonaChallan />} />
+              <Route path="/delivery-challan/shayoona/edit/:id" element={<EditShayonaChallan />} />
+              <Route path="/delivery-challan/shayoona/view/:id" element={<ViewShayonaChallan />} />
 
               <Route path="/gst" element={<GstList />} />
               <Route path="/gst/add" element={<AddGst />} />
