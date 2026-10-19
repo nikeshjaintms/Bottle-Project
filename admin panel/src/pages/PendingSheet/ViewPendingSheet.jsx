@@ -40,8 +40,8 @@ const ViewPendingSheet = () => {
             <i className="bi bi-arrow-left fs-5" />
           </button>
           <div>
-            <h1 className="page-title mb-0">View Pending Sheet</h1>
-            <p className="page-subtitle mb-0">Detailed view of pending sheet entry</p>
+            <h1 className="page-title mb-0">View Ready Stock</h1>
+            <p className="page-subtitle mb-0">Detailed view of ready stock entry</p>
           </div>
         </div>
       </div>

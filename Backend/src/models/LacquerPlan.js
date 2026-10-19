@@ -43,6 +43,12 @@ const lacquerPlanSchema = new mongoose.Schema({
   orderQty: {
     type: Number
   },
+  orderHistory: [{
+    date: { type: Date, default: Date.now },
+    originalOrder: Number,
+    updatedOrder: Number,
+    totalOrder: Number
+  }],
   dispatchPendingQty: {
     type: Number,
     default: 0
@@ -85,6 +91,10 @@ const lacquerPlanSchema = new mongoose.Schema({
   plainStock: {
     type: Number
   },
+  appliedStockDeduction: {
+    type: Number,
+    default: 0
+  },
   isDeleted: {
     type: Boolean,
     default: false
@@ -100,20 +110,42 @@ const lacquerPlanSchema = new mongoose.Schema({
   importGroupSize: {
     type: Number,
     default: null
+  },
+  isEditedAfterImport: {
+    type: Boolean,
+    default: false
+  },
+  lastEditedAt: {
+    type: Date,
+    default: null
+  },
+  originalImportedValues: {
+    type: mongoose.Schema.Types.Mixed,
+    default: null
+  },
+  importedFromId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'LacquerPlan',
+    default: null
+  },
+  importedFromDate: {
+    type: Date,
+    default: null
+  },
+  stockWarningAcknowledged: {
+    type: Boolean,
+    default: false
+  },
+  acknowledgedAt: {
+    type: Date,
+    default: null
+  },
+  stockWarningDetails: {
+    type: mongoose.Schema.Types.Mixed,
+    default: null
   }
 }, { timestamps: true });
 
-// Add virtual getters for backward compatibility
-// lacquerPlanSchema.virtual('colour').get(function() {
-//   return this.coatingShade;
-// });
 
-// lacquerPlanSchema.virtual('dispatchBalance').get(function() {
-//   return this.dispatchPendingQty;
-// });
-
-// lacquerPlanSchema.virtual('coatedQty').get(function() {
-//   return this.coatingCompletedQty;
-// });
 
 module.exports = mongoose.model("LacquerPlan", lacquerPlanSchema);

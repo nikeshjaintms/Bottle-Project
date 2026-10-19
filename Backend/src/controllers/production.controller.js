@@ -385,7 +385,7 @@ const updateProduction = async (req, res) => {
 // ✅ DELETE
 const deleteProduction = async (req, res) => {
   try {
-    const deleted = await Production.findByIdAndUpdate(req.params.id, { isDeleted: true }, { new: true });
+    const deleted = await Production.findByIdAndUpdate(req.params.id, { isDeleted: true }, { returnDocument: 'after' });
 
     if (!deleted) {
       return res.status(404).json({ message: "Production not found" });

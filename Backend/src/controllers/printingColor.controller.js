@@ -165,7 +165,7 @@ exports.updatePrintingColor = async (req, res) => {
 // ✅ DELETE
 exports.deletePrintingColor = async (req, res) => {
   try {
-    await PrintingColor.findByIdAndUpdate(req.params.id, { isDeleted: true }, { new: true });
+    await PrintingColor.findByIdAndUpdate(req.params.id, { isDeleted: true }, { returnDocument: 'after' });
     res.json({ msg: "Printing Color Deleted" });
   } catch (err) {
     res.status(500).json(err.message);

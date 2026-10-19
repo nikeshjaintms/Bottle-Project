@@ -99,6 +99,7 @@ export default function BottlePerBoxes() {
                 <div className="flex-grow-1 min-w-0">
                   <div className="d-flex align-items-center gap-2 mb-1 flex-wrap">
                     <span className="text-muted small fw-bold">#{String((currentPage - 1) * itemsPerPage + index + 1).padStart(2, '0')}</span>
+                    <span className="badge bg-light text-primary border fw-semibold">{s.plainBottleName || s.bottleName}</span>
                     <span className="fw-semibold text-truncate">{s.bottleName}</span>
                   </div>
                   <div className="text-muted small mb-2 text-truncate">
@@ -137,7 +138,8 @@ export default function BottlePerBoxes() {
           <table className="data-table mb-0">
             <thead className="bg-light">
               <tr>
-                <th className="py-3 text-uppercase small fw-bold text-muted ps-5 text-start" style={{ width: 150 }}>Sr No</th>
+                <th className="py-3 text-uppercase small fw-bold text-muted ps-5 text-start" style={{ width: 120 }}>Sr No</th>
+                <th className="py-3 text-uppercase small fw-bold text-muted text-center">Plain Bottle</th>
                 <th className="py-3 text-uppercase small fw-bold text-muted text-center">Bottle Name</th>
                 <th className="py-3 text-uppercase small fw-bold text-muted text-center">Bottle per Box</th>
                 <th className="py-3 text-uppercase small fw-bold text-muted text-center" style={{ width: 120 }}>Status</th>
@@ -147,7 +149,7 @@ export default function BottlePerBoxes() {
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan="5" className="text-center py-5">
+                  <td colSpan="6" className="text-center py-5">
                     <div className="spinner-border text-primary" role="status"><span className="visually-hidden">Loading...</span></div>
                   </td>
                 </tr>
@@ -158,7 +160,22 @@ export default function BottlePerBoxes() {
                       <span className="text-muted fw-bold" style={{ fontSize: 13 }}>{String((currentPage - 1) * itemsPerPage + index + 1).padStart(2, '0')}</span>
                     </td>
                     <td className="py-3 text-center">
-                      <div className="fw-bold text-dark" style={{ fontSize: 15 }}>{s.bottleName}</div>
+                      <span className="badge rounded-pill px-3 py-2" style={{ backgroundColor: '#eef2ff', color: '#4338ca', fontWeight: 600, fontSize: 13 }}>
+                        {s.plainBottleName || s.bottleName}
+                      </span>
+                    </td>
+                    <td className="py-3 text-center">
+                      <div className="d-flex flex-wrap gap-1 justify-content-center" style={{ maxWidth: 450, margin: '0 auto' }}>
+                        {(s.bottleNames && s.bottleNames.length > 0 ? s.bottleNames : [s.bottleName]).map((name, nIdx) => (
+                          <span 
+                            key={nIdx} 
+                            className="badge bg-light text-dark border fw-normal" 
+                            style={{ fontSize: 12, borderRadius: 6, padding: '4px 8px' }}
+                          >
+                            {name}
+                          </span>
+                        ))}
+                      </div>
                     </td>
                     <td className="py-3 text-center">
                       <span className="fw-600 text-dark" style={{ fontSize: 13 }}>{s.bottlePerBox || 'N/A'}</span>

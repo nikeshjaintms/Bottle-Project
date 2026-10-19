@@ -3,15 +3,19 @@ const mongoose = require("mongoose");
 
 exports.getAllDispatch = async (req, res) => {
   try {
-    const { page, limit, search, pagination = "true", dateFrom, dateTo, searchPrinting } = req.query;
+    const { page, limit, search, pagination = "true", dateFrom, dateTo, searchPrinting, companyId } = req.query;
     const query = { isDeleted: false };
     
     if (search) {
-      // search by gatePassNo or productName
+      // search by gatePassNo or bottleName
       query.$or = [
         { gatePassNo: { $regex: search, $options: "i" } },
         { "items.productName": { $regex: search, $options: "i" } }
       ];
+    }
+    
+    if (companyId) {
+      query.companyId = companyId;
     }
     
     if (searchPrinting) {
@@ -26,8 +30,17 @@ exports.getAllDispatch = async (req, res) => {
 
     const total = await Dispatch.countDocuments(query);
 
+    const populateOpts = [
+      { path: 'companyId', select: 'name' },
+      { path: 'items.bottleId', select: 'bottleName plainBottleName' },
+      { path: 'items.variantId', select: 'variantName' },
+      { path: 'items.printingTypeId', select: 'printingType' }
+    ];
+
     if (pagination === "false") {
-      const dispatches = await Dispatch.find(query).sort({ dispatchDate: -1, createdAt: -1 });
+      const dispatches = await Dispatch.find(query)
+        .populate(populateOpts)
+        .sort({ dispatchDate: -1, createdAt: -1 });
       return res.json({ data: dispatches, total });
     }
 
@@ -36,6 +49,7 @@ exports.getAllDispatch = async (req, res) => {
     const skip = (parsedPage - 1) * parsedLimit;
 
     const dispatches = await Dispatch.find(query)
+      .populate(populateOpts)
       .sort({ dispatchDate: -1, createdAt: -1 })
       .skip(skip)
       .limit(parsedLimit);
@@ -53,7 +67,20 @@ exports.getAllDispatch = async (req, res) => {
 
 exports.getDispatchById = async (req, res) => {
   try {
-    const dispatch = await Dispatch.findById(req.params.id);
+    const dispatch = await Dispatch.findById(req.params.id)
+      .populate('companyId', 'name')
+      .populate({
+        path: 'items.bottleId',
+        select: 'bottleName plainBottleName bottlePerBox'
+      })
+      .populate({
+        path: 'items.variantId',
+        select: 'variantName'
+      })
+      .populate({
+        path: 'items.printingTypeId',
+        select: 'printingType'
+      });
       
     if (!dispatch || dispatch.isDeleted) {
       return res.status(404).json({ message: "Dispatch record not found" });
@@ -67,14 +94,14 @@ exports.getDispatchById = async (req, res) => {
 
 exports.createDispatch = async (req, res) => {
   try {
-    const { dispatchDate, gatePassNo, remarks, items: rawItems } = req.body;
+    const { dispatchDate, gatePassNo, companyId, remarks, items: rawItems } = req.body;
     
     let items = [];
     if (rawItems) {
       items = typeof rawItems === 'string' ? JSON.parse(rawItems) : rawItems;
     }
 
-    if (!dispatchDate || !gatePassNo || !items || !items.length) {
+    if (!dispatchDate || !gatePassNo || !companyId || !items || !items.length) {
       return res.status(400).json({ message: "Missing required fields or items" });
     }
 
@@ -84,38 +111,64 @@ exports.createDispatch = async (req, res) => {
       return res.status(400).json({ message: "Gate Pass No. already exists" });
     }
 
-    // Calculate/validate total
+    // Validate and transform items - handle both old and new schema
     const validatedItems = items.map(item => {
-      if (!item.productName || item.box === undefined || item.qty === undefined) {
-        throw new Error("Missing required fields in item");
+      // New schema: bottleId, variantId, coatingShade, printingTypeId
+      // Old schema: productName, printing, foil, organic, additionalBox
+      
+      const bottleId = item.bottleId;
+      const variantId = item.variantId || null;
+      const coatingShade = item.coatingShade || null;
+      const printingTypeId = item.printingTypeId || null;
+      const box = Number(item.box) || 0;
+      const qty = Number(item.qty) || 0;
+      const totalQty = Number(item.totalQty) || (box * qty);
+      
+      // At least one identifier is required
+      if (!bottleId && !item.productName) {
+        throw new Error("Missing required fields in item: bottleId or productName required");
       }
-      if (item.box < 0 || item.qty < 0) {
+      
+      if (box < 0 || qty < 0) {
         throw new Error("Box and Qty cannot be negative");
       }
       
-      const box = Number(item.box) || 0;
-      const additionalBox = Number(item.additionalBox) || 0;
-      const qty = Number(item.qty) || 0;
-      const total = box * qty;
-      
       return {
-        ...item,
+        bottleId: bottleId || null,
+        variantId,
+        coatingShade,
+        printingTypeId,
         box,
-        additionalBox,
         qty,
-        total
+        totalQty,
+        // Keep old fields for backward compatibility
+        productName: item.productName,
+        printing: item.printing,
+        foil: item.foil,
+        organic: item.organic,
+        additionalBox: Number(item.additionalBox) || 0,
+        remarks: item.remarks
       };
     });
 
     const dispatch = new Dispatch({
       dispatchDate,
       gatePassNo,
+      companyId,
       remarks,
       items: validatedItems,
       createdBy: req.user ? req.user.id : undefined
     });
 
     await dispatch.save();
+    
+    // Populate references
+    await dispatch.populate([
+      { path: 'companyId', select: 'name' },
+      { path: 'items.bottleId', select: 'bottleName' },
+      { path: 'items.variantId', select: 'variantName' },
+      { path: 'items.printingTypeId', select: 'printingType' }
+    ]);
 
     res.status(201).json({
       message: "Dispatch created successfully",
@@ -128,7 +181,7 @@ exports.createDispatch = async (req, res) => {
 
 exports.updateDispatch = async (req, res) => {
   try {
-    const { dispatchDate, gatePassNo, remarks, items: rawItems } = req.body;
+    const { dispatchDate, gatePassNo, companyId, remarks, items: rawItems } = req.body;
     
     const dispatch = await Dispatch.findOne({ _id: req.params.id, isDeleted: false });
     if (!dispatch) {
@@ -148,24 +201,41 @@ exports.updateDispatch = async (req, res) => {
       items = typeof rawItems === 'string' ? JSON.parse(rawItems) : rawItems;
       
       const validatedItems = items.map(item => {
-        if (!item.productName || item.box === undefined || item.qty === undefined) {
-          throw new Error("Missing required fields in item");
+        // New schema: bottleId, variantId, coatingShade, printingTypeId
+        // Old schema: productName, printing, foil, organic, additionalBox
+        
+        const bottleId = item.bottleId;
+        const variantId = item.variantId || null;
+        const coatingShade = item.coatingShade || null;
+        const printingTypeId = item.printingTypeId || null;
+        const box = Number(item.box) || 0;
+        const qty = Number(item.qty) || 0;
+        const totalQty = Number(item.totalQty) || (box * qty);
+        
+        // At least one identifier is required
+        if (!bottleId && !item.productName) {
+          throw new Error("Missing required fields in item: bottleId or productName required");
         }
-        if (item.box < 0 || item.qty < 0) {
+        
+        if (box < 0 || qty < 0) {
           throw new Error("Box and Qty cannot be negative");
         }
         
-        const box = Number(item.box) || 0;
-        const additionalBox = Number(item.additionalBox) || 0;
-        const qty = Number(item.qty) || 0;
-        const total = box * qty;
-        
         return {
-          ...item,
+          bottleId: bottleId || null,
+          variantId,
+          coatingShade,
+          printingTypeId,
           box,
-          additionalBox,
           qty,
-          total
+          totalQty,
+          // Keep old fields for backward compatibility
+          productName: item.productName,
+          printing: item.printing,
+          foil: item.foil,
+          organic: item.organic,
+          additionalBox: Number(item.additionalBox) || 0,
+          remarks: item.remarks
         };
       });
       dispatch.items = validatedItems;
@@ -173,9 +243,18 @@ exports.updateDispatch = async (req, res) => {
 
     if (dispatchDate) dispatch.dispatchDate = dispatchDate;
     if (gatePassNo) dispatch.gatePassNo = gatePassNo;
+    if (companyId) dispatch.companyId = companyId;
     if (remarks !== undefined) dispatch.remarks = remarks;
 
     await dispatch.save();
+    
+    // Populate references
+    await dispatch.populate([
+      { path: 'companyId', select: 'name' },
+      { path: 'items.bottleId', select: 'bottleName' },
+      { path: 'items.variantId', select: 'variantName' },
+      { path: 'items.printingTypeId', select: 'printingType' }
+    ]);
 
     res.json({
       message: "Dispatch updated successfully",

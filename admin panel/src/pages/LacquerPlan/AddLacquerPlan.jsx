@@ -57,6 +57,10 @@ export default function AddLacquerPlan() {
   });
   const [creatingSpec, setCreatingSpec] = useState(false);
 
+  // Stock warning states
+  const [stockWarnings, setStockWarnings] = useState({});
+  const [acknowledgeStockWarning, setAcknowledgeStockWarning] = useState({});
+
   useEffect(() => {
     dispatch(fetchBottlePerBoxes({ limit: 1000, status: true }));
     dispatch(fetchBottleSpecs({ limit: 1000, status: true, type: 'all' }));
@@ -164,6 +168,7 @@ export default function AddLacquerPlan() {
       }
     }
 
+    let prevValue = currentRow[field]; // Capture BEFORE updating
     currentRow[field] = value;
 
     const syncAndSetRows = (rowsArray) => {
@@ -264,19 +269,66 @@ export default function AddLacquerPlan() {
     }
 
     if (field === 'orderQty') {
-      const orderQty = parseFloat(currentRow.orderQty);
+      const orderQty = parseFloat(value) || 0;
       const boxQty = parseFloat(currentRow.boxQty);
       if (!isNaN(orderQty) && !isNaN(boxQty) && boxQty > 0) {
         currentRow.noOfBoxes = Math.ceil(orderQty / boxQty);
       }
       const coatedQty = parseFloat(currentRow.coatedQty);
       currentRow.balanceToMake = (coatedQty || 0) - (orderQty || 0);
+      
+      // Check insufficient stock for this group
+      if (currentRow.sharedGroupId && currentRow.companyId && currentRow.bottleName) {
+        let plainStock = parseFloat(currentRow.plainStock) || 0;
+        let totalOrderQty = 0;
+        
+        newRows.forEach(r => {
+          if (r.sharedGroupId === currentRow.sharedGroupId && 
+              r.companyId === currentRow.companyId && 
+              r.bottleName?.toUpperCase() === currentRow.bottleName?.toUpperCase()) {
+            const rOrderQty = r === currentRow ? orderQty : (parseFloat(r.orderQty) || 0);
+            totalOrderQty += rOrderQty;
+            if (plainStock === 0 || !plainStock) {
+              plainStock = parseFloat(r.plainStock) || 0;
+            }
+          }
+        });
+        
+        if (plainStock > 0 && totalOrderQty > plainStock) {
+          Swal.fire({
+            toast: true,
+            position: 'top-end',
+            icon: 'warning',
+            title: labels.plainStockExceedWarning,
+            showConfirmButton: false,
+            timer: 3000
+          });
+          currentRow.isExceedingStock = true;
+        } else {
+          currentRow.isExceedingStock = false;
+        }
+      }
     }
 
     if (field === 'coatedQty') {
+      const prevCoatedQty = parseFloat(prevValue) || 0;
+      const newCoatedQty = parseFloat(value) || 0;
+      const delta = newCoatedQty - prevCoatedQty;
+      
+      currentRow.coatedQty = newCoatedQty;
       const orderQty = parseFloat(currentRow.orderQty);
-      const coatedQty = parseFloat(currentRow.coatedQty);
-      currentRow.balanceToMake = (coatedQty || 0) - (orderQty || 0);
+      currentRow.balanceToMake = (newCoatedQty || 0) - (orderQty || 0);
+      
+      // Apply delta sync to all rows in the same (company, bottle) pool
+      if (currentRow.sharedGroupId && currentRow.companyId && currentRow.bottleName) {
+        newRows.forEach(r => {
+          if (r.sharedGroupId === currentRow.sharedGroupId && 
+              r.companyId === currentRow.companyId && 
+              r.bottleName?.toUpperCase() === currentRow.bottleName?.toUpperCase()) {
+            r.plainStock = Math.max(0, (parseFloat(r.plainStock) || 0) - delta);
+          }
+        });
+      }
     }
 
     syncAndSetRows(newRows);
@@ -573,7 +625,8 @@ export default function AddLacquerPlan() {
              noOfBoxes: row.noOfBoxes || null,
              remarks: row.remarks || '',
              plainStock: row.plainStock || 0,
-             importGroupId: groupId
+             importGroupId: groupId,
+             stockWarningAcknowledged: acknowledgeStockWarning[rows.indexOf(row)] || false
            });
          });
       }
@@ -582,6 +635,12 @@ export default function AddLacquerPlan() {
     if (hasError) return Swal.fire('Error', 'Please fill in all required fields (Bottle Name, Variant, Coating Shade, Process, Order Qty) for each entered row.', 'error');
     if (hasDuplicate) return Swal.fire('Error', 'This Bottle Name and Variant combination is repeated.', 'error');
     if (payload.length === 0) return Swal.fire('Error', 'Please ensure at least one valid entry is provided.', 'error');
+
+    // Check if there are unacknowledged stock warnings
+    const unacknowledgedWarnings = Object.keys(stockWarnings).filter(idx => !acknowledgeStockWarning[idx]);
+    if (unacknowledgedWarnings.length > 0) {
+      return Swal.fire('Stock Warning', `Please acknowledge the stock warning(s) before submitting (${unacknowledgedWarnings.length} row(s) require acknowledgment).`, 'warning');
+    }
 
     dispatch(createLacquerPlan(payload)).then((res) => {
       if (!res.error) {
@@ -911,7 +970,41 @@ export default function AddLacquerPlan() {
                                     </td>
                                     )}
                                     <td>
-                                      <input type="number" className="form-control form-control-sm shadow-none text-center" value={row.orderQty} onChange={(e) => handleRowChange(index, 'orderQty', e.target.value)} min="1" required />
+                                      <input 
+                                        type="number" 
+                                        className={`form-control form-control-sm shadow-none text-center ${row.isExceedingStock ? 'bg-warning' : ''}`} 
+                                        value={row.orderQty} 
+                                        onChange={(e) => handleRowChange(index, 'orderQty', e.target.value)}
+                                        onBlur={async () => {
+                                          // Check stock warning on blur
+                                          if (row.bottleName && row.companyId && row.orderQty) {
+                                            try {
+                                              const res = await API.get('/lacquer-plan/validate-stock', {
+                                                params: {
+                                                  bottleName: row.bottleName,
+                                                  companyId: row.companyId,
+                                                  orderQty: parseFloat(row.orderQty)
+                                                }
+                                              });
+                                              if (res.data.success) {
+                                                if (res.data.data.hasWarning) {
+                                                  setStockWarnings(prev => ({ ...prev, [index]: res.data.data }));
+                                                } else {
+                                                  setStockWarnings(prev => {
+                                                    const updated = { ...prev };
+                                                    delete updated[index];
+                                                    return updated;
+                                                  });
+                                                }
+                                              }
+                                            } catch (err) {
+                                              console.error('Stock validation error:', err);
+                                            }
+                                          }
+                                        }}
+                                        min="1" 
+                                        required 
+                                      />
                                     </td>
                                     <td>
                                       <input type="number" className="form-control form-control-sm shadow-none text-center" value={row.coatedQty} onChange={(e) => handleRowChange(index, 'coatedQty', e.target.value)} min="0" />
@@ -949,6 +1042,59 @@ export default function AddLacquerPlan() {
                             </tbody>
                           </table>
                         </div>
+
+                        {/* Stock Warning Display */}
+                        {Object.keys(stockWarnings).some(idx => {
+                          const groupItems = group.items.map(item => item.originalIndex);
+                          return groupItems.includes(parseInt(idx));
+                        }) && (
+                          <div className="alert alert-warning border-warning p-3 mb-3 rounded-3" role="alert">
+                            <h6 className="fw-bold mb-3 text-warning">
+                              <i className="bi bi-exclamation-triangle-fill me-2"></i>⚠️ Stock Warning(s) Detected
+                            </h6>
+                            {group.items.map((rowItem) => {
+                              const index = rowItem.originalIndex;
+                              const warning = stockWarnings[index];
+                              if (!warning) return null;
+                              
+                              return (
+                                <div key={index} className="mb-3 p-3 bg-white rounded border-warning border-2">
+                                  <div className="row mb-2">
+                                    <div className="col-md-6">
+                                      <small className="text-muted fw-bold">Row {rowItem.bottleName}</small>
+                                      <div className="text-dark fw-bold">Order Qty: {warning.orderQty}</div>
+                                    </div>
+                                    <div className="col-md-6">
+                                      <small className="text-muted fw-bold">Available Stock</small>
+                                      <div className="text-danger fw-bold">Over by: {warning.overBy} units</div>
+                                    </div>
+                                  </div>
+                                  <div className="row mb-3">
+                                    <div className="col-12">
+                                      <small className="text-muted">
+                                        Current Stock: <strong>{warning.details?.totalStock || 0}</strong> | 
+                                        Allocated: <strong>{warning.details?.allocated || 0}</strong> | 
+                                        Available: <strong className="text-danger">{warning.availableStock}</strong>
+                                      </small>
+                                    </div>
+                                  </div>
+                                  <div className="form-check">
+                                    <input 
+                                      className="form-check-input" 
+                                      type="checkbox" 
+                                      id={`acknowledge-warning-${index}`}
+                                      checked={acknowledgeStockWarning[index] || false}
+                                      onChange={(e) => setAcknowledgeStockWarning(prev => ({ ...prev, [index]: e.target.checked }))}
+                                    />
+                                    <label className="form-check-label small text-muted" htmlFor={`acknowledge-warning-${index}`}>
+                                      I understand the risk and want to import this quantity anyway
+                                    </label>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
 
                         <div className="d-flex justify-content-between">
                           <button type="button" className="btn btn-sm btn-outline-primary shadow-sm" onClick={() => addEntryRow(group.id)}>

@@ -273,8 +273,47 @@ export default function LacquerPlan() {
       const sourceDate = result.value;
 
       setImporting(true);
-      const res = await API.post('/lacquer-plan/import-previous', { targetDate: selectedDate, sourceDate });
-      if (res.data.success) {
+      
+      // First call: check if confirmation needed
+      const checkRes = await API.post('/lacquer-plan/import-previous', { targetDate: selectedDate, sourceDate });
+      
+      if (checkRes.data.requiresConfirmation && checkRes.data.hasExistingImport) {
+        // Show import mode choice dialog
+        const modeResult = await Swal.fire({
+          title: 'Import Mode',
+          text: 'This date already has imports from that source date. How would you like to proceed?',
+          icon: 'question',
+          showCancelButton: true,
+          confirmButtonText: 'With Changes (Update & Add)',
+          cancelButtonText: 'Without Changes',
+          showDenyButton: true,
+          denyButtonText: 'Cancel',
+          reverseButtons: true
+        });
+        
+        let importMode = null;
+        if (modeResult.isConfirmed) {
+          importMode = 'with_changes';
+        } else if (modeResult.isDenied) {
+          setImporting(false);
+          return;
+        } else if (!modeResult.isDismissed) {
+          importMode = 'without_changes';
+        }
+        
+        if (importMode) {
+          const res = await API.post('/lacquer-plan/import-previous', { 
+            targetDate: selectedDate, 
+            sourceDate,
+            importMode
+          });
+          if (res.data.success) {
+            dispatch(fetchLacquerPlans({ date: selectedDate }));
+            Swal.fire('Imported!', `Previous plan imported (${importMode === 'with_changes' ? 'with changes' : 'without changes'}).`, 'success');
+          }
+        }
+      } else if (checkRes.data.success) {
+        // First import or no special prompt needed
         dispatch(fetchLacquerPlans({ date: selectedDate }));
         Swal.fire('Imported!', 'Previous plan imported successfully.', 'success');
       }
@@ -413,6 +452,7 @@ export default function LacquerPlan() {
             <th className="py-3 text-uppercase fw-bolder text-center" style={{ fontSize: '15px', backgroundColor: 'var(--accent)', color: 'white' }}>{labels.bottlePerBox}</th>
             <th className="py-3 text-uppercase fw-bolder text-center" style={{ fontSize: '15px', backgroundColor: 'var(--accent)', color: 'white' }}>{labels.noOfOrderBoxes}</th>
             <th className="py-3 text-uppercase fw-bolder text-center" style={{ fontSize: '15px', backgroundColor: 'var(--accent)', color: 'white' }}>{labels.remarks}</th>
+            <th className="py-3 text-uppercase fw-bolder text-center" style={{ fontSize: '15px', backgroundColor: 'var(--accent)', color: 'white' }}>⚠️ Alert</th>
             <th className="py-3 text-uppercase fw-bolder text-center" style={{ width: 100, fontSize: '15px', backgroundColor: 'var(--accent)', color: 'white' }}>{labels.actions || 'Actions'}</th>
           </tr>
         </thead>
@@ -498,7 +538,7 @@ export default function LacquerPlan() {
                 <td className="py-3 text-center align-middle" rowSpan={bottleVisualRowSpan}>{plan.plainStock !== null && plan.plainStock !== undefined ? plan.plainStock : 0}</td>
               )}
               
-              <td className="py-3 text-center fw-bold">{plan.orderQty !== null && plan.orderQty !== undefined ? plan.orderQty : '-'}</td>
+              <td className={`py-3 text-center fw-bold ${plan.plainStock && plan.orderQty && plan.plainStock < plan.orderQty ? 'bg-warning' : ''}`}>{plan.orderQty !== null && plan.orderQty !== undefined ? plan.orderQty : '-'}</td>
               <td className="py-3 text-center">{plan.coatingCompletedQty !== null && plan.coatingCompletedQty !== undefined ? plan.coatingCompletedQty : (plan.coatedQty || 0)}</td>
               <td className={`py-3 text-center fw-bold ${plan.balanceToMake >= 0 ? 'text-success' : 'text-danger'}`}>
                 {plan.balanceToMake !== null && plan.balanceToMake !== undefined ? plan.balanceToMake : '-'}
@@ -512,6 +552,18 @@ export default function LacquerPlan() {
               )}
               <td className="py-3 text-center">{plan.noOfBoxes !== null && plan.noOfBoxes !== undefined ? plan.noOfBoxes : '-'}</td>
               <td className="py-3 text-center small text-muted">{plan.remarks || '-'}</td>
+              <td className="py-3 text-center">
+                {plan.stockWarningAcknowledged && (
+                  <span 
+                    className="badge bg-warning text-dark me-2" 
+                    title={`Stock Warning Override: Order: ${plan.orderQty} | Available: ${plan.plainStock} | Acknowledged: ${plan.acknowledgedAt ? new Date(plan.acknowledgedAt).toLocaleDateString() : 'N/A'}`}
+                    style={{ cursor: 'pointer' }}
+                    data-bs-toggle="tooltip"
+                  >
+                    ⚠️ Stock Override
+                  </span>
+                )}
+              </td>
               <td className="py-3 text-center">
                 <div className="d-flex gap-2 justify-content-center">
                   <Link to={`/lacquer-plan/view/${plan._id}`} className="btn btn-sm btn-outline-info border-0 rounded-3 shadow-none p-2" title="View">
@@ -534,7 +586,7 @@ export default function LacquerPlan() {
           );
           }) : (
             <tr>
-              <td colSpan={showDate ? "17" : "16"} className="text-center py-5 text-muted">No plans found</td>
+              <td colSpan={showDate ? "18" : "17"} className="text-center py-5 text-muted">No plans found</td>
             </tr>
           )}
         </tbody>

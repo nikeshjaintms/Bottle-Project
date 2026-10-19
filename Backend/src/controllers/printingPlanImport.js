@@ -11,6 +11,7 @@ const PrintingColor = require('../models/PrintingColor');
 const Variant = require('../models/Variant');
 const PlainBottleStock = require('../models/PlainBottleStock');
 const { resolveBottleAndShade } = require('../utils/bottleShadeParser');
+const { recomputePlainStock } = require('../utils/stockRecompute');
 
 exports.importPreview = async (req, res) => {
     try {
@@ -94,15 +95,22 @@ exports.importPreview = async (req, res) => {
             return String(str).toUpperCase().replace(/[^A-Z0-9]/g, '');
         };
         allBottles.forEach(b => {
-            if (b.bottleName) {
-                const normalized = normalizeBottle(b.bottleName);
-                masterBottlePerBoxNameMap.set(normalized, b.bottleName);
-                masterBottlePerBoxMap.set(normalized, b.bottlePerBox);
-                const stock = allPlainStocks.find(s => String(s.bottleId) === String(b._id));
-                if (stock) {
-                    masterPlainStockMap.set(normalized, stock.availableQuantity || 0);
+            const namesToMap = (b.bottleNames && b.bottleNames.length > 0)
+                ? b.bottleNames
+                : [b.bottleName, b.plainBottleName].filter(Boolean);
+
+            const stock = allPlainStocks.find(s => String(s.bottleId) === String(b._id));
+
+            namesToMap.forEach(name => {
+                if (name) {
+                    const normalized = normalizeBottle(name);
+                    masterBottlePerBoxNameMap.set(normalized, name);
+                    masterBottlePerBoxMap.set(normalized, b.bottlePerBox);
+                    if (stock) {
+                        masterPlainStockMap.set(normalized, stock.availableQuantity || 0);
+                    }
                 }
-            }
+            });
         });
         // 3. Fetch PrintingColor Master, Variant Master and BottleSpec early for accurate shade matching
         const allColors = await PrintingColor.find({}).lean();
@@ -1188,7 +1196,23 @@ exports.commitImport = async (req, res) => {
                     readyBoxes: p.readyBoxes,
                     remarks: p.remarks,
                     components: p.components || [],
-                    componentHeadersList: p.componentHeadersList || []
+                    componentHeadersList: p.componentHeadersList || [],
+                    originalImportedValues: {
+                      orderQty: p.orderQty,
+                      producedQty: p.producedQty,
+                      balanceToMake: p.balanceToMake,
+                      boxQty: p.boxQty,
+                      noOfBoxes: p.noOfBoxes,
+                      dispatchBalance: p.dispatchBalance,
+                      soldQty: p.soldQty,
+                      readyBoxes: p.readyBoxes,
+                      plainBottleStock: p.plainBottleStock,
+                      remarks: p.remarks,
+                      printingToBeDone: p.printingToBeDone,
+                      textColor: p.textColor,
+                      coatingShade: p.coatingShade
+                    },
+                    isEditedAfterImport: false
                 });
 
                 if (p.companyId) {
@@ -1224,6 +1248,15 @@ exports.commitImport = async (req, res) => {
                 if (newComponents.length > 0) {
                     await PrintingPlanComponent.insertMany(newComponents);
                 }
+                
+                // Sync plain stock deduction for PLAIN shade rows
+                for (const plan of newPlans) {
+                  const isPlainShade = (plan.coatingShade || "").trim().toUpperCase() === "PLAIN";
+                  if (isPlainShade && plan.bottleName && plan.companyId) {
+                    await recomputePlainStock(plan.bottleName, plan.companyId, req.user?._id);
+                  }
+                }
+                
                 totalImported += newPlans.length;
                 importedResults.push({ date, imported: newPlans.length, componentsImported: newComponents.length });
             } else {

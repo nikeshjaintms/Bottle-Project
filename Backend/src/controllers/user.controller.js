@@ -181,7 +181,7 @@ exports.updateUser = async (req, res) => {
 exports.deleteUser = async (req, res) => {
   try {
 
-    await User.findByIdAndUpdate(req.params.id, { isDeleted: true }, { new: true });
+    await User.findByIdAndUpdate(req.params.id, { isDeleted: true }, { returnDocument: 'after' });
 
     res.json({ msg: "User Deleted" });
 

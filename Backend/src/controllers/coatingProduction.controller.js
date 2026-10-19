@@ -345,7 +345,7 @@ const updateProduction = async (req, res) => {
     const updated = await CoatingProduction.findByIdAndUpdate(
       id,
       { unit, brandId, coatingSpecId, coatingShade, shift, operatorId, actualQuantity, rejectionQuantity, totalActualCoatedBottle, totalBottleCoated, date, bottlePerBox, rejectionReason },
-      { new: true }
+      { returnDocument: 'after' }
     )
       .populate({
         path: "brandId",
@@ -368,7 +368,7 @@ const updateProduction = async (req, res) => {
 const deleteProduction = async (req, res) => {
   try {
     const { id } = req.params;
-    const production = await CoatingProduction.findByIdAndUpdate(id, { isDeleted: true }, { new: true });
+    const production = await CoatingProduction.findByIdAndUpdate(id, { isDeleted: true }, { returnDocument: 'after' });
 
     if (!production) {
       return res.status(404).json({ message: "Production log not found" });

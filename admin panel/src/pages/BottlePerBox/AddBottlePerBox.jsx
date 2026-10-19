@@ -5,6 +5,8 @@ import { createBottlePerBox } from '../../redux/slices/bottlePerBoxSlice';
 import { fetchBottleSpecs } from '../../redux/slices/bottleSpecSlice';
 import CreatableSelect from 'react-select/creatable';
 import Swal from 'sweetalert2';
+import { derivePlainBottleName } from '../../utils/derivePlainBottleName';
+
 export default function AddBottlePerBox() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -16,19 +18,74 @@ export default function AddBottlePerBox() {
     dispatch(fetchBottleSpecs({ pagination: 'false' }));
   }, [dispatch]);
 
-  const uniqueBottleNames = useMemo(() => {
+  const allRawBottleNames = useMemo(() => {
     return Array.from(new Set(
       (bottleSpecs || [])
         .map(s => s.BottlePerBox || s.bottleName)
         .filter(name => name && name.trim() !== '')
-    )).map(name => ({ value: name, label: name }));
+    ));
   }, [bottleSpecs]);
 
+  const prefillName = location.state?.prefillName || '';
+
   const [formData, setFormData] = useState({
-    bottleNames: location.state?.prefillName ? [{ value: location.state.prefillName, label: location.state.prefillName }] : [],
+    plainBottleName: prefillName ? derivePlainBottleName(prefillName) : '',
+    bottleNames: prefillName ? [{ value: prefillName, label: prefillName }] : [],
     bottlePerBox: '',
     status: 'active'
   });
+
+  const uniqueBottleNames = useMemo(() => {
+    const target = (formData.plainBottleName || '').trim().toLowerCase();
+
+    const capMatch = target.match(/^(\d+(?:\.\d+)?)\s*([a-z]+)?/i);
+    const numPart = capMatch ? capMatch[1] : '';
+    const unitPart = capMatch && capMatch[2] ? capMatch[2] : 'ml';
+    const volumePrefix = numPart ? `${numPart} ${unitPart}`.toLowerCase() : '';
+
+    const list = [...allRawBottleNames];
+
+    list.sort((a, b) => {
+      const aLower = a.toLowerCase();
+      const bLower = b.toLowerCase();
+
+      if (target) {
+        // Priority 1: Exact target or starts with full target mold name
+        const aExact = aLower === target || aLower.startsWith(target);
+        const bExact = bLower === target || bLower.startsWith(target);
+        if (aExact && !bExact) return -1;
+        if (!aExact && bExact) return 1;
+
+        // Priority 2: Contains target words
+        const aContains = aLower.includes(target);
+        const bContains = bLower.includes(target);
+        if (aContains && !bContains) return -1;
+        if (!aContains && bContains) return 1;
+
+        // Priority 3: Matches volume prefix (e.g. "20 ml ")
+        if (volumePrefix) {
+          const aVol = aLower.startsWith(volumePrefix);
+          const bVol = bLower.startsWith(volumePrefix);
+          if (aVol && !bVol) return -1;
+          if (!aVol && bVol) return 1;
+        }
+
+        // Priority 4: Starts with number (e.g. "20 ")
+        if (numPart) {
+          const aNum = aLower.startsWith(numPart);
+          const bNum = bLower.startsWith(numPart);
+          if (aNum && !bNum) return -1;
+          if (!aNum && bNum) return 1;
+        }
+      }
+
+      return a.localeCompare(b);
+    });
+
+    return list.map(name => ({ value: name, label: name }));
+  }, [allRawBottleNames, formData.plainBottleName]);
+
+  const [isPlainBottleManuallyEdited, setIsPlainBottleManuallyEdited] = useState(false);
 
   const [errors, setErrors] = useState({
     bottleNames: '',
@@ -102,13 +159,38 @@ export default function AddBottlePerBox() {
               <form onSubmit={handleSubmit}>
                 <div className="row g-4">
                   <div className="col-md-6">
+                    <label className="form-label fw-600 small text-uppercase text-muted">
+                      Plain Bottle (Base Mold)
+                    </label>
+                    <input
+                      type="text"
+                      className="form-control custom-input-field"
+                      name="plainBottleName"
+                      value={formData.plainBottleName || ''}
+                      onChange={(e) => {
+                        setIsPlainBottleManuallyEdited(true);
+                        setFormData(prev => ({ ...prev, plainBottleName: e.target.value }));
+                      }}
+                      placeholder="Auto-derived base mold (editable)..."
+                      style={{ borderRadius: 12, padding: '8px 12px' }}
+                    />
+                  </div>
+
+                  <div className="col-md-6">
                     <label className="form-label fw-600 small text-uppercase text-muted">Bottle Name(s) <span className="text-danger">*</span></label>
                     <CreatableSelect
                       isMulti
                       options={uniqueBottleNames}
                       value={formData.bottleNames}
                       onChange={(selected) => {
-                        setFormData(prev => ({ ...prev, bottleNames: selected || [] }));
+                        const newSelection = selected || [];
+                        setFormData(prev => {
+                          const updated = { ...prev, bottleNames: newSelection };
+                          if (!isPlainBottleManuallyEdited && newSelection.length > 0) {
+                            updated.plainBottleName = derivePlainBottleName(newSelection[0].value);
+                          }
+                          return updated;
+                        });
                         if (errors.bottleNames) setErrors(prev => ({ ...prev, bottleNames: '' }));
                       }}
                       onBlur={() => validateField('bottleNames', formData.bottleNames)}

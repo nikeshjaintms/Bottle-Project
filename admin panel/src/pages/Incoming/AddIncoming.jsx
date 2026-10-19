@@ -10,6 +10,35 @@ import { PO_REQUIRED_COMPANY } from '../../config/incomingConfig';
 import Swal from 'sweetalert2';
 import Select from 'react-select';
 
+// Filter out OCR noise and document metadata from unmatched items
+const filterNoiseItems = (items) => {
+  if (!items || items.length === 0) return [];
+  
+  return items.filter(item => {
+    const text = (item.suggestedName || '').trim().toUpperCase();
+    
+    // Skip items that are too long (likely invoice headers/metadata)
+    if (text.length > 100) return false;
+    
+    // Skip items with common invoice/document keywords
+    const noisePatterns = [
+      /GSTN|GST|INVOICE|CHALLAN|DATE|PO\s*-|BILL|ADDRESS|PHONE|EMAIL|TAX|SECTION|ACT/,
+      /LIMITED|PVT|COMPANY|DELIVERY|TRANSPORT|SIGNATURE|AUTHORIZED|DUPLICATE|TRANSPORTER/i
+    ];
+    
+    if (noisePatterns.some(pattern => pattern.test(text))) return false;
+    
+    // Skip if it's mostly numbers and special characters
+    const alphanumericRatio = (text.match(/[A-Z0-9]/g) || []).length / text.length;
+    if (alphanumericRatio < 0.5) return false;
+    
+    // Skip very short entries (likely noise)
+    if (text.length < 3) return false;
+    
+    return true;
+  });
+};
+
 export default function AddIncoming() {
   const navigate = useNavigate();
   const dispatch = useDispatch();
@@ -113,8 +142,8 @@ export default function AddIncoming() {
 
   const handleSubmit = (e) => {
     e.preventDefault();
-    if (!formData.deliveryNumber || !formData.billToId || !formData.documentDate) {
-      return Swal.fire('Error', 'Please fill required fields (Date, Challan / Delivery No, Bill To)', 'error');
+    if (!formData.billToId || !formData.documentDate) {
+      return Swal.fire('Error', 'Please fill required fields (Date, Bill To)', 'error');
     }
 
     if (isPoRequired) {
@@ -206,26 +235,7 @@ export default function AddIncoming() {
         
         return { bottleId: item.bottleId?._id || item.bottleId || '', box: defaultBox, qty: defaultQty, totalQty: defaultTotalQty };
       });
-      if (res.unmatchedItems && res.unmatchedItems.length > 0) {
-        res.unmatchedItems.forEach(uItem => {
-          let uBox = matchIsShreno ? (uItem.totalQty || uItem.box || 1) : (uItem.box || 1);
-          let uQty = uItem.qty || 1;
-          let uTotalQty = matchIsShreno ? '' : (uItem.totalQty || '');
-          
-          if (!matchIsShreno && !uTotalQty && uBox) {
-            uTotalQty = parseFloat((Number(uBox) * Number(uQty)).toFixed(2));
-          } else if (matchIsShreno && !uTotalQty && uBox) {
-            uTotalQty = parseFloat((Number(uBox) * Number(uQty)).toFixed(2));
-          }
-
-          itemsToSet.push({ 
-            bottleId: '', 
-            box: uBox, 
-            qty: uQty, 
-            totalQty: uTotalQty 
-          });
-        });
-      }
+      // DO NOT add unmatched items - only show warning, user must add manually
       setItems(prevItems => {
         const newItems = [...prevItems];
         if (newItems.length === 1 && !newItems[0].bottleId && !newItems[0].qty) {
@@ -292,32 +302,16 @@ export default function AddIncoming() {
         };
       });
 
-      // Add unmatched items so their totalQty still populates the table
-      if (res.unmatchedItems && res.unmatchedItems.length > 0) {
-        res.unmatchedItems.forEach(uItem => {
-          let uBox = matchIsShreno ? (uItem.totalQty || uItem.box || 1) : (uItem.box || 1);
-          let uQty = uItem.qty || 1;
-          let uTotalQty = matchIsShreno ? '' : (uItem.totalQty || '');
-          
-          if (!matchIsShreno && !uTotalQty && uBox) {
-            uTotalQty = parseFloat((Number(uBox) * Number(uQty)).toFixed(2));
-          } else if (matchIsShreno && !uTotalQty && uBox) {
-            uTotalQty = parseFloat((Number(uBox) * Number(uQty)).toFixed(2));
-          }
+      // Filter out obvious OCR noise and document metadata from unmatched items
+      const filteredUnmatchedItems = filterNoiseItems(res.unmatchedItems);
 
-          itemsToSet.push({
-            bottleId: '', // User must select manually
-            box: uBox,
-            qty: uQty,
-            totalQty: uTotalQty
-          });
-        });
-      }
+      // DO NOT add unmatched items - only show warning for user reference
+      // User must manually add missing bottles to the table
 
       let warningText = '';
-      if (res.unmatchedItems && res.unmatchedItems.length > 0) {
-        const unmatchedNames = res.unmatchedItems.map(i => i.suggestedName).join(', ');
-        warningText = `<br/><br/><b style='color:#e63946;'>Warning:</b> Found ${res.unmatchedItems.length} item(s) on the invoice that do not match any bottle in the database: ${unmatchedNames}.`;
+      if (filteredUnmatchedItems && filteredUnmatchedItems.length > 0) {
+        const unmatchedNames = filteredUnmatchedItems.map(i => i.suggestedName).join(', ');
+        warningText = `<br/><br/><b style='color:#e63946;'>Warning:</b> Found ${filteredUnmatchedItems.length} item(s) on the invoice that do not match any bottle in the database: ${unmatchedNames}.`;
       }
 
       if (itemsToSet.length > 0) {
@@ -540,7 +534,7 @@ export default function AddIncoming() {
               <input type="date" className="form-control shadow-none" name="documentDate" value={formData.documentDate} onChange={handleInputChange} style={{ borderRadius: 10 }} />
             </div>
             <div className="col-md-3">
-              <label className="form-label fw-bold small">Challan / Delivery No *</label>
+              <label className="form-label fw-bold small">Challan / Delivery No</label>
               <input type="text" className="form-control shadow-none" name="deliveryNumber" value={formData.deliveryNumber} onChange={handleInputChange} placeholder="Enter delivery no." style={{ borderRadius: 10 }} />
             </div>
             <div className="col-md-3">

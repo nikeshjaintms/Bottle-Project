@@ -396,7 +396,7 @@ exports.updateSgLabel = async (req, res) => {
       return res.status(400).json({ success: false, message: "SG Label with this combination already exists" });
     }
 
-    const updatedSgLabel = await SgLabel.findByIdAndUpdate(req.params.id, req.body, { new: true });
+    const updatedSgLabel = await SgLabel.findByIdAndUpdate(req.params.id, req.body, { returnDocument: 'after' });
     if (!updatedSgLabel) {
       return res.status(404).json({ success: false, message: "SG Label not found" });
     }
@@ -408,7 +408,7 @@ exports.updateSgLabel = async (req, res) => {
 
 exports.deleteSgLabel = async (req, res) => {
   try {
-    const deletedSgLabel = await SgLabel.findByIdAndUpdate(req.params.id, { isDeleted: true }, { new: true });
+    const deletedSgLabel = await SgLabel.findByIdAndUpdate(req.params.id, { isDeleted: true }, { returnDocument: 'after' });
     if (!deletedSgLabel) {
       return res.status(404).json({ success: false, message: "SG Label not found" });
     }

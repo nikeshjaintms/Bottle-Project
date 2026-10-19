@@ -26,7 +26,6 @@ import shiftReducer from './slices/shiftSlice';
 import stockEntryReducer from './slices/stockEntrySlice';
 import unitReducer from './slices/unitSlice';
 import incomingReducer from './slices/incomingSlice';
-import gstReducer from './slices/gstSlice';
 import bottlePerBoxReducer from './slices/bottlePerBoxSlice';
 import itemTypeReducer from './slices/itemTypeSlice';
 import lacquerPlanReducer from './slices/lacquerPlanSlice';
@@ -60,7 +59,6 @@ export const store = configureStore({
     sgLabelTwo: sgLabelTwoReducer,
     stockEntries: stockEntryReducer,
     units: unitReducer,
-    gst: gstReducer,
     bottlePerBox: bottlePerBoxReducer,
     itemTypes: itemTypeReducer,
     lacquerPlans: lacquerPlanReducer,

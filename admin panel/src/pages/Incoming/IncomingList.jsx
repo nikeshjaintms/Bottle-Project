@@ -8,6 +8,7 @@ import { fetchBottleSpecs } from '../../redux/slices/bottleSpecSlice';
 import { PO_REQUIRED_COMPANY } from '../../config/incomingConfig';
 import Select from 'react-select';
 import ShrenoIncomingTable from './ShrenoIncomingTable';
+import IncomingImportModal from './IncomingImportModal';
 import { Can } from '../../context/AbilityContext';
 import Swal from 'sweetalert2';
 import api from '../../services/api';
@@ -23,6 +24,7 @@ export default function IncomingList() {
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [itemsPerPage, setItemsPerPage] = useState(10);
+  const [showImportModal, setShowImportModal] = useState(false);
   
   const [fromDate, setFromDate] = useState('');
   const [toDate, setToDate] = useState('');
@@ -229,9 +231,19 @@ export default function IncomingList() {
           </div>
         </div>
         <div className="d-flex gap-2">
-          <button onClick={handleExport} className="btn btn-outline-primary shadow-sm px-4 py-2 rounded-3" style={{ fontWeight: 600 }}>
+          <button onClick={handleExport} className="btn btn-outline-accent shadow-sm px-4 py-2 rounded-3" style={{ fontWeight: 600 }}>
             <i className="bi bi-file-earmark-excel-fill me-2" /> Export Excel
           </button>
+          <Can I="create" a="incoming">
+            <button 
+              className="btn btn-accent shadow-sm px-4 py-2 rounded-3"
+              onClick={() => setShowImportModal(true)}
+              title="Import from Excel"
+              style={{ fontWeight: 600 }}
+            >
+              <i className="bi bi-file-earmark-excel me-2" /> Import Excel
+            </button>
+          </Can>
           <Can I="create" a="incoming">
             <Link to="/incoming/add" className="btn-accent companies-header-action">
               <i className="bi bi-plus-lg me-2" /> New Incoming
@@ -587,6 +599,14 @@ export default function IncomingList() {
         </div>
         )}
       </div>
+
+      <IncomingImportModal 
+        show={showImportModal} 
+        onClose={() => setShowImportModal(false)}
+        onImportComplete={() => {
+          dispatch(fetchIncoming({ page: currentPage, limit: itemsPerPage, search: searchTerm, status: statusFilter, companyId }));
+        }}
+      />
     </div>
   );
 }

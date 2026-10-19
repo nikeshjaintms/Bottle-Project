@@ -5,17 +5,17 @@ import api from '../../services/api';
 import Select from 'react-select';
 import { fetchCompanies } from '../../redux/slices/companySlice';
 import { useSelector, useDispatch } from 'react-redux';
-import { fetchBottleSpecs } from '../../redux/slices/bottleSpecSlice';
 import { fetchItemTypes } from '../../redux/slices/itemTypeSlice';
+import { fetchBottlePerBoxes } from '../../redux/slices/bottlePerBoxSlice';
 import { parseShrenoChallan } from '../../redux/slices/visionSlice';
 
 export default function AddShrenoIncoming() {
   const navigate = useNavigate();
   const dispatch = useDispatch();
-  const { bottleSpecs } = useSelector(state => state.bottleSpecs);
   const { itemTypes } = useSelector(state => state.itemTypes);
   const { loading: visionLoading } = useSelector(state => state.vision);
-  const { companies } = useSelector(state => state.companies);
+  const { items: bottlePerBoxes } = useSelector(state => state.bottlePerBox);
+  const { companies } = useSelector(state => state.companies || { companies: [] });
 
   const [formData, setFormData] = useState({
     date: new Date().toISOString().split('T')[0],
@@ -25,7 +25,13 @@ export default function AddShrenoIncoming() {
   });
 
   const [items, setItems] = useState([
-    { bottleName: '', itemType: '', configuration: '', quantity: '' }
+    { 
+      plainBottle: '', 
+      itemType: '', 
+      configuration: '', 
+      quantity: '',
+      sharedGroupId: 'grp_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5)
+    }
   ]);
   const [imageFiles, setImageFiles] = useState([]);
   const [scannedImageFiles, setScannedImageFiles] = useState([]);
@@ -35,32 +41,38 @@ export default function AddShrenoIncoming() {
 
   useEffect(() => {
     dispatch(fetchCompanies({ pagination: "false" }));
-    dispatch(fetchBottleSpecs({ pagination: "false", type: "all" }));
+    dispatch(fetchBottlePerBoxes({ pagination: "false" }));
     dispatch(fetchItemTypes({ page: 1, limit: 1000 }));
   }, [dispatch]);
 
-  const uniqueShrenoBottles = useMemo(() => {
-    if (!bottleSpecs || !companies) return [];
+  const plainBottleOptions = useMemo(() => {
+    if (!bottlePerBoxes || bottlePerBoxes.length === 0) return [];
     
-    // Find Shreno company
-    const shrenoCompany = companies.find(c => c.name.toLowerCase().includes('shreno'));
-    const shrenoId = shrenoCompany?._id;
-    
-    const shrenoSpecs = shrenoId 
-      ? bottleSpecs.filter(spec => spec.brandId?.companyId?._id === shrenoId || spec.brandId?.companyId === shrenoId)
-      : bottleSpecs;
-      
-    // Deduplicate by bottleName
-    const unique = [];
-    const seen = new Set();
-    for (const spec of shrenoSpecs) {
-      if (!seen.has(spec.bottleName)) {
-        seen.add(spec.bottleName);
-        unique.push(spec);
+    // Show all bottles since SHRENO module is already company-scoped
+    const unique = new Map();
+    bottlePerBoxes.forEach(b => {
+      const id = b._id;
+      const name = (b.plainBottleName || b.bottleName || '').trim();
+      if (name && !unique.has(id)) {
+        unique.set(id, { value: id, label: name });
       }
-    }
-    return unique;
-  }, [bottleSpecs, companies]);
+    });
+    return Array.from(unique.values()).sort((a, b) => a.label.localeCompare(b.label));
+  }, [bottlePerBoxes]);
+
+  // Group items by plainBottle to show "add item type" button
+  const itemsByBottle = useMemo(() => {
+    const grouped = {};
+    items.forEach((item, index) => {
+      if (item.plainBottle) {
+        if (!grouped[item.plainBottle]) {
+          grouped[item.plainBottle] = [];
+        }
+        grouped[item.plainBottle].push(index);
+      }
+    });
+    return grouped;
+  }, [items]);
 
   const handleChange = (e) => {
     setFormData({ ...formData, [e.target.name]: e.target.value });
@@ -73,7 +85,24 @@ export default function AddShrenoIncoming() {
   };
 
   const addItem = () => {
-    setItems([...items, { bottleName: '', itemType: '', configuration: '', quantity: '' }]);
+    setItems([...items, { 
+      plainBottle: '', 
+      itemType: '', 
+      configuration: '', 
+      quantity: '',
+      sharedGroupId: 'grp_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5)
+    }]);
+  };
+
+  // Add another item type for the same bottle (copy bottle selection)
+  const addItemTypeForBottle = (bottleId, sharedGroupId) => {
+    setItems([...items, { 
+      plainBottle: bottleId, 
+      itemType: '', 
+      configuration: '', 
+      quantity: '',
+      sharedGroupId: sharedGroupId
+    }]);
   };
 
   const removeItem = (index) => {
@@ -82,13 +111,13 @@ export default function AddShrenoIncoming() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!formData.challanNo || !formData.date) {
-      return Swal.fire('Error', 'Date and Challan Number are required.', 'error');
+    if (!formData.date) {
+      return Swal.fire('Error', 'Date is required.', 'error');
     }
     
 
     for (let i = 0; i < items.length; i++) {
-      if (!items[i].bottleName || !items[i].itemType || !items[i].configuration || !items[i].quantity) {
+      if (!items[i].plainBottle || !items[i].itemType || !items[i].configuration || !items[i].quantity) {
         return Swal.fire('Error', `Please fill all fields for item row ${i + 1}`, 'error');
       }
     }
@@ -137,25 +166,26 @@ export default function AddShrenoIncoming() {
       }));
 
       const itemsToSet = (res.items || []).map(item => {
-        // The API returns a BottlePerBox object, but we need the matching BottleSpec ID for the dropdown
-        const parsedName = item.bottleId?.bottleName || item.bottleName || '';
-        const matchedSpec = uniqueShrenoBottles.find(spec => spec.bottleName === parsedName);
+        // The API returns a bottleId (BottlePerBox), use it directly
+        const bottlePerBoxId = item.bottleId?._id || item.bottleId;
         
         return {
-          bottleName: matchedSpec ? matchedSpec._id : '',
+          plainBottle: bottlePerBoxId || '',
           itemType: item.itemType || '',
           configuration: item.configuration || '',
-          quantity: item.totalQty || item.qty || ''
+          quantity: item.totalQty || item.qty || '',
+          sharedGroupId: 'grp_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5)
         };
       });
 
       if (res.unmatchedItems && res.unmatchedItems.length > 0) {
         res.unmatchedItems.forEach(uItem => {
           itemsToSet.push({
-            bottleName: '',
+            plainBottle: '',
             itemType: uItem.itemType || '',
             configuration: uItem.configuration || '',
-            quantity: uItem.totalQty || uItem.qty || ''
+            quantity: uItem.totalQty || uItem.qty || '',
+            sharedGroupId: 'grp_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5)
           });
         });
       }
@@ -205,24 +235,25 @@ export default function AddShrenoIncoming() {
       const res = await dispatch(parseShrenoChallan(files)).unwrap();
       
       const newItemsToAppend = (res.items || []).map(item => {
-        const parsedName = item.bottleId?.bottleName || item.bottleName || '';
-        const matchedSpec = uniqueShrenoBottles.find(spec => spec.bottleName === parsedName);
+        const bottlePerBoxId = item.bottleId?._id || item.bottleId;
         
         return {
-          bottleName: matchedSpec ? matchedSpec._id : '',
+          plainBottle: bottlePerBoxId || '',
           itemType: item.itemType || '',
           configuration: item.configuration || '',
-          quantity: item.totalQty || item.qty || ''
+          quantity: item.totalQty || item.qty || '',
+          sharedGroupId: 'grp_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5)
         };
       });
 
       if (res.unmatchedItems && res.unmatchedItems.length > 0) {
         res.unmatchedItems.forEach(uItem => {
           newItemsToAppend.push({
-            bottleName: '',
+            plainBottle: '',
             itemType: '',
             configuration: '',
-            quantity: uItem.totalQty || uItem.qty || ''
+            quantity: uItem.totalQty || uItem.qty || '',
+            sharedGroupId: 'grp_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5)
           });
         });
       }
@@ -230,7 +261,7 @@ export default function AddShrenoIncoming() {
       if (newItemsToAppend.length > 0) {
         setItems(prevItems => {
           // If the only item is a completely empty default row, overwrite it. Otherwise append.
-          if (prevItems.length === 1 && !prevItems[0].bottleName && !prevItems[0].itemType && !prevItems[0].configuration && !prevItems[0].quantity) {
+  if (prevItems.length === 1 && !prevItems[0].plainBottle && !prevItems[0].itemType && !prevItems[0].configuration && !prevItems[0].quantity) {
             return newItemsToAppend;
           }
           return [...prevItems, ...newItemsToAppend];
@@ -413,8 +444,8 @@ export default function AddShrenoIncoming() {
               <input type="date" className="form-control shadow-none" style={{ borderRadius: 8 }} name="date" value={formData.date} onChange={handleChange} required />
             </div>
             <div className="col-md-3">
-              <label className="form-label fw-bold small">Challan / Delivery No <span className="text-danger">*</span></label>
-              <input type="text" className="form-control shadow-none" style={{ borderRadius: 8 }} name="challanNo" value={formData.challanNo} onChange={handleChange} required placeholder="e.g. DOM/..." />
+              <label className="form-label fw-bold small">Challan / Delivery No</label>
+              <input type="text" className="form-control shadow-none" style={{ borderRadius: 8 }} name="challanNo" value={formData.challanNo} onChange={handleChange} placeholder="e.g. DOM/..." />
             </div>
             <div className="col-md-3">
               <label className="form-label fw-bold small">PO No</label>
@@ -436,33 +467,58 @@ export default function AddShrenoIncoming() {
               <thead className="table-light">
                 <tr>
                   <th className="small text-muted text-center" style={{width: '5%', minWidth: '50px'}}>Sr.</th>
-                  <th className="small text-muted" style={{width: '35%'}}>Bottle Name <span className="text-danger">*</span></th>
-                  <th className="small text-muted" style={{width: '15%'}}>Item Type <span className="text-danger">*</span></th>
-                  <th className="small text-muted" style={{width: '20%'}}>Configuration (e.g. 2PC, 64x1) <span className="text-danger">*</span></th>
+                  <th className="small text-muted" style={{width: '28%'}}>Plain Bottle <span className="text-danger">*</span></th>
+                  <th className="small text-muted" style={{width: '20%'}}>Item Type(s) <span className="text-danger">*</span></th>
+                  <th className="small text-muted" style={{width: '20%'}}>Configuration (e.g. 2PC, 64x1)</th>
                   <th className="small text-muted text-end" style={{width: '15%'}}>Quantity <span className="text-danger">*</span></th>
-                  <th className="small text-muted text-center" style={{width: '10%'}}>Action</th>
+                  <th className="small text-muted text-center" style={{width: '12%'}}>Action</th>
                 </tr>
               </thead>
               <tbody className="border-top-0">
-                {items.map((item, index) => (
+                {items.map((item, index) => {
+                  const plainBottleOption = plainBottleOptions.find(opt => opt.value === item.plainBottle);
+                  
+                  // Check if this is the first item in its group
+                  const isFirstInGroup = !items.slice(0, index).some(i => i.sharedGroupId === item.sharedGroupId);
+                  
+                  // Count total items in this group
+                  const itemsInGroup = items.filter(i => i.sharedGroupId === item.sharedGroupId).length;
+                  
+                  // Calculate rowSpan for bottle column (only show on first item of group)
+                  let bottleRowSpan = 1;
+                  if (isFirstInGroup && itemsInGroup > 1) {
+                    bottleRowSpan = itemsInGroup;
+                  }
+
+                  return (
                   <tr key={index}>
                     <td className="text-center text-muted">{index + 1}</td>
+                    {isFirstInGroup && (
+                      <td rowSpan={bottleRowSpan}>
+                        <Select 
+                          options={plainBottleOptions}
+                          value={plainBottleOption || null}
+                          onChange={(selected) => {
+                            const newBottleId = selected?.value || '';
+                            handleItemChange(index, 'plainBottle', newBottleId);
+                          }}
+                          placeholder="Select Plain Bottle"
+                          isClearable
+                          menuPortalTarget={document.body}
+                          styles={{
+                            menuPortal: base => ({ ...base, zIndex: 9999 }),
+                            control: (base) => ({ ...base, borderRadius: '8px', backgroundColor: 'var(--bs-light)', borderColor: 'var(--bs-border-color-translucent)', minHeight: '38px' })
+                          }}
+                        />
+                      </td>
+                    )}
                     <td>
-                      <Select 
-                        options={uniqueShrenoBottles.map(b => ({ value: b._id, label: b.bottleName }))}
-                        value={uniqueShrenoBottles.map(b => ({ value: b._id, label: b.bottleName })).find(opt => opt.value === item.bottleName) || null}
-                        onChange={(selected) => handleItemChange(index, 'bottleName', selected?.value || '')}
-                        placeholder="Select Bottle"
-                        isClearable
-                        menuPortalTarget={document.body}
-                        styles={{
-                          menuPortal: base => ({ ...base, zIndex: 9999 }),
-                          control: (base) => ({ ...base, borderRadius: '8px', backgroundColor: 'var(--bs-light)', borderColor: 'var(--bs-border-color-translucent)', minHeight: '38px' })
-                        }}
-                      />
-                    </td>
-                    <td>
-                      <select className="form-select shadow-none" style={{ borderRadius: 8, backgroundColor: 'var(--bs-light)', borderColor: 'var(--bs-border-color-translucent)' }} value={item.itemType} onChange={(e) => handleItemChange(index, 'itemType', e.target.value)} required>
+                      <select 
+                        className="form-select shadow-none" 
+                        style={{ borderRadius: 8, backgroundColor: 'var(--bs-light)', borderColor: 'var(--bs-border-color-translucent)' }} 
+                        value={item.itemType} 
+                        onChange={(e) => handleItemChange(index, 'itemType', e.target.value)}
+                      >
                         <option value="">Select Type</option>
                         {itemTypes?.map(it => (
                           <option key={it._id} value={it._id}>{it.name}</option>
@@ -470,23 +526,52 @@ export default function AddShrenoIncoming() {
                       </select>
                     </td>
                     <td>
-                      <input type="text" className="form-control shadow-none" style={{ borderRadius: 8 }} placeholder="e.g. 2PC, 64x1" value={item.configuration} onChange={(e) => handleItemChange(index, 'configuration', e.target.value)} required />
+                      <input 
+                        type="text" 
+                        className="form-control shadow-none" 
+                        style={{ borderRadius: 8 }} 
+                        placeholder="e.g. 2PC, 64x1" 
+                        value={item.configuration} 
+                        onChange={(e) => handleItemChange(index, 'configuration', e.target.value)} 
+                      />
                     </td>
                     <td>
-                      <input type="number" min="0" step="0.01" className="form-control text-end shadow-none" style={{ borderRadius: 8 }} value={item.quantity} onChange={(e) => handleItemChange(index, 'quantity', e.target.value)} required />
+                      <input 
+                        type="number" 
+                        min="0" 
+                        step="0.01" 
+                        className="form-control text-end shadow-none" 
+                        style={{ borderRadius: 8 }} 
+                        value={item.quantity} 
+                        onChange={(e) => handleItemChange(index, 'quantity', e.target.value)} 
+                        required 
+                      />
                     </td>
                     <td className="text-center">
-                      <button
-                        type="button"
-                        className="btn btn-sm btn-outline-danger border-0 rounded-3 shadow-none p-2"
-                        onClick={() => removeItem(index)}
-                        disabled={items.length === 1}
-                      >
-                        <i className="bi bi-trash fs-6"></i>
-                      </button>
+                      <div className="d-flex gap-1 justify-content-center">
+                        {isFirstInGroup && item.plainBottle && (
+                          <button
+                            type="button"
+                            className="btn btn-sm btn-outline-info border-0 rounded-3 shadow-none p-2"
+                            title="Add another item type for this bottle"
+                            onClick={() => addItemTypeForBottle(item.plainBottle, item.sharedGroupId)}
+                          >
+                            <i className="bi bi-plus-lg fs-6"></i>
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-outline-danger border-0 rounded-3 shadow-none p-2"
+                          onClick={() => removeItem(index)}
+                          disabled={items.length === 1}
+                          title="Remove this item"
+                        >
+                          <i className="bi bi-trash fs-6"></i>
+                        </button>
+                      </div>
                     </td>
                   </tr>
-                ))}
+                )})}
               </tbody>
             </table>
           </div>

@@ -120,7 +120,7 @@ exports.updateRawMaterial = async (req, res) => {
     const item = await RawMaterial.findByIdAndUpdate(
       req.params.id,
       { $set: req.body },
-      { new: true, runValidators: true }
+      { returnDocument: 'after', runValidators: true }
     );
     if (!item) return res.status(404).json({ message: "Raw Material not found" });
     res.json(item);
@@ -136,7 +136,7 @@ exports.deleteRawMaterial = async (req, res) => {
     const item = await RawMaterial.findByIdAndUpdate(
       req.params.id,
       { isDeleted: true },
-      { new: true }
+      { returnDocument: 'after' }
     );
     if (!item) return res.status(404).json({ message: "Raw Material not found" });
     res.json({ message: "Raw Material deleted successfully" });

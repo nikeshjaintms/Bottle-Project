@@ -249,7 +249,7 @@ exports.updateVariant = async (req, res) => {
 // ✅ DELETE
 exports.deleteVariant = async (req, res) => {
   try {
-    await Variant.findByIdAndUpdate(req.params.id, { isDeleted: true }, { new: true });
+    await Variant.findByIdAndUpdate(req.params.id, { isDeleted: true }, { returnDocument: 'after' });
     res.json({ msg: "Variant Deleted" });
   } catch (err) {
     res.status(500).json(err.message);

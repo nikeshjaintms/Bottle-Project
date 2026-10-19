@@ -159,6 +159,7 @@ export default function ItemTypes() {
               <tr>
                 <th className="py-3 text-uppercase small fw-bold text-muted ps-5 text-start" style={{ width: 150 }}>Sr No</th>
                 <th className="py-3 text-uppercase small fw-bold text-muted text-center">Name</th>
+                <th className="py-3 text-uppercase small fw-bold text-muted text-center">Options</th>
                 <th className="py-3 text-uppercase small fw-bold text-muted text-center">Status</th>
                 <th className="py-3 text-uppercase small fw-bold text-muted text-center">Created At</th>
                 <th className="py-3 text-uppercase small fw-bold text-muted text-center" style={{ width: 150 }}>Actions</th>
@@ -171,6 +172,15 @@ export default function ItemTypes() {
                     <span className="text-muted fw-bold" style={{ fontSize: 13 }}>{String((currentPage - 1) * itemsPerPage + index + 1).padStart(2, '0')}</span>
                   </td>
                   <td className="py-3 text-center fw-600">{b.name}</td>
+                  <td className="py-3 text-center text-muted small">
+                    {b.options?.length > 0 ? (
+                      <div className="d-flex flex-column gap-1 align-items-center">
+                        {b.options.map((opt, idx) => (
+                          <span key={idx} className="badge bg-light text-dark border px-2 py-1 fw-500" style={{ fontSize: 11 }}>{opt}</span>
+                        ))}
+                      </div>
+                    ) : '-'}
+                  </td>
                   <td className="py-3 text-center">
                     <span className={`badge-status badge-${isItemTypeActive(b) ? 'active' : 'inactive'}`}>
                       {isItemTypeActive(b) ? 'ACTIVE' : 'INACTIVE'}

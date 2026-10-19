@@ -148,6 +148,7 @@ export default function EditVariant() {
           // Return to coating spec form, passing back the coating shade from this variant
           navigate(location.state.returnTo, {
             state: {
+              ...location.state,
               restoredFormData: {
                 ...location.state.savedFormData,
                 coatingShade: formData.coatingShade || location.state.savedFormData?.coatingShade || ''

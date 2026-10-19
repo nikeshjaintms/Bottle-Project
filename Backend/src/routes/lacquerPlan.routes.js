@@ -7,6 +7,7 @@ const upload = multer({ storage: multer.memoryStorage() }); // using memory stor
 
 router.post("/", lacquerPlanController.createPlan);
 router.get("/", lacquerPlanController.getPlans);
+router.get("/validate-stock", lacquerPlanController.validateStockWarning);
 router.get("/month-status", lacquerPlanController.getMonthStatus);
 router.post("/import-previous", lacquerPlanController.importPreviousDay);
 router.post("/preview-import", upload.single('file'), lacquerPlanController.previewImportExcel);

@@ -9,6 +9,13 @@ const dispatchSchema = new mongoose.Schema(
     },
     gatePassNo: {
       type: String,
+      required: false,
+      sparse: true,
+      unique: true,
+    },
+    companyId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Company",
       required: true,
     },
     remarks: {
@@ -16,27 +23,29 @@ const dispatchSchema = new mongoose.Schema(
     },
     items: [
       {
-        productName: {
-          type: String,
-          required: true,
+        bottleId: {
+          // Can be MongoDB ObjectId, string, or null (if no bottle provided)
+          type: mongoose.Schema.Types.Mixed,
+          required: false,
+          default: null
         },
-        printing: {
+        coatingShade: {
           type: String,
+          default: null,
         },
-        foil: {
-          type: String,
+        printingTypeId: {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: "PrintingType",
+          default: null,
         },
-        organic: {
-          type: String,
+        variantId: {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: "Variant",
+          default: null,
         },
         box: {
           type: Number,
           required: true,
-          min: 0,
-        },
-        additionalBox: {
-          type: Number,
-          default: 0,
           min: 0,
         },
         qty: {
@@ -44,12 +53,9 @@ const dispatchSchema = new mongoose.Schema(
           required: true,
           min: 1,
         },
-        total: {
+        totalQty: {
           type: Number,
           required: true,
-        },
-        remarks: {
-          type: String,
         }
       }
     ],

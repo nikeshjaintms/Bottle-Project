@@ -3,6 +3,7 @@ const router = express.Router();
 const bottlePerBoxController = require("../controllers/bottlePerBox.controller");
 
 router.post("/", bottlePerBoxController.createBottlePerBox);
+router.get("/dropdown", bottlePerBoxController.getBottlePerBoxDropdown);
 router.get("/", bottlePerBoxController.getBottlePerBoxes);
 router.get("/:id", bottlePerBoxController.getSingleBottlePerBox);
 router.put("/:id", bottlePerBoxController.updateBottlePerBox);

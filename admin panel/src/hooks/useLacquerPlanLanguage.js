@@ -19,6 +19,7 @@ export const LACQUER_PLAN_LABELS = {
     noOfOrderBoxes: "No. of Order Boxes",
     remarks: "Remarks",
     actions: "Actions",
+    plainStockExceedWarning: "Total Order Qty exceeds Plain / Coloured Bottle Stock",
 
     // General & Actions
     addPlan: "Add Plan",
@@ -35,8 +36,10 @@ export const LACQUER_PLAN_LABELS = {
     date: "Date",
     fromDate: "From Date",
     toDate: "To Date",
-    bottleName: "Bottle Name",
+    bottleName: "Plain Bottle",
     company: "Company",
+    status: "Status",
+    reason: "Reason",
     selectBottle: "Select bottle...",
     selectCompany: "Select company...",
     updatePlan: "Update Plan",
@@ -59,6 +62,7 @@ export const LACQUER_PLAN_LABELS = {
     noOfOrderBoxes: "ઓર્ડર બોક્સ",
     remarks: "રીમાર્ક",
     actions: "એક્શન",
+    plainStockExceedWarning: "કુલ બનાવવાનો ઓર્ડર સ્ટોક કરતા વધી ગયો",
 
     // General & Actions
     addPlan: "Add Plan",
@@ -75,8 +79,10 @@ export const LACQUER_PLAN_LABELS = {
     date: "Date",
     fromDate: "From Date",
     toDate: "To Date",
-    bottleName: "બોટલ નું નામ",
-    company: "Company",
+    bottleName: "પ્લેઈન બોટલ",
+    company: "કંપની",
+    status: "સ્ટેટસ",
+    reason: "કારણ",
     selectBottle: "Select bottle...",
     selectCompany: "Select company...",
     updatePlan: "Update Plan",

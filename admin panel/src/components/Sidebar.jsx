@@ -58,7 +58,6 @@ const navItems = [
           { to: '/sg-labels-2', label: 'SG Label 2', icon: 'bi-sticky-fill', action: 'read', subject: 'sg-label-2' }
         ]
       },
-      { to: '/gst', icon: 'bi-percent', label: 'GST Master', action: 'sidebar', subject: 'gst' },
       {
         icon: 'bi-box-arrow-in-down-right',
         label: 'Incoming',
@@ -71,8 +70,9 @@ const navItems = [
       },
       { to: '/lacquer-plan', icon: 'bi-calendar-check-fill', label: 'Lacquer Plan', action: 'sidebar', subject: 'lacquerplan' },
       { to: '/printing-plan', icon: 'bi-printer-fill', label: 'Printing Plan', action: 'sidebar', subject: 'printingplan' },
-      { to: '/pending-sheet', icon: 'bi-clipboard-data-fill', label: 'Pending Sheet', action: 'sidebar', subject: 'pending-sheet' },
       { to: '/dispatch', icon: 'bi-truck', label: 'Dispatch', action: 'sidebar', subject: 'dispatch' },
+      { to: '/summary', icon: 'bi-file-earmark-diff', label: 'Summary', action: 'sidebar', subject: 'dispatch' },
+      { to: '/pending-sheet', icon: 'bi-clipboard-check-fill', label: 'Ready Stock', action: 'sidebar', subject: 'pending-sheet' },
 
     ],
   },

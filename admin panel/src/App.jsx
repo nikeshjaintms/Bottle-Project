@@ -69,9 +69,6 @@ import ViewShrenoIncoming from './pages/ShrenoIncoming/ViewShrenoIncoming';
 import ItemTypes from './pages/ItemType/ItemTypes';
 import AddItemType from './pages/ItemType/AddItemType';
 import EditItemType from './pages/ItemType/EditItemType';
-import GstList from './pages/Gst/GstList';
-import AddGst from './pages/Gst/AddGst';
-import EditGst from './pages/Gst/EditGst';
 import BottlePerBoxes from './pages/BottlePerBox/BottlePerBoxes';
 import AddBottlePerBox from './pages/BottlePerBox/AddBottlePerBox';
 import EditBottlePerBox from './pages/BottlePerBox/EditBottlePerBox';
@@ -118,10 +115,13 @@ import PendingSheet from './pages/PendingSheet/PendingSheet';
 import AddPendingSheet from './pages/PendingSheet/AddPendingSheet';
 import EditPendingSheet from './pages/PendingSheet/EditPendingSheet';
 import ViewPendingSheet from './pages/PendingSheet/ViewPendingSheet';
+import DispatchCompanies from './pages/Dispatch/DispatchCompanies';
 import DispatchList from './pages/Dispatch/DispatchList';
 import AddDispatch from './pages/Dispatch/AddDispatch';
 import EditDispatch from './pages/Dispatch/EditDispatch';
 import ViewDispatch from './pages/Dispatch/ViewDispatch';
+import SummaryCompanies from './pages/Summary/SummaryCompanies';
+import CompanySummary from './pages/Summary/CompanySummary';
 import './App.css';
 
 export default function App() {
@@ -232,15 +232,15 @@ export default function App() {
               <Route path="/pending-sheet/edit/:id" element={<EditPendingSheet />} />
               <Route path="/pending-sheet/view/:id" element={<ViewPendingSheet />} />
               
-              <Route path="/dispatch" element={<DispatchList />} />
+              <Route path="/dispatch" element={<DispatchCompanies />} />
+              <Route path="/dispatch/company/:companyId" element={<DispatchList />} />
               <Route path="/dispatch/add" element={<AddDispatch />} />
               <Route path="/dispatch/edit/:id" element={<EditDispatch />} />
               <Route path="/dispatch/view/:id" element={<ViewDispatch />} />
 
-              <Route path="/gst" element={<GstList />} />
-              <Route path="/gst/add" element={<AddGst />} />
-              <Route path="/gst/edit/:id" element={<EditGst />} />
-              
+              <Route path="/summary" element={<SummaryCompanies />} />
+              <Route path="/summary/company/:companyId" element={<CompanySummary />} />
+
               <Route path="/bottle-per-box" element={<BottlePerBoxes />} />
               <Route path="/bottle-per-box/add" element={<AddBottlePerBox />} />
               <Route path="/bottle-per-box/edit/:id" element={<EditBottlePerBox />} />

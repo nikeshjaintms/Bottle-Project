@@ -53,13 +53,13 @@ export default function ViewPrintingPlan() {
             <div className="bg-white border border-light-subtle rounded-3 p-4 mb-4 shadow-sm position-relative">
               <div className="row g-4 mb-4 bg-light p-3 rounded mx-0">
                 <div className="col-md-5">
-                  <label className="form-label fw-bold small text-primary">{labels.bottleName}</label>
-                  <input type="text" className="form-control shadow-none bg-white" disabled value={currentPlan.bottleName || '-'} />
+                  <label className="form-label fw-bold small text-primary">Plain Bottle</label>
+                  <input type="text" className="form-control shadow-none bg-white" disabled value={currentPlan.plainBottleName || currentPlan.plainBottle || currentPlan.bottleName || '-'} />
                 </div>
               </div>
 
               <div className="d-flex align-items-center justify-content-between mb-3 mt-2">
-                <h6 className="fw-bold text-muted mb-0">PLAN ENTRIES FOR <span className="text-primary">{currentPlan.bottleName || 'BOTTLE'}</span></h6>
+                <h6 className="fw-bold text-muted mb-0">PLAN ENTRIES FOR <span className="text-primary">{currentPlan.plainBottleName || currentPlan.plainBottle || currentPlan.bottleName || 'BOTTLE'}</span></h6>
               </div>
 
               <div className="table-responsive mb-4">
@@ -79,6 +79,11 @@ export default function ViewPrintingPlan() {
                     <th className="small text-muted text-center align-middle" style={{width: '9%'}}>{labels.balanceToBeDispatched}</th>
                     <th className="small text-muted text-center align-middle" style={{width: '5%'}}>{labels.soldQty}</th>
                     <th className="small text-muted text-center align-middle" style={{width: '6%'}}>{labels.readyBoxes}</th>
+                    {(currentPlan.componentHeadersList || []).map((headerName, hIdx) => (
+                      <th key={`comp_th_${hIdx}`} className="small text-primary text-center align-middle bg-primary-subtle" style={{ width: '6%', minWidth: '95px' }}>
+                        {headerName}
+                      </th>
+                    ))}
                     <th className="small text-muted text-center align-middle" style={{width: '15%', minWidth: '250px'}}>{labels.remarks}</th>
                   </tr>
                 </thead>
@@ -123,11 +128,40 @@ export default function ViewPrintingPlan() {
                     <td>
                       <input type="text" className="form-control form-control-sm shadow-none bg-light text-center" disabled value={currentPlan.readyBoxes || '0'} />
                     </td>
+                    {(currentPlan.componentHeadersList || []).map((headerName, hIdx) => {
+                      const compData = currentPlan.components?.find(c => (c.itemType || c.componentType) === headerName);
+                      return (
+                        <td key={`comp_td_${hIdx}`} className="text-center align-middle">
+                          <input type="text" className="form-control form-control-sm shadow-none bg-light text-center fw-bold" disabled value={compData?.quantity !== undefined && compData?.quantity !== null ? compData.quantity : '-'} />
+                        </td>
+                      );
+                    })}
                     <td>
                       <input type="text" className="form-control form-control-sm shadow-none bg-light" disabled value={currentPlan.remarks || '-'} />
                     </td>
                   </tr>
                 </tbody>
+                <tfoot className="table-light fw-bold">
+                  <tr>
+                    <td></td>
+                    <td></td>
+                    <td></td>
+                    <td></td>
+                    <td className="text-center">{currentPlan.plainBottleStock || 0}</td>
+                    <td className="text-center">{currentPlan.orderQty || 0}</td>
+                    <td></td>
+                    <td></td>
+                    <td className="text-center">{currentPlan.noOfBoxes || 0}</td>
+                    <td></td>
+                    <td></td>
+                    <td></td>
+                    <td></td>
+                    {(currentPlan.componentHeadersList || []).map((_, hIdx) => (
+                      <td key={`comp_foot_${hIdx}`}></td>
+                    ))}
+                    <td></td>
+                  </tr>
+                </tfoot>
               </table>
             </div>
             </div>

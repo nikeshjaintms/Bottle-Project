@@ -107,11 +107,12 @@ export default function AddVariant() {
   useEffect(() => {
     dispatch(fetchBottleSpecs({ pagination: 'false', type: 'all' }));
     dispatch(fetchVariants({ pagination: 'false' }));
-    if (location.state?.autoSelectSpecId) {
+    if (location.state) {
       setFormData(prev => ({ 
         ...prev, 
-        bottleSpecId: location.state.autoSelectSpecId,
-        coatingShade: location.state.autoSelectCoatingShade || prev.coatingShade
+        bottleSpecId: location.state.autoSelectSpecId || prev.bottleSpecId,
+        coatingShade: location.state.autoSelectCoatingShade || prev.coatingShade,
+        variantName: location.state.autoSelectVariantName || prev.variantName
       }));
     }
   }, [dispatch, location.state]);
@@ -153,12 +154,13 @@ export default function AddVariant() {
         if (location.state?.returnTo) {
           navigate(location.state.returnTo, {
             state: {
+              ...location.state,
               restoredFormData: {
                 ...location.state.savedFormData,
                 // If the variant had a coating shade, bring it back to the coating spec form
                 coatingShade: formData.coatingShade || location.state.savedFormData?.coatingShade || ''
               },
-              newVariantId: res.payload._id
+              newVariantId: res.payload._id || res.payload?.data?._id
             }
           });
         } else {

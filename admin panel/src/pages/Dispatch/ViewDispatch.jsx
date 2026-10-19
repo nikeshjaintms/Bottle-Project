@@ -27,14 +27,14 @@ export default function ViewDispatch() {
   const { dispatch: dispatchData, items } = currentDispatch;
   
   const totalBoxes = items?.reduce((acc, item) => acc + (Number(item.box) || 0), 0) || 0;
-  const totalQty = items?.reduce((acc, item) => acc + (Number(item.qty) || 0), 0) || 0;
+  const totalQty = items?.reduce((acc, item) => acc + (Number(item.totalQty) || 0), 0) || 0;
 
   return (
     <div className="page-content">
       <div className="page-header d-flex align-items-center justify-content-between mb-4">
         <div className="d-flex align-items-center gap-3">
-          <button onClick={() => navigate(-1)} className="btn-ghost border-0" style={{ width: 40, height: 40, borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <i className="bi bi-arrow-left" style={{ fontSize: 20 }} />
+          <button onClick={() => navigate(-1)} className="btn btn-light border-0 shadow-sm rounded-circle d-flex align-items-center justify-content-center" style={{ width: 40, height: 40 }}>
+            <i className="bi bi-arrow-left fs-5 text-secondary" />
           </button>
           <div>
             <h1 className="page-title mb-0">Dispatch Details</h1>
@@ -54,15 +54,19 @@ export default function ViewDispatch() {
             </div>
             <div className="dash-card-body p-4">
               <div className="row g-4">
-                <div className="col-md-4">
+                <div className="col-md-3">
                   <div className="text-muted small mb-1">Dispatch Date</div>
                   <div className="fw-500">{new Date(dispatchData.dispatchDate).toLocaleDateString('en-GB')}</div>
                 </div>
-                <div className="col-md-4">
+                <div className="col-md-3">
                   <div className="text-muted small mb-1">G. Pass No.</div>
                   <div className="fw-500">{dispatchData.gatePassNo}</div>
                 </div>
-                <div className="col-md-4">
+                <div className="col-md-3">
+                  <div className="text-muted small mb-1">Company</div>
+                  <div className="fw-500">{dispatchData.companyId?.name || '-'}</div>
+                </div>
+                <div className="col-md-3">
                   <div className="text-muted small mb-1">Remarks</div>
                   <div className="fw-500">{dispatchData.remarks || '-'}</div>
                 </div>
@@ -81,37 +85,34 @@ export default function ViewDispatch() {
                 <table className="table table-hover mb-0">
                   <thead className="bg-light">
                     <tr>
-                      <th className="py-3 px-4 text-muted small fw-bold">Product Name</th>
-                      <th className="py-3 px-3 text-muted small fw-bold">Printing</th>
-                      <th className="py-3 px-3 text-muted small fw-bold">Foil</th>
-                      <th className="py-3 px-3 text-muted small fw-bold">Organic</th>
-                      <th className="py-3 px-3 text-muted small fw-bold text-end">Box</th>
-                      <th className="py-3 px-3 text-muted small fw-bold text-end">Qty</th>
-                      <th className="py-3 px-3 text-muted small fw-bold text-end">Total</th>
-                      <th className="py-3 px-4 text-muted small fw-bold">Remarks</th>
+                      <th className="py-3 px-4 text-muted small fw-bold">Sr.</th>
+                      <th className="py-3 px-4 text-muted small fw-bold">Bottle Name</th>
+                      <th className="py-3 px-3 text-muted small fw-bold">Variant</th>
+                      <th className="py-3 px-3 text-muted small fw-bold">Coating Shade</th>
+                      <th className="py-3 px-3 text-muted small fw-bold">Printing Type</th>
+                      <th className="py-3 px-3 text-muted small fw-bold text-end">Boxes</th>
+                      <th className="py-3 px-3 text-muted small fw-bold text-end">Qty/Box</th>
+                      <th className="py-3 px-3 text-muted small fw-bold text-end">Total Qty</th>
                     </tr>
                   </thead>
                   <tbody>
                     {items?.map((item, index) => (
                       <tr key={index} className="align-middle">
-                        <td className="ps-4 fw-500">{item.productName}</td>
-                        <td>{item.printing || '-'}</td>
-                        <td>{item.foil || '-'}</td>
-                        <td>{item.organic || '-'}</td>
-                        <td className="text-end fw-500">
-                          {item.additionalBox > 0 ? `${item.box}(+${item.additionalBox})` : item.box}
-                        </td>
+                        <td className="ps-4 text-muted small">{index + 1}</td>
+                        <td className="fw-500">{item.bottleId?.bottleName || item.bottleId || '-'}</td>
+                        <td>{item.variantId?.variantName || '-'}</td>
+                        <td>{item.coatingShade || '-'}</td>
+                        <td>{item.printingTypeId?.printingType || '-'}</td>
+                        <td className="text-end fw-500">{item.box}</td>
                         <td className="text-end fw-500">{item.qty}</td>
-                        <td className="text-end fw-bold text-primary">{item.total}</td>
-                        <td className="pe-4">{item.remarks || '-'}</td>
+                        <td className="text-end fw-bold text-primary">{item.totalQty}</td>
                       </tr>
                     ))}
                   </tbody>
                   <tfoot className="bg-light border-top">
                     <tr>
-                      <td colSpan="4" className="ps-4 py-3 fw-bold text-end">Totals:</td>
+                      <td colSpan="5" className="ps-4 py-3 fw-bold text-end">Totals:</td>
                       <td className="text-end py-3 fw-bold">{totalBoxes}</td>
-                      <td className="text-end py-3 fw-bold">{totalQty}</td>
                       <td colSpan="2"></td>
                     </tr>
                   </tfoot>

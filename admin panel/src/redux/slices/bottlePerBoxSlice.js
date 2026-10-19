@@ -114,9 +114,19 @@ const bottlePerBoxSlice = createSlice({
       .addCase(updateBottlePerBox.fulfilled, (state, action) => {
         state.loading = false;
         if (action.payload.success) {
-           state.items = state.items.map((item) =>
-              item._id === action.payload.data._id ? action.payload.data : item
-           );
+           const deletedIds = (action.payload.deletedPlainBottles || []).map(d => String(d._id));
+           state.items = state.items
+             .filter((item) => !deletedIds.includes(String(item._id)))
+             .map((item) =>
+                item._id === action.payload.data._id ? action.payload.data : item
+             );
+           if (Array.isArray(action.payload.restoredPlainBottles)) {
+             for (const restored of action.payload.restoredPlainBottles) {
+               if (!state.items.some(item => String(item._id) === String(restored._id))) {
+                 state.items.unshift(restored);
+               }
+             }
+           }
         }
       })
       .addCase(updateBottlePerBox.rejected, (state, action) => {

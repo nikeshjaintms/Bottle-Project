@@ -121,7 +121,7 @@ exports.updateCompany = async (req, res) => {
 // ✅ DELETE
 exports.deleteCompany = async (req, res) => {
   try {
-    await Company.findByIdAndUpdate(req.params.id, { isDeleted: true }, { new: true });
+    await Company.findByIdAndUpdate(req.params.id, { isDeleted: true }, { returnDocument: 'after' });
     res.json({ msg: "Company Deleted" });
   } catch (err) {
     res.status(500).json(err.message);

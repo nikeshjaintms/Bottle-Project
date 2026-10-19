@@ -152,7 +152,7 @@ export default function AddPendingSheet() {
     try {
       const res = await axios.post(`${import.meta.env.VITE_API_URL?.replace('/api', '') || ''}/api/pending-sheet`, payload, { withCredentials: true });
       if (res.data.success) {
-         Swal.fire('Success', 'Pending Sheet(s) added successfully', 'success');
+        Swal.fire('Success', 'Ready Stock entries added successfully', 'success');
          navigate('/pending-sheet');
       } else {
          Swal.fire('Error', res.data.message || 'Failed to add record', 'error');
@@ -176,8 +176,8 @@ export default function AddPendingSheet() {
             <i className="bi bi-arrow-left fs-5" />
           </button>
           <div>
-            <h1 className="page-title mb-0">New Pending Sheet</h1>
-            <p className="page-subtitle mb-0">Record multiple pending sheet entries</p>
+            <h1 className="page-title mb-0">New Ready Stock</h1>
+            <p className="page-subtitle mb-0">Record multiple ready stock entries</p>
           </div>
         </div>
       </div>
