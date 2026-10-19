@@ -30,7 +30,7 @@ const bottlePerBoxSchema = new mongoose.Schema({
   }
 }, { timestamps: true });
 
-bottlePerBoxSchema.pre('save', function() {
+bottlePerBoxSchema.pre('save', function () {
   if (this.plainBottleName) {
     this.plainBottleName = this.plainBottleName.trim().replace(/\s+/g, ' ');
   }

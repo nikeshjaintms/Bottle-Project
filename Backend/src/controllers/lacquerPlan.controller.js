@@ -1,7 +1,7 @@
 
 const LacquerPlan = require("../models/LacquerPlan");
 const PlainBottleStock = require("../models/PlainBottleStock");
-const { recomputePlainStock } = require("../utils/stockRecompute");
+const { recomputePlainStock, computeLivePlainStock } = require("../utils/stockRecompute");
 const BottlePerBox = require("../models/BottlePerBox");
 const CoatingProduction = require("../models/CoatingProduction");
 const PrintingPlan = require("../models/PrintingPlan");
@@ -313,9 +313,15 @@ const validatePlanCompanyBottleVariant = async (planData, isUpdate = false, exis
       ],
       isDeleted: false
     });
-    if (selectedPlainBottle && Array.isArray(selectedPlainBottle.bottleNames) && selectedPlainBottle.bottleNames.length > 0) {
+    if (selectedPlainBottle) {
+      const aliasNames = [
+        selectedPlainBottle.plainBottleName,
+        selectedPlainBottle.bottleName,
+        ...(Array.isArray(selectedPlainBottle.bottleNames) ? selectedPlainBottle.bottleNames : [])
+      ].filter(Boolean);
+      const regexList = aliasNames.map(n => new RegExp(`^${n.trim()}$`, 'i'));
       matchingSpec = await BottleSpec.findOne({
-        bottleName: { $in: selectedPlainBottle.bottleNames },
+        bottleName: { $in: regexList },
         brandId: { $in: companyBrandIds },
         isDeleted: { $ne: true }
       });
@@ -326,8 +332,15 @@ const validatePlanCompanyBottleVariant = async (planData, isUpdate = false, exis
     throw new Error(`Bottle "${bottleName}" is not associated with company "${company.name}".`);
   }
 
+  // Check if company is Shreno
+  const isShreno = (company.name || '').toLowerCase().includes('shreno');
+
   // If variantId is provided, verify it belongs to the selected bottle and company
   const variantId = planData.variantId !== undefined ? planData.variantId : (existingPlan && existingPlan.variantId);
+  if (!isShreno && !variantId) {
+    throw new Error(`Variant is required for company "${company.name}".`);
+  }
+
   if (variantId) {
     const variant = await Variant.findOne({ _id: variantId, isDeleted: { $ne: true } }).populate('bottleSpecId');
     if (!variant) {
@@ -336,18 +349,24 @@ const validatePlanCompanyBottleVariant = async (planData, isUpdate = false, exis
     if (!variant.bottleSpecId) {
       throw new Error("Selected variant is not associated with any bottle specification.");
     }
-    let isBottleMatch = variant.bottleSpecId.bottleName?.trim() === bottleName.trim();
+    let isBottleMatch = (variant.bottleSpecId.bottleName?.trim() || '').toUpperCase() === bottleName.trim().toUpperCase();
     if (!isBottleMatch) {
       const selectedPlainBottle = await BottlePerBox.findOne({
         $or: [
-          { plainBottleName: bottleName.trim() },
-          { bottleName: bottleName.trim() },
-          { bottleNames: bottleName.trim() }
+          { plainBottleName: { $regex: new RegExp(`^${bottleName.trim()}$`, 'i') } },
+          { bottleName: { $regex: new RegExp(`^${bottleName.trim()}$`, 'i') } },
+          { bottleNames: { $regex: new RegExp(`^${bottleName.trim()}$`, 'i') } }
         ],
         isDeleted: false
       });
-      if (selectedPlainBottle && Array.isArray(selectedPlainBottle.bottleNames)) {
-        isBottleMatch = selectedPlainBottle.bottleNames.includes(variant.bottleSpecId.bottleName?.trim());
+      if (selectedPlainBottle) {
+        const pNames = [
+          selectedPlainBottle.plainBottleName,
+          selectedPlainBottle.bottleName,
+          ...(Array.isArray(selectedPlainBottle.bottleNames) ? selectedPlainBottle.bottleNames : [])
+        ].filter(Boolean).map(n => n.trim().toUpperCase());
+        const vBName = (variant.bottleSpecId.bottleName?.trim() || '').toUpperCase();
+        isBottleMatch = pNames.includes(vBName);
       }
     }
 
@@ -676,8 +695,10 @@ exports.createPlan = async (req, res) => {
           }
         }
 
-        if (item.planDate && item.companyId && item.bottleName && item.variantId) {
-          const comboKey = `${item.planDate}-${item.companyId.toString()}-${item.brandId.toString()}-${item.bottleName.trim().toLowerCase()}-${item.variantId.toString()}`;
+        if (item.planDate && item.companyId && item.bottleName) {
+          const varPart = item.variantId ? item.variantId.toString() : (item.colour || item.coatingShade || 'none').trim().toLowerCase();
+          const brandPart = item.brandId ? item.brandId.toString() : '';
+          const comboKey = `${item.planDate}-${item.companyId.toString()}-${brandPart}-${item.bottleName.trim().toLowerCase()}-${varPart}`;
           if (comboSet.has(comboKey)) {
             throw new Error(`Duplicate entry found in submission for Bottle: ${item.bottleName}`);
           }
@@ -689,16 +710,26 @@ exports.createPlan = async (req, res) => {
           const endOfDay = new Date(item.planDate);
           endOfDay.setUTCHours(23, 59, 59, 999);
 
-          const existing = await LacquerPlan.findOne({
+          const dupQuery = {
             planDate: { $gte: startOfDay, $lte: endOfDay },
             companyId: item.companyId,
-            brandId: item.brandId,
             bottleName: { $regex: new RegExp("^" + item.bottleName.trim() + "$", "i") },
-            variantId: item.variantId,
             isDeleted: false
-          });
+          };
+          if (item.brandId) dupQuery.brandId = item.brandId;
+          if (item.variantId) {
+            dupQuery.variantId = item.variantId;
+          } else {
+            dupQuery.variantId = { $in: [null, undefined] };
+            const shade = item.colour || item.coatingShade;
+            if (shade) {
+              dupQuery.$or = [{ colour: shade }, { coatingShade: shade }];
+            }
+          }
+
+          const existing = await LacquerPlan.findOne(dupQuery);
           if (existing) {
-            throw new Error(`A plan for Bottle "${item.bottleName}" with this variant already exists for this date, company and brand.`);
+            throw new Error(`A plan for Bottle "${item.bottleName}" ${item.variantId ? 'with this variant' : 'with this shade'} already exists for this date, company and brand.`);
           }
         }
       }
@@ -763,22 +794,32 @@ exports.createPlan = async (req, res) => {
         }
       }
 
-      if (req.body.planDate && req.body.companyId && req.body.bottleName && req.body.variantId) {
+      if (req.body.planDate && req.body.companyId && req.body.bottleName) {
         const startOfDay = new Date(req.body.planDate);
         startOfDay.setUTCHours(0, 0, 0, 0);
         const endOfDay = new Date(req.body.planDate);
         endOfDay.setUTCHours(23, 59, 59, 999);
 
-        const existing = await LacquerPlan.findOne({
+        const dupQuery = {
           planDate: { $gte: startOfDay, $lte: endOfDay },
           companyId: req.body.companyId,
-          brandId: req.body.brandId,
           bottleName: { $regex: new RegExp("^" + req.body.bottleName.trim() + "$", "i") },
-          variantId: req.body.variantId,
           isDeleted: false
-        });
+        };
+        if (req.body.brandId) dupQuery.brandId = req.body.brandId;
+        if (req.body.variantId) {
+          dupQuery.variantId = req.body.variantId;
+        } else {
+          dupQuery.variantId = { $in: [null, undefined] };
+          const shade = req.body.colour || req.body.coatingShade;
+          if (shade) {
+            dupQuery.$or = [{ colour: shade }, { coatingShade: shade }];
+          }
+        }
+
+        const existing = await LacquerPlan.findOne(dupQuery);
         if (existing) {
-          throw new Error(`A plan for Bottle "${req.body.bottleName}" with this variant already exists for this date, company and brand.`);
+          throw new Error(`A plan for Bottle "${req.body.bottleName}" ${req.body.variantId ? 'with this variant' : 'with this shade'} already exists for this date, company and brand.`);
         }
       }
 
@@ -963,16 +1004,22 @@ exports.getPlans = async (req, res) => {
 
     const plans = await LacquerPlan.aggregate(pipeline).collation({ locale: 'en', strength: 2 });
 
-    // Augment plans with computed fields
+    // Augment plans with computed fields using live day-based stock (Rule L3)
+    const stockCache = new Map();
     const augmentedPlans = await Promise.all(plans.map(async (plan) => {
       let plainStock = 0;
       let coatedQty = 0;
 
-      // 1. Fetch plain stock (match by bottleName, plainBottleName, or inside bottleNames array, scoped to company)
+      // 1. Fetch live day-based plain stock (Rule L3)
       if (plan.bottleName) {
-        const stock = await findPlainBottleStockDoc(plan.bottleName, plan.canonicalCompanyId || plan.companyId);
-        if (stock) {
-          plainStock = stock.availableQuantity || 0;
+        const compId = plan.canonicalCompanyId || plan.companyId;
+        const dayStr = plan.planDate ? new Date(plan.planDate).toISOString().split('T')[0] : '';
+        const cacheKey = `${compId}::${(plan.bottleName || '').toUpperCase()}::${dayStr}`;
+        if (stockCache.has(cacheKey)) {
+          plainStock = stockCache.get(cacheKey);
+        } else {
+          plainStock = await computeLivePlainStock(plan.bottleName, compId, plan.planDate);
+          stockCache.set(cacheKey, plainStock);
         }
       }
 
@@ -1451,6 +1498,9 @@ exports.updatePlan = async (req, res) => {
       return res.status(404).json({ success: false, message: "Plan not found" });
     }
 
+    const oldBottleName = existingPlan.bottleName;
+    const oldCompanyId = existingPlan.canonicalCompanyId || existingPlan.companyId;
+
     await validatePlanCompanyBottleVariant(req.body, true, existingPlan);
 
     // Stock warning validation: only warn on qty increase
@@ -1488,26 +1538,37 @@ exports.updatePlan = async (req, res) => {
     const planDate = req.body.planDate || existingPlan.planDate;
     const companyId = req.body.companyId || existingPlan.companyId;
     const bottleName = req.body.bottleName || existingPlan.bottleName;
-    const variantId = req.body.variantId || existingPlan.variantId;
+    const variantId = req.body.variantId !== undefined ? req.body.variantId : existingPlan.variantId;
     const brandId = req.body.brandId || existingPlan.brandId;
 
-    if (planDate && companyId && bottleName && variantId && brandId) {
+    if (planDate && companyId && bottleName && brandId) {
       const startOfDay = new Date(planDate);
       startOfDay.setUTCHours(0, 0, 0, 0);
       const endOfDay = new Date(planDate);
       endOfDay.setUTCHours(23, 59, 59, 999);
 
-      const duplicate = await LacquerPlan.findOne({
+      const dupQuery = {
         _id: { $ne: req.params.id },
         planDate: { $gte: startOfDay, $lte: endOfDay },
         companyId: companyId,
         brandId: brandId,
         bottleName: { $regex: new RegExp("^" + bottleName.trim() + "$", "i") },
-        variantId: variantId,
         isDeleted: false
-      });
+      };
+
+      if (variantId) {
+        dupQuery.variantId = variantId;
+      } else {
+        dupQuery.variantId = { $in: [null, undefined] };
+        const shade = req.body.colour || req.body.coatingShade || existingPlan.colour || existingPlan.coatingShade;
+        if (shade) {
+          dupQuery.$or = [{ colour: shade }, { coatingShade: shade }];
+        }
+      }
+
+      const duplicate = await LacquerPlan.findOne(dupQuery);
       if (duplicate) {
-        throw new Error(`A plan for Bottle "${bottleName}" with this variant already exists for this date, company and brand.`);
+        throw new Error(`A plan for Bottle "${bottleName}" ${variantId ? 'with this variant' : 'with this shade'} already exists for this date, company and brand.`);
       }
     }
 
@@ -1587,6 +1648,14 @@ exports.updatePlan = async (req, res) => {
       }
     }
 
+    // Recompute plain stock
+    await recomputePlainStock(plan.bottleName, plan.canonicalCompanyId || plan.companyId, req.user?._id);
+
+    // Rule L4: If bottle changed on a saved row, recompute old bottle as well so usage moves cleanly
+    if (oldBottleName && (oldBottleName.trim().toUpperCase() !== (plan.bottleName || '').trim().toUpperCase() || oldCompanyId?.toString() !== (plan.canonicalCompanyId || plan.companyId)?.toString())) {
+      await recomputePlainStock(oldBottleName, oldCompanyId, req.user?._id);
+    }
+
     res.status(200).json({ success: true, data: plan });
   } catch (error) {
     res.status(400).json({ success: false, message: error.message });
@@ -1619,7 +1688,7 @@ exports.deletePlan = async (req, res) => {
 // Get computed stats for frontend form
 exports.getComputedStats = async (req, res) => {
   try {
-    const { bottleName, brandId, colour, companyId } = req.query;
+    const { bottleName, brandId, colour, companyId, planDate } = req.query;
     let plainStock = 0;
     let coatedQty = 0;
 
@@ -1632,22 +1701,38 @@ exports.getComputedStats = async (req, res) => {
       }
     }
 
-    // 1. Fetch plain stock (match by bottleName, plainBottleName, or inside bottleNames array, scoped to company)
+    // 1. Fetch live day-based plain stock (Rule L3)
     if (bottleName) {
-      const stock = await findPlainBottleStockDoc(bottleName, effectiveCompanyId);
-      if (stock) {
-        plainStock = stock.availableQuantity || 0;
-      }
+      plainStock = await computeLivePlainStock(bottleName, effectiveCompanyId, planDate);
     }
 
     // 2. Fetch cumulative coatedQty
     if (bottleName && brandId && colour) {
       const BottleSpec = require("../models/Bottlespecs");
-      const bSpec = await BottleSpec.findOne({ bottleName, isDeleted: false });
+      let bSpecs = await BottleSpec.find({ bottleName: bottleName.trim(), isDeleted: false });
 
-      if (bSpec) {
+      if (!bSpecs || bSpecs.length === 0) {
+        const BottlePerBox = require("../models/BottlePerBox");
+        const bpb = await BottlePerBox.findOne({
+          $or: [
+            { plainBottleName: bottleName.trim() },
+            { bottleName: bottleName.trim() },
+            { bottleNames: bottleName.trim() }
+          ],
+          isDeleted: false
+        });
+        if (bpb && Array.isArray(bpb.bottleNames) && bpb.bottleNames.length > 0) {
+          bSpecs = await BottleSpec.find({
+            bottleName: { $in: bpb.bottleNames },
+            isDeleted: false
+          });
+        }
+      }
+
+      if (bSpecs && bSpecs.length > 0) {
+        const specIds = bSpecs.map(s => s._id);
         const coatingRecords = await CoatingProduction.find({
-          coatingSpecId: bSpec._id,
+          coatingSpecId: { $in: specIds },
           brandId,
           coatingShade: colour,
           isDeleted: false

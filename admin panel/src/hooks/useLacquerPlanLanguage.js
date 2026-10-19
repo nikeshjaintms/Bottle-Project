@@ -20,6 +20,9 @@ export const LACQUER_PLAN_LABELS = {
     remarks: "Remarks",
     actions: "Actions",
     plainStockExceedWarning: "Total Order Qty exceeds Plain / Coloured Bottle Stock",
+    orderExceedsOpeningStock: "Order Qty exceeds the opening plain bottle stock for this group",
+    orderExceedsOpeningStockTitle: "Stock Warning",
+    coatedQtyExceedsStock: "Coating Qty cannot exceed the plain bottle stock",
 
     // General & Actions
     addPlan: "Add Plan",
@@ -63,6 +66,9 @@ export const LACQUER_PLAN_LABELS = {
     remarks: "રીમાર્ક",
     actions: "એક્શન",
     plainStockExceedWarning: "કુલ બનાવવાનો ઓર્ડર સ્ટોક કરતા વધી ગયો",
+    orderExceedsOpeningStock: "ઓર્ડર ઓપનિંગ સ્ટોક કરતા વધારે છે",
+    orderExceedsOpeningStockTitle: "સ્ટોક ચેતવણી",
+    coatedQtyExceedsStock: "કોટીંગ ક્વોન્ટીટી સ્ટોક કરતા વધી શકે નહીં",
 
     // General & Actions
     addPlan: "Add Plan",

@@ -12,6 +12,7 @@ import ImportExcelModal from './ImportExcelModal';
 import { useLacquerPlanLanguage } from '../../hooks/useLacquerPlanLanguage';
 import { sortLacquerPlans } from '../../utils/lacquerPlanSort';
 import { buildContiguousGroups, buildMultipleContiguousGroups } from '../../utils/tableGrouping';
+import { isPlanRowCompleted } from '../../utils/lacquerPlanUtils';
 import ZoomControl from '../../components/ZoomControl';
 import * as XLSX from 'xlsx';
 
@@ -217,6 +218,37 @@ export default function LacquerPlan() {
     }
     return result;
   }, [plans, selectedCompanyId, selectedBrandId, search]);
+
+  // Compute opening stock per (companyId, bottleName, planDate) pool from plans.
+  // openingStock = max remaining plainStock in pool + Σ coatingCompletedQty in pool.
+  // Also compute totalOrderInPool to correctly determine if ANY row in the pool exceeds.
+  const poolOpeningStocks = useMemo(() => {
+    const map = new Map();
+    (plans || []).forEach(plan => {
+      const compId = plan.canonicalCompanyId || (plan.companyId?._id || plan.companyId || '').toString();
+      const bottle = (plan.bottleName || '').toUpperCase();
+      const day = plan.planDate ? new Date(plan.planDate).toISOString().split('T')[0] : '';
+      const key = `${compId}::${bottle}::${day}`;
+      if (!map.has(key)) {
+        map.set(key, { maxRemaining: 0, totalCoated: 0, totalOrder: 0 });
+      }
+      const entry = map.get(key);
+      const remaining = parseFloat(plan.plainStock) || 0;
+      if (remaining > entry.maxRemaining) entry.maxRemaining = remaining;
+      entry.totalCoated += parseFloat(plan.coatingCompletedQty || plan.coatedQty) || 0;
+      entry.totalOrder += parseFloat(plan.orderQty) || 0;
+    });
+    // Convert to { openingStock, isExceeding } per pool
+    const result = new Map();
+    map.forEach((entry, key) => {
+      const openingStock = entry.maxRemaining + entry.totalCoated;
+      result.set(key, {
+        openingStock,
+        isExceeding: openingStock > 0 && entry.totalOrder > openingStock
+      });
+    });
+    return result;
+  }, [plans]);
 
   const handleDelete = (id) => {
     Swal.fire({
@@ -534,15 +566,33 @@ export default function LacquerPlan() {
                 </td>
               )}
               
-              {(!plan._bottleVisualId || isFirstInBottleVisualGroup) && (
-                <td className="py-3 text-center align-middle" rowSpan={bottleVisualRowSpan}>{plan.plainStock !== null && plan.plainStock !== undefined ? plan.plainStock : 0}</td>
-              )}
-              
-              <td className={`py-3 text-center fw-bold ${plan.plainStock && plan.orderQty && plan.plainStock < plan.orderQty ? 'bg-warning' : ''}`}>{plan.orderQty !== null && plan.orderQty !== undefined ? plan.orderQty : '-'}</td>
+              {(!plan._bottleVisualId || isFirstInBottleVisualGroup) && (() => {
+                const compId = plan.canonicalCompanyId || (plan.companyId?._id || plan.companyId || '').toString();
+                const bottle = (plan.bottleName || '').toUpperCase();
+                const day = plan.planDate ? new Date(plan.planDate).toISOString().split('T')[0] : '';
+                const poolKey = `${compId}::${bottle}::${day}`;
+                const poolData = poolOpeningStocks.get(poolKey);
+                const isExceeding = poolData?.isExceeding || false;
+                return (
+                  <td className={`py-3 text-center align-middle ${isExceeding ? 'bg-warning' : ''}`} rowSpan={bottleVisualRowSpan}>{plan.plainStock !== null && plan.plainStock !== undefined ? plan.plainStock : 0}</td>
+                );
+              })()}
+
+              {(() => {
+                const compId = plan.canonicalCompanyId || (plan.companyId?._id || plan.companyId || '').toString();
+                const bottle = (plan.bottleName || '').toUpperCase();
+                const day = plan.planDate ? new Date(plan.planDate).toISOString().split('T')[0] : '';
+                const poolKey = `${compId}::${bottle}::${day}`;
+                const poolData = poolOpeningStocks.get(poolKey);
+                const isExceeding = poolData?.isExceeding || false;
+                return (
+                  <td className={`py-3 text-center fw-bold ${isExceeding ? 'bg-warning' : ''}`}>{plan.orderQty !== null && plan.orderQty !== undefined ? plan.orderQty : '-'}</td>
+                );
+              })()}
               <td className="py-3 text-center">{plan.coatingCompletedQty !== null && plan.coatingCompletedQty !== undefined ? plan.coatingCompletedQty : (plan.coatedQty || 0)}</td>
               <td className={`py-3 text-center fw-bold ${plan.balanceToMake >= 0 ? 'text-success' : 'text-danger'}`}>
                 {plan.balanceToMake !== null && plan.balanceToMake !== undefined ? plan.balanceToMake : '-'}
-                {plan.balanceToMake >= 0 && <span className="d-block mt-1 badge bg-success" style={{ fontSize: 10 }}>COMPLETED</span>}
+                {isPlanRowCompleted(plan) && <span className="d-block mt-1 badge bg-success" style={{ fontSize: 10 }}>COMPLETED</span>}
               </td>
               <td className="py-3 text-center">{plan.dispatchPendingQty !== null && plan.dispatchPendingQty !== undefined ? plan.dispatchPendingQty : (plan.dispatchBalance || 0)}</td>
               <td className="py-3 text-center">{plan.soldQty || 0}</td>

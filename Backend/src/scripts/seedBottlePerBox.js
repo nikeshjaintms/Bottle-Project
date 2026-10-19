@@ -9,9 +9,9 @@ async function seed() {
   const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/shayona-production';
   console.log(`Connecting to database at ${MONGO_URI}...`);
   await mongoose.connect(MONGO_URI);
-  
+
   const canonicalNames = Array.from(new Set(Object.values(mapping)));
-  
+
   let newlyCreated = 0;
   let alreadyExisting = 0;
 

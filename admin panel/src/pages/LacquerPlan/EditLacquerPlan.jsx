@@ -14,6 +14,7 @@ import CreatableSelect from 'react-select/creatable';
 import API from '../../services/api';
 import Swal from 'sweetalert2';
 import { useLacquerPlanLanguage } from '../../hooks/useLacquerPlanLanguage';
+import { isPlanRowCompleted } from '../../utils/lacquerPlanUtils';
 
 export default function EditLacquerPlan() {
   const dispatch = useDispatch();
@@ -47,8 +48,8 @@ export default function EditLacquerPlan() {
       plainStock: 0,
       boxQty: '',
       orderQty: '',
-      coatedQty: 0,
-      balanceToMake: 0,
+      coatedQty: '',
+      balanceToMake: '',
       dispatchBalance: 0,
       soldQty: 0,
       noOfBoxes: '',
@@ -62,20 +63,20 @@ export default function EditLacquerPlan() {
   });
   const [creatingSpec, setCreatingSpec] = useState(false);
 
-  // Stock warning states
-  const [stockWarnings, setStockWarnings] = useState({});
-  const [acknowledgeStockWarning, setAcknowledgeStockWarning] = useState({});
-  const [originalQties, setOriginalQties] = useState({});
+  // isExceedingStock is stored per-row in the rows array; no separate state needed
 
   useEffect(() => {
     dispatch(fetchBottlePerBoxes({ limit: 1000, status: true }));
     dispatch(fetchBottleSpecs({ limit: 1000, status: true, type: 'all' }));
     dispatch(fetchBrands({ limit: 1000, status: true }));
     dispatch(fetchVariants({ limit: 1000, status: true }));
-    dispatch(fetchCompanies({ limit: 1000, status: true }));
+    dispatch(fetchCompanies({ pagination: 'false' }));
     dispatch(fetchPrintingTypes({ limit: 1000, status: true }));
     dispatch(fetchPrintingColors({ limit: 1000, status: true }));
-  }, [dispatch]);
+    if (!plans || plans.length === 0) {
+      dispatch(fetchLacquerPlans());
+    }
+  }, [dispatch, plans]);
 
   useEffect(() => {
     if (plans && plans.length > 0 && id) {
@@ -83,8 +84,8 @@ export default function EditLacquerPlan() {
       const originalGroup = plans.filter(p => idArray.includes(p._id));
       if (originalGroup.length > 0) {
         const first = originalGroup[0];
-        // companyId and brandId are handled at the row level now
-        setPlanDate(first.planDate ? new Date(first.planDate).toISOString().split('T')[0] : '');
+        const initialPlanDate = first.planDate ? new Date(first.planDate).toISOString().split('T')[0] : '';
+        setPlanDate(initialPlanDate);
 
         const initialRows = originalGroup.map(plan => ({
           _id: plan._id,
@@ -105,60 +106,71 @@ export default function EditLacquerPlan() {
           remarks: plan.remarks || '',
           sharedGroupId: plan.importGroupId || 'edit_grp_' + first._id
         }));
-        console.log("EditLacquerPlan - originalGroup:", originalGroup);
-        console.log("EditLacquerPlan - initialRows:", initialRows);
+
         setRows(initialRows);
-        // Store original quantities for comparison on quantity increase
-        const origQties = {};
-        initialRows.forEach((row, idx) => {
-          origQties[idx] = parseFloat(row.orderQty) || 0;
-        });
-        setOriginalQties(origQties);
+
+        // Rule L2 & L3: Fetch live day-based plainStock for each pool on this planDate
+        const fetchLiveStocks = async () => {
+          const groupsToFetch = new Map();
+          initialRows.forEach(row => {
+            if (row.bottleName && row.companyId) {
+              const key = `${row.companyId}::${row.bottleName.toUpperCase()}`;
+              if (!groupsToFetch.has(key)) {
+                groupsToFetch.set(key, { companyId: row.companyId, bottleName: row.bottleName });
+              }
+            }
+          });
+
+          try {
+            const updatedRows = [...initialRows];
+            for (const [_, groupInfo] of groupsToFetch.entries()) {
+              const res = await API.get('/lacquer-plan/stats/computed', {
+                params: { bottleName: groupInfo.bottleName, companyId: groupInfo.companyId, planDate: initialPlanDate }
+              });
+              if (res.data?.success) {
+                const liveStock = res.data.data.plainStock || 0;
+                updatedRows.forEach(row => {
+                  if (row.bottleName?.toUpperCase() === groupInfo.bottleName.toUpperCase() &&
+                      row.companyId === groupInfo.companyId) {
+                    row.plainStock = liveStock;
+                  }
+                });
+              }
+            }
+            const rowsWithFlags = updatedRows.map(row => ({ ...row }));
+            const seenPools = new Set();
+            rowsWithFlags.forEach(row => {
+              const poolId = `${row.companyId}::${(row.bottleName || '').toUpperCase()}`;
+              if (!seenPools.has(poolId) && row.companyId && row.bottleName) {
+                seenPools.add(poolId);
+                const poolRows = rowsWithFlags.filter(r =>
+                  r.companyId === row.companyId &&
+                  (r.bottleName || '').toUpperCase() === (row.bottleName || '').toUpperCase()
+                );
+                let maxRemainingStock = 0;
+                let totalCoated = 0;
+                let totalOrder = 0;
+                poolRows.forEach(r => {
+                  const s = parseFloat(r.plainStock) || 0;
+                  if (s > maxRemainingStock) maxRemainingStock = s;
+                  totalCoated += parseFloat(r.coatedQty) || 0;
+                  totalOrder += parseFloat(r.orderQty) || 0;
+                });
+                const openingStock = maxRemainingStock + totalCoated;
+                const isExceeding = openingStock > 0 && totalOrder > openingStock;
+                poolRows.forEach(r => { r.isExceedingStock = isExceeding; });
+              }
+            });
+            setRows(rowsWithFlags);
+          } catch (err) {
+            console.error("Failed to fetch live plain stock on Edit form load", err);
+          }
+        };
+
+        fetchLiveStocks();
       }
     }
   }, [plans, id]);
-
-  // Fetch live plainStock for each (companyId, bottleName) group when form loads to avoid double-counting deltas
-  useEffect(() => {
-    if (rows.length > 0 && rows[0].bottleName) {
-      const fetchLiveStocks = async () => {
-        // Collect unique (companyId, bottleName) groups
-        const groupsToFetch = new Map();
-        rows.forEach(row => {
-          if (row.bottleName && row.companyId) {
-            const key = `${row.companyId}::${row.bottleName.toUpperCase()}`;
-            if (!groupsToFetch.has(key)) {
-              groupsToFetch.set(key, { companyId: row.companyId, bottleName: row.bottleName });
-            }
-          }
-        });
-
-        try {
-          const updatedRows = [...rows];
-          for (const [_, groupInfo] of groupsToFetch.entries()) {
-            const res = await API.get('/lacquer-plan/stats/computed', {
-              params: { bottleName: groupInfo.bottleName, companyId: groupInfo.companyId }
-            });
-            if (res.data?.success) {
-              const liveStock = res.data.data.plainStock || 0;
-              // Update all rows in this group with live stock
-              updatedRows.forEach(row => {
-                if (row.bottleName?.toUpperCase() === groupInfo.bottleName.toUpperCase() &&
-                    row.companyId === groupInfo.companyId) {
-                  row.plainStock = liveStock;
-                }
-              });
-            }
-          }
-          setRows(updatedRows);
-        } catch (err) {
-          console.error("Failed to fetch live plain stock on Edit form load", err);
-        }
-      };
-
-      fetchLiveStocks();
-    }
-  }, []);
 
   useEffect(() => {
     if (location.state?.savedRows) {
@@ -196,8 +208,8 @@ export default function EditLacquerPlan() {
       process: lastRow ? lastRow.process : 'C',
       plainStock: lastRow ? lastRow.plainStock : 0,
       boxQty: lastRow ? lastRow.boxQty : '',
-      variantId: [], colour: '', orderQty: '', coatedQty: 0,
-      balanceToMake: 0, dispatchBalance: 0, soldQty: 0, noOfBoxes: '', remarks: ''
+      variantId: [], colour: '', orderQty: '', coatedQty: '',
+      balanceToMake: '', dispatchBalance: 0, soldQty: 0, noOfBoxes: '', remarks: ''
     };
     
     const newRows = [...rows];
@@ -210,25 +222,38 @@ export default function EditLacquerPlan() {
       sharedGroupId: Date.now().toString(),
       companyId: '', brandId: '',
       bottleName: '', variantId: [], colour: '', process: 'C',
-      plainStock: 0, boxQty: '', orderQty: '', coatedQty: 0,
-      balanceToMake: 0, dispatchBalance: 0, soldQty: 0, noOfBoxes: '', remarks: ''
+      plainStock: 0, boxQty: '', orderQty: '', coatedQty: '',
+      balanceToMake: '', dispatchBalance: 0, soldQty: 0, noOfBoxes: '', remarks: ''
     }]);
   };
 
   const removeSection = (groupId) => {
-    const sectionRows = rows.filter(r => r.sharedGroupId === groupId || r.sharedGroupId === undefined);
+    const sectionRows = rows.filter(r => (r.sharedGroupId || 'edit_grp_0') === groupId);
     const sectionIdsToDelete = sectionRows.map(r => r._id).filter(id => id);
     if (sectionIdsToDelete.length > 0) {
       setDeletedIds(prev => [...prev, ...sectionIdsToDelete]);
     }
     
-    const newRows = rows.filter(r => r.sharedGroupId !== groupId && r.sharedGroupId !== undefined);
+    const newRows = rows.filter(r => (r.sharedGroupId || 'edit_grp_0') !== groupId);
+    
+    // Return coated qty from removed section rows to any remaining rows sharing the same pool (Rule L2)
+    sectionRows.forEach(sRow => {
+      const coatedToReturn = parseFloat(sRow.coatedQty) || 0;
+      if (coatedToReturn > 0 && sRow.companyId && sRow.bottleName) {
+        newRows.forEach(r => {
+          if (r.companyId === sRow.companyId && (r.bottleName || '').toUpperCase() === (sRow.bottleName || '').toUpperCase()) {
+            r.plainStock = (parseFloat(r.plainStock) || 0) + coatedToReturn;
+          }
+        });
+      }
+    });
+
     if (newRows.length === 0) {
       setRows([{
         sharedGroupId: Date.now().toString(),
         bottleName: '', variantId: [], colour: '', process: 'C',
-        plainStock: 0, boxQty: '', orderQty: '', coatedQty: 0,
-        balanceToMake: 0, dispatchBalance: 0, soldQty: 0, noOfBoxes: '', remarks: ''
+        plainStock: 0, boxQty: '', orderQty: '', coatedQty: '',
+        balanceToMake: '', dispatchBalance: 0, soldQty: 0, noOfBoxes: '', remarks: ''
       }]);
     } else {
       setRows(newRows);
@@ -241,7 +266,16 @@ export default function EditLacquerPlan() {
       if (row._id) {
          setDeletedIds(prev => [...prev, row._id]);
       }
-      setRows(rows.filter((_, i) => i !== index));
+      const coatedToReturn = parseFloat(row.coatedQty) || 0;
+      const updatedRows = rows.filter((_, i) => i !== index);
+      if (coatedToReturn > 0 && row.companyId && row.bottleName) {
+        updatedRows.forEach(r => {
+          if (r.companyId === row.companyId && (r.bottleName || '').toUpperCase() === (row.bottleName || '').toUpperCase()) {
+            r.plainStock = (parseFloat(r.plainStock) || 0) + coatedToReturn;
+          }
+        });
+      }
+      setRows(updatedRows);
     }
   };
 
@@ -274,7 +308,10 @@ export default function EditLacquerPlan() {
           rowsArray.forEach(r => {
              if (r.sharedGroupId === currentRow.sharedGroupId && r !== currentRow) {
                 r.bottleName = currentRow.bottleName;
-                r.process = currentRow.process;
+                // Process is per-shade: only sync to rows with the same coating shade
+                if (r.colour === currentRow.colour) {
+                  r.process = currentRow.process;
+                }
                 r.plainStock = currentRow.plainStock;
                 r.boxQty = currentRow.boxQty;
              }
@@ -284,30 +321,39 @@ export default function EditLacquerPlan() {
     };
 
     if (field === 'bottleName' && value) {
+       const selectedBottle = (bottlePerBoxes || []).find(b => 
+         (b.plainBottleName || b.bottleName || '').trim().toLowerCase() === value.trim().toLowerCase()
+       );
+       const groupedNames = new Set([value.trim().toUpperCase()]);
+       if (selectedBottle) {
+         const names = (Array.isArray(selectedBottle.bottleNames) && selectedBottle.bottleNames.length > 0)
+           ? selectedBottle.bottleNames
+           : [selectedBottle.bottleName || selectedBottle.plainBottleName].filter(Boolean);
+         names.forEach(n => groupedNames.add(n.trim().toUpperCase()));
+       }
        const isExisting = (bottleSpecs || []).some(s => 
-          (s.brandId?._id || s.brandId)?.toString() === currentRow.brandId.toString() &&
-          s.bottleName?.trim().toLowerCase() === value.trim().toLowerCase()
+          (s.brandId?._id || s.brandId)?.toString() === currentRow.brandId?.toString() &&
+          groupedNames.has((s.bottleName || '').trim().toUpperCase())
        );
        
        if (!isExisting) {
-          let masterBottlePerBox = '';
-          try {
-              const bpbRes = await API.get('/bottle-per-box', { params: { search: value } });
-              if (bpbRes.data?.success && bpbRes.data.data?.length > 0) {
-                  const exactMatch = bpbRes.data.data.find(b => b.bottleName?.trim().toLowerCase() === value.trim().toLowerCase());
-                  if (exactMatch && exactMatch.bottlePerBox) {
-                      masterBottlePerBox = exactMatch.bottlePerBox;
-                  }
-              }
-          } catch (e) {}
-
+          let masterBottlePerBox = selectedBottle?.bottlePerBox || '';
           if (!masterBottlePerBox) {
-              const existingBPB = (bottlePerBoxes || []).find(b => b.bottleName?.trim().toLowerCase() === value.trim().toLowerCase());
-              masterBottlePerBox = existingBPB?.bottlePerBox || '';
+            try {
+                const bpbRes = await API.get('/bottle-per-box', { params: { search: value } });
+                if (bpbRes.data?.success && bpbRes.data.data?.length > 0) {
+                    const exactMatch = bpbRes.data.data.find(b => 
+                      (b.plainBottleName || b.bottleName || '').trim().toLowerCase() === value.trim().toLowerCase()
+                    );
+                    if (exactMatch && exactMatch.bottlePerBox) {
+                        masterBottlePerBox = exactMatch.bottlePerBox;
+                    }
+                }
+            } catch (e) {}
           }
 
-          const companyName = (companies || []).find(o => o._id === rows[rowIndex]?.companyId)?.name || '';
-          const brandName = (brands || []).find(o => o._id === rows[rowIndex]?.brandId)?.name || '';
+          const companyName = (companies || []).find(o => o._id === currentRow.companyId)?.name || '';
+          const brandName = (brands || []).find(o => o._id === currentRow.brandId)?.name || '';
           
           setMissingSpecData({
              bottleName: value.toUpperCase(),
@@ -327,18 +373,97 @@ export default function EditLacquerPlan() {
           return;
        }
 
-      currentRow.variantId = [];
-      currentRow.colour = '';
+      // Check if currently selected variant is still valid under the new bottleName
+      let variantStillValid = false;
+      let currentVariantName = '';
+      if (currentRow.variantId && currentRow.variantId.length > 0) {
+        const prevVar = (variants || []).find(v => (currentRow.variantId || []).includes(v._id) || v._id === currentRow.variantId[0]);
+        if (prevVar) {
+          currentVariantName = prevVar.variantName;
+        }
+      }
+
+      if (currentVariantName) {
+        const matchingVar = (variants || []).find(v => {
+          if (!v.variantName || v.variantName.trim().toUpperCase() !== currentVariantName.trim().toUpperCase()) return false;
+          const spec = (bottleSpecs || []).find(bs => bs._id?.toString() === (v.bottleSpecId?._id || v.bottleSpecId)?.toString());
+          if (!spec) return false;
+          const specBName = (spec.bottleName || '').trim().toUpperCase();
+          return groupedNames.has(specBName);
+        });
+
+        if (matchingVar) {
+          variantStillValid = true;
+          currentRow.variantId = [matchingVar._id];
+          if (matchingVar.coatingShade) {
+            currentRow.colour = matchingVar.coatingShade;
+          }
+        }
+      }
+
+      if (!variantStillValid) {
+        currentRow.variantId = [];
+        currentRow.colour = '';
+      }
       
+      currentRow.boxQty = selectedBottle && selectedBottle.bottlePerBox ? selectedBottle.bottlePerBox : '';
+      const bQty = parseFloat(currentRow.boxQty);
+      if (!isNaN(bQty) && bQty > 0) {
+        if (currentRow.orderQty !== '' && currentRow.orderQty !== null && currentRow.orderQty !== undefined) {
+          currentRow.noOfBoxes = Math.ceil((parseFloat(currentRow.orderQty) || 0) / bQty);
+        } else if (currentRow.noOfBoxes !== '' && currentRow.noOfBoxes !== null && currentRow.noOfBoxes !== undefined) {
+          currentRow.orderQty = Math.round((parseFloat(currentRow.noOfBoxes) || 0) * bQty);
+        }
+      }
+
       try {
         const res = await API.get('/lacquer-plan/stats/computed', {
-          params: { bottleName: value }
+          params: { bottleName: value, companyId: currentRow.companyId, planDate }
         });
-        const selectedBottle = (bottlePerBoxes || []).find(b => b.bottleName === value);
         currentRow.plainStock = res.data?.success ? res.data.data.plainStock : 0;
-        currentRow.boxQty = selectedBottle && selectedBottle.bottlePerBox ? selectedBottle.bottlePerBox : '';
       } catch (err) {
         console.error("Failed to fetch plain stock", err);
+      }
+
+      if (variantStillValid && currentRow.colour && currentRow.brandId) {
+        try {
+          const cRes = await API.get('/lacquer-plan/stats/computed', {
+            params: { bottleName: value, brandId: currentRow.brandId, colour: currentRow.colour }
+          });
+          if (cRes.data?.success) {
+            currentRow.coatedQty = cRes.data.data.coatedQty;
+            currentRow.balanceToMake = (cRes.data.data.coatedQty || 0) - (parseFloat(currentRow.orderQty) || 0);
+          }
+        } catch (err) {
+          console.error("Failed to fetch computed stats for retained variant", err);
+        }
+      }
+    }
+
+    if (field === 'boxQty') {
+      const boxQty = parseFloat(value);
+      if (!isNaN(boxQty) && boxQty > 0) {
+        if (currentRow.orderQty !== '' && currentRow.orderQty !== null && currentRow.orderQty !== undefined) {
+          const orderQty = parseFloat(currentRow.orderQty) || 0;
+          currentRow.noOfBoxes = Math.ceil(orderQty / boxQty);
+        } else if (currentRow.noOfBoxes !== '' && currentRow.noOfBoxes !== null && currentRow.noOfBoxes !== undefined) {
+          const noOfBoxes = parseFloat(currentRow.noOfBoxes) || 0;
+          currentRow.orderQty = Math.round(noOfBoxes * boxQty);
+        }
+      }
+    }
+
+    if (field === 'noOfBoxes') {
+      const valStr = String(value ?? '').trim();
+      if (valStr === '') {
+        currentRow.noOfBoxes = '';
+        currentRow.orderQty = '';
+      } else {
+        const noOfBoxes = parseFloat(valStr) || 0;
+        const boxQty = parseFloat(currentRow.boxQty);
+        if (!isNaN(noOfBoxes) && !isNaN(boxQty) && boxQty > 0) {
+          currentRow.orderQty = Math.round(noOfBoxes * boxQty);
+        }
       }
     }
 
@@ -350,56 +475,74 @@ export default function EditLacquerPlan() {
       }
       const coatedQty = parseFloat(currentRow.coatedQty);
       currentRow.balanceToMake = (coatedQty || 0) - (orderQty || 0);
-      
-      // Check insufficient stock for this group
-      if (currentRow.sharedGroupId && currentRow.companyId && currentRow.bottleName) {
-        let plainStock = parseFloat(currentRow.plainStock) || 0;
-        let totalOrderQty = 0;
-        
+
+      // Re-evaluate isExceedingStock against opening stock (plainStock + Σ coatedQty),
+      // grouping by (companyId, bottleName) — brand is NOT part of the key.
+      if (currentRow.companyId && currentRow.bottleName) {
+        const poolKey = (r) =>
+          r.companyId === currentRow.companyId &&
+          (r.bottleName || '').toUpperCase() === (currentRow.bottleName || '').toUpperCase();
+
+        let baseRemainingStock = 0;
+        let totalCoatedInPool = 0;
+        let totalOrderInPool = 0;
+
         newRows.forEach(r => {
-          if (r.sharedGroupId === currentRow.sharedGroupId && 
-              r.companyId === currentRow.companyId && 
-              r.bottleName?.toUpperCase() === currentRow.bottleName?.toUpperCase()) {
-            const rOrderQty = r === currentRow ? orderQty : (parseFloat(r.orderQty) || 0);
-            totalOrderQty += rOrderQty;
-            if (plainStock === 0 || !plainStock) {
-              plainStock = parseFloat(r.plainStock) || 0;
-            }
+          if (poolKey(r)) {
+            const rStock = parseFloat(r.plainStock) || 0;
+            if (rStock > baseRemainingStock) baseRemainingStock = rStock;
+            totalCoatedInPool += parseFloat(r.coatedQty) || 0;
+            totalOrderInPool += r === currentRow ? orderQty : (parseFloat(r.orderQty) || 0);
           }
         });
-        
-        if (plainStock > 0 && totalOrderQty > plainStock) {
-          Swal.fire({
-            toast: true,
-            position: 'top-end',
-            icon: 'warning',
-            title: labels.plainStockExceedWarning,
-            showConfirmButton: false,
-            timer: 3000
-          });
-          currentRow.isExceedingStock = true;
-        } else {
-          currentRow.isExceedingStock = false;
-        }
+
+        // opening stock = remaining displayed stock + total coated today
+        const openingStock = baseRemainingStock + totalCoatedInPool;
+        const isExceeding = openingStock > 0 && totalOrderInPool > openingStock;
+
+        newRows.forEach(r => {
+          if (poolKey(r)) {
+            r.isExceedingStock = isExceeding;
+          }
+        });
       }
     }
 
     if (field === 'coatedQty') {
       const prevCoatedQty = parseFloat(prevValue) || 0;
-      const newCoatedQty = parseFloat(value) || 0;
+      let newCoatedQty = parseFloat(value);
+      if (isNaN(newCoatedQty)) newCoatedQty = 0;
+
+      // Compute opening stock for this row: remaining plainStock + what was already coated
+      const poolRemainingStock = parseFloat(currentRow.plainStock) || 0;
+      const openingStockForRow = poolRemainingStock + prevCoatedQty;
+
+      // Cap coatedQty at opening stock and warn
+      if (openingStockForRow > 0 && newCoatedQty > openingStockForRow) {
+        newCoatedQty = openingStockForRow;
+        Swal.fire({
+          toast: true,
+          position: 'top-end',
+          icon: 'warning',
+          title: labels.coatedQtyExceedsStock || 'Coating Qty cannot exceed the plain bottle stock',
+          showConfirmButton: false,
+          timer: 3000
+        });
+      }
+
       const delta = newCoatedQty - prevCoatedQty;
-      
+
       currentRow.coatedQty = newCoatedQty;
       const orderQty = parseFloat(currentRow.orderQty);
-      currentRow.balanceToMake = (newCoatedQty || 0) - (orderQty || 0);
-      
-      // Apply delta sync to all rows in the same (company, bottle) pool
-      if (currentRow.sharedGroupId && currentRow.companyId && currentRow.bottleName) {
+      currentRow.balanceToMake = (!isNaN(orderQty) && String(currentRow.orderQty).trim() !== '') ? (newCoatedQty - orderQty) : 0;
+
+      // Apply delta to displayed plainStock for balance tracking — does NOT change isExceedingStock
+      if (currentRow.companyId && currentRow.bottleName) {
         newRows.forEach(r => {
-          if (r.sharedGroupId === currentRow.sharedGroupId && 
-              r.companyId === currentRow.companyId && 
-              r.bottleName?.toUpperCase() === currentRow.bottleName?.toUpperCase()) {
+          if (r.companyId === currentRow.companyId &&
+              (r.bottleName || '').toUpperCase() === (currentRow.bottleName || '').toUpperCase()) {
             r.plainStock = Math.max(0, (parseFloat(r.plainStock) || 0) - delta);
+            // isExceedingStock intentionally NOT touched — opening stock is unchanged
           }
         });
       }
@@ -420,8 +563,8 @@ export default function EditLacquerPlan() {
            const updatedRows = [...newRows];
            const r = updatedRows[index];
            r.coatedQty = res.data.data.coatedQty;
-           const currentOrderQty = parseFloat(r.orderQty) || 0;
-           r.balanceToMake = (res.data.data.coatedQty || 0) - currentOrderQty;
+           const oQty = parseFloat(r.orderQty);
+           r.balanceToMake = (!isNaN(oQty) && String(r.orderQty).trim() !== '') ? ((res.data.data.coatedQty || 0) - oQty) : 0;
            syncAndSetRows(updatedRows);
          }
        } catch (err) {
@@ -429,97 +572,143 @@ export default function EditLacquerPlan() {
        }
     }
 
-    if (field === 'variantId' && value && value.length > 0) {
-      if (value.length > 1) {
-         currentRow.variantId = [value[0]];
-         
-         if (!currentRow.sharedGroupId) {
-             currentRow.sharedGroupId = 'grp_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5);
-         }
-         
-         let firstBottleName = currentRow.bottleName;
-         const firstVariant = (variants || []).find(v => v._id === value[0]);
-         if (firstVariant && !firstBottleName) {
-            const spec = (bottleSpecs || []).find(bs => bs._id === (firstVariant.bottleSpecId?._id || firstVariant.bottleSpecId));
-            if (spec && spec.bottleName) firstBottleName = spec.bottleName.toUpperCase();
-         }
+    if (field === 'variantId') {
+      if (!value || value.length === 0) {
+        currentRow.variantId = [];
+        currentRow.colour = '';
+        currentRow.coatedQty = '';
+        currentRow.balanceToMake = '';
+      } else {
+        if (value.length > 1) {
+          currentRow.variantId = [value[0]];
+          
+          if (!currentRow.sharedGroupId) {
+            currentRow.sharedGroupId = 'grp_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5);
+          }
+          
+          let firstBottleName = currentRow.bottleName;
+          const firstVariant = (variants || []).find(v => v._id === value[0]);
+          if (firstVariant && !firstBottleName) {
+            const spec = (bottleSpecs || []).find(bs => bs._id?.toString() === (firstVariant.bottleSpecId?._id || firstVariant.bottleSpecId)?.toString());
+            if (spec && spec.bottleName) {
+              let derivedPlain = spec.bottleName.toUpperCase();
+              const foundBox = (bottlePerBoxes || []).find(b => {
+                const names = (Array.isArray(b.bottleNames) && b.bottleNames.length > 0)
+                  ? b.bottleNames
+                  : [b.bottleName || b.plainBottleName].filter(Boolean);
+                return names.map(n => n.trim().toUpperCase()).includes(derivedPlain);
+              });
+              if (foundBox) {
+                derivedPlain = (foundBox.plainBottleName || foundBox.bottleName).trim().toUpperCase();
+              }
+              firstBottleName = derivedPlain;
+              currentRow.bottleName = derivedPlain;
+              const selectedBottle = foundBox || (bottlePerBoxes || []).find(b => 
+                (b.plainBottleName || b.bottleName || '').trim().toUpperCase() === derivedPlain
+              );
+              if (selectedBottle && selectedBottle.bottlePerBox) {
+                currentRow.boxQty = selectedBottle.bottlePerBox;
+              }
+            }
+          }
 
-         const rowsToAdd = [];
-         for (let i = 1; i < value.length; i++) {
+          const rowsToAdd = [];
+          for (let i = 1; i < value.length; i++) {
             const vid = value[i];
             const selVar = (variants || []).find(v => v._id === vid);
-            
-            let varBottleName = firstBottleName;
-            let varPlainStock = 0;
-            let varBoxQty = '';
-            
-            if (selVar) {
-               const spec = (bottleSpecs || []).find(bs => bs._id === (selVar.bottleSpecId?._id || selVar.bottleSpecId));
-               if (spec && spec.bottleName) {
-                   varBottleName = spec.bottleName.toUpperCase();
-                   const selectedBottle = (bottlePerBoxes || []).find(b => b.bottleName === varBottleName);
-                   if (selectedBottle && selectedBottle.bottlePerBox) varBoxQty = selectedBottle.bottlePerBox;
-               }
-            }
-
-            const isSameBottle = (varBottleName === firstBottleName) && varBottleName;
 
             const clonedRow = {
-               ...currentRow,
-               sharedGroupId: isSameBottle ? currentRow.sharedGroupId : ('grp_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5)),
-               bottleName: varBottleName || '',
-               variantId: [vid],
-               boxQty: isSameBottle ? currentRow.boxQty : varBoxQty,
-               plainStock: isSameBottle ? currentRow.plainStock : varPlainStock,
-               orderQty: '',
-               noOfBoxes: '',
-               coatedQty: '',
-               balanceToMake: '',
-               dispatchBalance: '',
-               soldQty: '',
-               remarks: ''
+              ...currentRow,
+              sharedGroupId: currentRow.sharedGroupId,
+              bottleName: firstBottleName || currentRow.bottleName || '',
+              variantId: [vid],
+              boxQty: currentRow.boxQty,
+              plainStock: currentRow.plainStock,
+              orderQty: '',
+              noOfBoxes: '',
+              coatedQty: '',
+              balanceToMake: '',
+              dispatchBalance: 0,
+              soldQty: 0,
+              remarks: ''
             };
             if (selVar && selVar.coatingShade) {
-                clonedRow.colour = selVar.coatingShade;
-                if (clonedRow.bottleName && currentRow.brandId) {
-                   API.get('/lacquer-plan/stats/computed', {
-                     params: { bottleName: clonedRow.bottleName, brandId: currentRow.brandId, colour: selVar.coatingShade }
-                   }).then(res => {
-                     if (res.data?.success) {
-                       setRows(currentRows => {
-                         const rArray = [...currentRows];
-                         const targetRow = rArray.find(r => r.variantId && r.variantId[0] === vid && r.bottleName === clonedRow.bottleName);
-                         if (targetRow) {
-                           targetRow.coatedQty = res.data.data.coatedQty;
-                           targetRow.plainStock = res.data.data.plainStock || targetRow.plainStock;
-                           targetRow.balanceToMake = (res.data.data.coatedQty || 0) - (parseFloat(targetRow.orderQty) || 0);
-                         }
-                         return rArray;
-                       });
-                     }
-                   }).catch(console.error);
-                }
+              clonedRow.colour = selVar.coatingShade;
+              if (clonedRow.bottleName && currentRow.brandId) {
+                API.get('/lacquer-plan/stats/computed', {
+                  params: { bottleName: clonedRow.bottleName, brandId: currentRow.brandId, colour: selVar.coatingShade }
+                }).then(res => {
+                  if (res.data?.success) {
+                    setRows(currentRows => {
+                      const rArray = [...currentRows];
+                      const targetRow = rArray.find(r => r.variantId && r.variantId[0] === vid && r.bottleName === clonedRow.bottleName);
+                      if (targetRow) {
+                        targetRow.coatedQty = res.data.data.coatedQty;
+                        targetRow.plainStock = res.data.data.plainStock || targetRow.plainStock;
+                        const oQty = parseFloat(targetRow.orderQty);
+                        targetRow.balanceToMake = (!isNaN(oQty) && String(targetRow.orderQty).trim() !== '') ? ((res.data.data.coatedQty || 0) - oQty) : 0;
+                      }
+                      return rArray;
+                    });
+                  }
+                }).catch(console.error);
+              }
             }
             rowsToAdd.push(clonedRow);
-         }
-         
-         newRows.splice(index + 1, 0, ...rowsToAdd);
-         value = [value[0]];
-      }
+          }
+          
+          newRows.splice(index + 1, 0, ...rowsToAdd);
+          value = [value[0]];
+        }
 
-      const firstVal = value[0];
-      const selectedVariant = (variants || []).find(v => v._id === firstVal);
-      if (selectedVariant && !currentRow.bottleName) {
-         const spec = (bottleSpecs || []).find(bs => bs._id === (selectedVariant.bottleSpecId?._id || selectedVariant.bottleSpecId));
-         if (spec && spec.bottleName) {
-            currentRow.bottleName = spec.bottleName.toUpperCase();
+        const firstVal = value[0];
+        const selectedVariant = (variants || []).find(v => v._id === firstVal);
+        if (selectedVariant && !currentRow.bottleName) {
+          const spec = (bottleSpecs || []).find(bs => bs._id?.toString() === (selectedVariant.bottleSpecId?._id || selectedVariant.bottleSpecId)?.toString());
+          if (spec && spec.bottleName) {
+            let derivedPlain = spec.bottleName.toUpperCase();
+            const foundBox = (bottlePerBoxes || []).find(b => {
+              const names = (Array.isArray(b.bottleNames) && b.bottleNames.length > 0)
+                ? b.bottleNames
+                : [b.bottleName || b.plainBottleName].filter(Boolean);
+              return names.map(n => n.trim().toUpperCase()).includes(derivedPlain);
+            });
+            if (foundBox) {
+              derivedPlain = (foundBox.plainBottleName || foundBox.bottleName).trim().toUpperCase();
+            }
+            currentRow.bottleName = derivedPlain;
+            if (currentRow.sharedGroupId) {
+              newRows.forEach(r => {
+                if (r.sharedGroupId === currentRow.sharedGroupId) {
+                  r.bottleName = derivedPlain;
+                }
+              });
+            }
+
+            const selectedBottle = foundBox || (bottlePerBoxes || []).find(b => 
+              (b.plainBottleName || b.bottleName || '').trim().toUpperCase() === derivedPlain
+            );
+            currentRow.boxQty = selectedBottle && selectedBottle.bottlePerBox ? selectedBottle.bottlePerBox : '';
+            if (currentRow.sharedGroupId) {
+              newRows.forEach(r => {
+                if (r.sharedGroupId === currentRow.sharedGroupId) {
+                  r.boxQty = currentRow.boxQty;
+                }
+              });
+            }
+
             try {
               const res = await API.get('/lacquer-plan/stats/computed', {
-                params: { bottleName: currentRow.bottleName }
+                params: { bottleName: currentRow.bottleName, companyId: currentRow.companyId, planDate }
               });
-              const selectedBottle = (bottlePerBoxes || []).find(b => b.bottleName === currentRow.bottleName);
               currentRow.plainStock = res.data?.success ? res.data.data.plainStock : 0;
-              currentRow.boxQty = selectedBottle && selectedBottle.bottlePerBox ? selectedBottle.bottlePerBox : '';
+              if (currentRow.sharedGroupId) {
+                newRows.forEach(r => {
+                  if (r.sharedGroupId === currentRow.sharedGroupId) {
+                    r.plainStock = currentRow.plainStock;
+                  }
+                });
+              }
               
               const orderQty = parseFloat(currentRow.orderQty);
               const boxQty = parseFloat(currentRow.boxQty);
@@ -529,27 +718,29 @@ export default function EditLacquerPlan() {
             } catch (err) {
               console.error("Failed to fetch plain stock", err);
             }
-         }
-      }
-      if (selectedVariant && selectedVariant.coatingShade && !currentRow.colour) {
-         currentRow.colour = selectedVariant.coatingShade;
-         if (currentRow.bottleName && currentRow.brandId) {
-             API.get('/lacquer-plan/stats/computed', {
-               params: { bottleName: currentRow.bottleName, brandId: currentRow.brandId, colour: selectedVariant.coatingShade }
-             }).then(res => {
-               if (res.data?.success) {
-                 setRows(currentRows => {
-                   const rArray = [...currentRows];
-                   const targetRow = rArray[index];
-                   if (targetRow) {
-                     targetRow.coatedQty = res.data.data.coatedQty;
-                     targetRow.balanceToMake = (res.data.data.coatedQty || 0) - (parseFloat(targetRow.orderQty) || 0);
-                   }
-                   return rArray;
-                 });
-               }
-             }).catch(console.error);
-         }
+          }
+        }
+        if (selectedVariant && selectedVariant.coatingShade && !currentRow.colour) {
+          currentRow.colour = selectedVariant.coatingShade;
+          if (currentRow.bottleName && currentRow.brandId) {
+            API.get('/lacquer-plan/stats/computed', {
+              params: { bottleName: currentRow.bottleName, brandId: currentRow.brandId, colour: selectedVariant.coatingShade }
+            }).then(res => {
+              if (res.data?.success) {
+                setRows(currentRows => {
+                  const rArray = [...currentRows];
+                  const targetRow = rArray[index];
+                  if (targetRow) {
+                    targetRow.coatedQty = res.data.data.coatedQty;
+                    const oQty = parseFloat(targetRow.orderQty);
+                    targetRow.balanceToMake = (!isNaN(oQty) && String(targetRow.orderQty).trim() !== '') ? ((res.data.data.coatedQty || 0) - oQty) : 0;
+                  }
+                  return rArray;
+                });
+              }
+            }).catch(console.error);
+          }
+        }
       }
     }
 
@@ -611,7 +802,24 @@ export default function EditLacquerPlan() {
   };
 
   const handleAddVariantClick = (bottleName, brandId, rowIndex, colour) => {
-      let existingSpec = companySpecs.find(bs => bs.bottleName === bottleName);
+      let existingSpec = (bottleSpecs || []).find(bs => bs.bottleName === bottleName && (bs.brandId?._id || bs.brandId)?.toString() === brandId?.toString());
+      
+      if (!existingSpec && bottleName) {
+        const selectedBottle = (bottlePerBoxes || []).find(b => 
+          (b.plainBottleName || b.bottleName || '').trim().toLowerCase() === bottleName.toLowerCase()
+        );
+        const groupedNames = new Set([bottleName.toUpperCase()]);
+        if (selectedBottle) {
+          const names = (Array.isArray(selectedBottle.bottleNames) && selectedBottle.bottleNames.length > 0)
+            ? selectedBottle.bottleNames
+            : [selectedBottle.bottleName || selectedBottle.plainBottleName].filter(Boolean);
+          names.forEach(n => groupedNames.add(n.trim().toUpperCase()));
+        }
+        existingSpec = (bottleSpecs || []).find(bs => 
+          (bs.brandId?._id || bs.brandId)?.toString() === brandId?.toString() && 
+          groupedNames.has((bs.bottleName || '').trim().toUpperCase())
+        );
+      }
       
       let specId = existingSpec ? existingSpec._id : null;
       
@@ -623,7 +831,7 @@ export default function EditLacquerPlan() {
         state: {
           autoSelectSpecId: specId,
           autoSelectCoatingShade: colour || '',
-          returnTo: `/lacquer-plan/add`,
+          returnTo: `/lacquer-plan/edit/${id}`,
           savedRows: rows,
           rowIndex: rowIndex,
           companyId: rows[rowIndex]?.companyId,
@@ -666,14 +874,59 @@ export default function EditLacquerPlan() {
 
     rows.forEach((row) => {
       if (row.bottleName) {
-         if (!row.variantId || row.variantId.length === 0 || !row.colour || !row.orderQty || !row.process) {
+         const companyName = companyOptions.find(o => o.value === row.companyId)?.label || (companies || []).find(c => c._id === row.companyId)?.name || '';
+         const isShreno = companyName.toLowerCase().includes('shreno');
+
+         if (!isShreno && (!row.variantId || row.variantId.length === 0)) {
+            hasError = true;
+         }
+         if (!row.colour || !row.orderQty || !row.process) {
             hasError = true;
          }
          
          const groupId = row.sharedGroupId || null;
 
-         row.variantId.forEach(vid => {
-           const comboKey = `${row.companyId.toString()}-${row.brandId.toString()}-${row.bottleName.trim().toLowerCase()}-${vid.toString()}`;
+         if (row.variantId && row.variantId.length > 0) {
+           row.variantId.forEach(vid => {
+             const comboKey = `${row.companyId.toString()}-${row.brandId.toString()}-${row.bottleName.trim().toLowerCase()}-${vid.toString()}`;
+             if (comboSet.has(comboKey)) {
+               hasDuplicate = true;
+             }
+             comboSet.add(comboKey);
+
+             const payloadData = {
+               planDate: planDate,
+               companyId: row.companyId,
+               bottleName: row.bottleName,
+               status: true,
+               boxQty: row.boxQty || null,
+               variantId: vid,
+               colour: row.colour || '',
+               coatingShade: row.colour || '',
+               brandId: row.brandId,
+               process: row.process,
+               orderQty: row.orderQty,
+               coatedQty: row.coatedQty || 0,
+               coatingCompletedQty: row.coatedQty || 0,
+               balanceToMake: row.balanceToMake || 0,
+               dispatchBalance: row.dispatchBalance || 0,
+               dispatchPendingQty: row.dispatchBalance || 0,
+               soldQty: row.soldQty || 0,
+               noOfBoxes: row.noOfBoxes || null,
+               remarks: row.remarks || '',
+               plainStock: row.plainStock || 0,
+               importGroupId: groupId,
+               stockWarningAcknowledged: true
+             };
+             
+             if (row._id) {
+                 promises.push(API.put(`/lacquer-plan/${row._id}`, payloadData));
+             } else {
+                 newPayloads.push(payloadData);
+             }
+           });
+         } else if (isShreno) {
+           const comboKey = `${row.companyId.toString()}-${row.brandId.toString()}-${row.bottleName.trim().toLowerCase()}-${(row.colour || '').trim().toLowerCase()}`;
            if (comboSet.has(comboKey)) {
              hasDuplicate = true;
            }
@@ -685,7 +938,7 @@ export default function EditLacquerPlan() {
              bottleName: row.bottleName,
              status: true,
              boxQty: row.boxQty || null,
-             variantId: vid,
+             variantId: null,
              colour: row.colour || '',
              coatingShade: row.colour || '',
              brandId: row.brandId,
@@ -701,7 +954,7 @@ export default function EditLacquerPlan() {
              remarks: row.remarks || '',
              plainStock: row.plainStock || 0,
              importGroupId: groupId,
-             stockWarningAcknowledged: acknowledgeStockWarning[rows.indexOf(row)] || false
+             stockWarningAcknowledged: true
            };
            
            if (row._id) {
@@ -709,7 +962,7 @@ export default function EditLacquerPlan() {
            } else {
                newPayloads.push(payloadData);
            }
-         });
+         }
       }
     });
 
@@ -721,15 +974,9 @@ export default function EditLacquerPlan() {
         promises.push(API.delete(`/lacquer-plan/${delId}`));
     });
 
-    if (hasError) return Swal.fire('Error', 'Please fill in all required fields (Bottle Name, Variant, Coating Shade, Process, Order Qty) for each entered row.', 'error');
-    if (hasDuplicate) return Swal.fire('Error', 'This Bottle Name and Variant combination is repeated.', 'error');
+    if (hasError) return Swal.fire('Error', 'Please fill in all required fields (Bottle Name, Coating Shade, Process, Order Qty, and Variant where applicable) for each entered row.', 'error');
+    if (hasDuplicate) return Swal.fire('Error', 'This Bottle Name and Variant/Shade combination is repeated.', 'error');
     if (promises.length === 0) return Swal.fire('Error', 'Please ensure at least one valid entry is provided.', 'error');
-
-    // Check if there are unacknowledged stock warnings
-    const unacknowledgedWarnings = Object.keys(stockWarnings).filter(idx => !acknowledgeStockWarning[idx]);
-    if (unacknowledgedWarnings.length > 0) {
-      return Swal.fire('Stock Warning', `Please acknowledge the stock warning(s) before updating (${unacknowledgedWarnings.length} row(s) require acknowledgment).`, 'warning');
-    }
 
     Swal.fire({ title: 'Saving...', allowOutsideClick: false, didOpen: () => Swal.showLoading() });
 
@@ -752,6 +999,18 @@ export default function EditLacquerPlan() {
     ...(variants || []).map(v => v.coatingShade),
     ...(bottleSpecs || []).map(s => s.coatingShade)
   ].filter(shade => shade && shade.trim() !== ''))).sort().map(shade => ({ value: shade, label: shade }));
+
+  const plainBottleOptions = useMemo(() => {
+    if (!bottlePerBoxes || bottlePerBoxes.length === 0) return [];
+    const unique = new Map();
+    bottlePerBoxes.forEach(b => {
+      const name = (b.plainBottleName || b.bottleName || '').trim();
+      if (name && !unique.has(name)) {
+        unique.set(name, { value: name, label: name });
+      }
+    });
+    return Array.from(unique.values()).sort((a, b) => a.label.localeCompare(b.label));
+  }, [bottlePerBoxes]);
 
 
 
@@ -806,6 +1065,8 @@ export default function EditLacquerPlan() {
                   return groupedSections.map((group, groupIndex) => {
                     const gCompanyId = group.items[0]?.companyId;
                     const gBrandId = group.items[0]?.brandId;
+                    const gCompanyName = companyOptions.find(o => o.value === gCompanyId)?.label || (companies || []).find(c => c._id === gCompanyId)?.name || '';
+                    const isShrenoSection = gCompanyName.toLowerCase().includes('shreno');
                     const companyBrandIds = new Set(
                       (brands || [])
                         .filter(b => (b.companyId?._id || b.companyId)?.toString() === gCompanyId?.toString())
@@ -821,16 +1082,22 @@ export default function EditLacquerPlan() {
                     let filteredBottleOptions = [];
                     if (gBrandId) {
                       const matchingSpecs = companySpecs.filter(bs => (bs.brandId?._id || bs.brandId)?.toString() === gBrandId.toString());
-                      const matchingBottleNames = new Set(matchingSpecs.map(s => s.bottleName?.trim()).filter(Boolean));
-                      const allSpecBottles = (bottleSpecs || []).map(s => s.bottleName?.trim()).filter(Boolean);
-                      const allBPBBottles = (bottlePerBoxes || []).map(b => b.bottleName?.trim()).filter(Boolean);
-                      const allBottles = Array.from(new Set([...allBPBBottles, ...allSpecBottles])).filter(Boolean);
-                      filteredBottleOptions = allBottles.map(name => ({ value: name, label: name, isBrandSpecific: matchingBottleNames.has(name) }))
-                        .sort((a, b) => {
-                           if (a.isBrandSpecific && !b.isBrandSpecific) return -1;
-                           if (!a.isBrandSpecific && b.isBrandSpecific) return 1;
-                           return a.label.localeCompare(b.label, undefined, { numeric: true, sensitivity: 'base' });
-                        });
+                      const matchingBottleNames = new Set(matchingSpecs.map(s => (s.bottleName || '').trim().toUpperCase()).filter(Boolean));
+
+                      filteredBottleOptions = plainBottleOptions.filter(opt => {
+                        const optName = opt.value.trim().toUpperCase();
+                        if (matchingBottleNames.has(optName)) return true;
+                        const matchedBox = (bottlePerBoxes || []).find(b => 
+                          (b.plainBottleName || b.bottleName || '').trim().toUpperCase() === optName
+                        );
+                        if (matchedBox) {
+                          const names = (Array.isArray(matchedBox.bottleNames) && matchedBox.bottleNames.length > 0)
+                            ? matchedBox.bottleNames
+                            : [matchedBox.bottleName || matchedBox.plainBottleName].filter(Boolean);
+                          return names.some(n => matchingBottleNames.has(n.trim().toUpperCase()));
+                        }
+                        return false;
+                      });
                     }
 
                     const visibleGroupSpans = {};
@@ -871,10 +1138,15 @@ export default function EditLacquerPlan() {
                         </div>
 
                         <div className="d-flex justify-content-between align-items-center mb-3 pb-2 border-bottom">
-                          <h5 className="mb-0 text-primary fw-bold">
-                            <i className="bi bi-box-seam me-2"></i>
-                            {group.bottleName ? group.bottleName : `Plan Section ${groupIndex + 1}`}
-                          </h5>
+                          {(() => {
+                            const sectionBottleName = group.items.find(r => r.bottleName)?.bottleName || group.bottleName;
+                            return (
+                              <h5 className="mb-0 text-primary fw-bold">
+                                <i className="bi bi-box-seam me-2"></i>
+                                {sectionBottleName ? sectionBottleName : `Plan Section ${groupIndex + 1}`}
+                              </h5>
+                            );
+                          })()}
                           {groupedSections.length > 1 && (
                             <button type="button" className="btn btn-sm btn-outline-danger" onClick={() => removeSection(group.id)}>
                               <i className="bi bi-trash me-1"></i> Remove Section
@@ -888,17 +1160,17 @@ export default function EditLacquerPlan() {
                               <tr>
                                 <th className="small text-muted text-center align-middle" style={{width: '3%'}}>#</th>
                                 <th className="small text-muted text-center align-middle" style={{width: '12%', minWidth: '200px'}}>{labels.bottleName} <span className="text-danger">*</span></th>
-                                <th className="small text-muted text-center align-middle" style={{width: '12%', minWidth: '200px'}}>{labels.variant} <span className="text-danger">*</span></th>
+                                <th className="small text-muted text-center align-middle" style={{width: '12%', minWidth: '200px'}}>{labels.variant} {!isShrenoSection && <span className="text-danger">*</span>}</th>
                                 <th className="small text-muted text-center align-middle" style={{width: '12%', minWidth: '200px'}}>{labels.coatingShade} <span className="text-danger">*</span></th>
                                 <th className="small text-muted text-center align-middle" style={{width: '6%'}}>{labels.process} <span className="text-danger">*</span></th>
                                 <th className="small text-muted text-center align-middle" style={{width: '6%'}}>{labels.plainStock}</th>
-                                <th className="small text-muted text-center align-middle" style={{width: '6%'}}>{labels.bottlePerBox}</th>
                                 <th className="small text-muted text-center align-middle" style={{width: '7%'}}>{labels.orderQty} <span className="text-danger">*</span></th>
                                 <th className="small text-muted text-center align-middle" style={{width: '9%'}}>{labels.coatingCompletedQty}</th>
                                 <th className="small text-muted text-center align-middle" style={{width: '9%'}}>{labels.balanceToMake}</th>
+                                <th className="small text-muted text-center align-middle" style={{width: '6%'}}>{labels.bottlePerBox}</th>
+                                <th className="small text-muted text-center align-middle" style={{width: '6%'}}>{labels.noOfOrderBoxes}</th>
                                 <th className="small text-muted text-center align-middle" style={{width: '9%'}}>{labels.dispatchPendingQty}</th>
                                 <th className="small text-muted text-center align-middle" style={{width: '5%'}}>{labels.soldQty}</th>
-                                <th className="small text-muted text-center align-middle" style={{width: '6%'}}>{labels.noOfOrderBoxes}</th>
                                 <th className="small text-muted text-center align-middle" style={{width: '15%', minWidth: '250px'}}>{labels.remarks}</th>
                                 <th className="small text-muted text-center align-middle" style={{width: '3%'}}></th>
                               </tr>
@@ -933,19 +1205,105 @@ export default function EditLacquerPlan() {
                                     }
                                 }
 
-                                const selectedBottles = new Set(group.items.filter((_, i) => i !== localIndex).map(r => r.bottleName).filter(Boolean));
-                                const rowBottleOptions = filteredBottleOptions.filter(o => !selectedBottles.has(o.value));
+                                // Process spans the same rows as the shade cell — one process per (shade, group)
+                                const renderProcessCell = renderShadeGroupCell;
+                                const processRowSpan = shadeRowSpan;
 
-                                const matchingSpecs = row.bottleName
-                                  ? companySpecs.filter(bs => bs.bottleName === row.bottleName && (bs.brandId?._id || bs.brandId)?.toString() === gBrandId?.toString())
+                                // Determine available plain bottle options for this row/section
+                                let availablePlainBottleOptions = filteredBottleOptions;
+                                
+                                // If a variant is selected on this row, show ALL plain bottles related to that variant NAME
+                                const currentVarId = (row.variantId && row.variantId.length > 0) ? row.variantId[0] : null;
+                                if (currentVarId) {
+                                  const currentVar = (variants || []).find(v => v._id === currentVarId);
+                                  if (currentVar && currentVar.variantName) {
+                                    const selectedVariantName = currentVar.variantName.trim().toUpperCase();
+                                    
+                                    // Find ALL variants with this same variantName across all specs
+                                    const allVariantsWithSameName = (variants || []).filter(v => 
+                                      v.variantName && v.variantName.trim().toUpperCase() === selectedVariantName
+                                    );
+                                    
+                                    // Get all unique bottle spec IDs from all these variants
+                                    const bottleSpecIds = new Set(allVariantsWithSameName.map(v => (v.bottleSpecId?._id || v.bottleSpecId)?.toString()).filter(Boolean));
+                                    
+                                    // Get all bottle names from these specs
+                                    const bottleNamesForVariants = new Set((bottleSpecs || [])
+                                      .filter(bs => bottleSpecIds.has(bs._id?.toString()))
+                                      .map(bs => bs.bottleName?.trim().toUpperCase())
+                                      .filter(Boolean)
+                                    );
+                                    
+                                    // Filter plain bottle options to only those linked to this variant
+                                    availablePlainBottleOptions = plainBottleOptions.filter(opt => {
+                                      const optUpper = opt.label.trim().toUpperCase();
+                                      if (bottleNamesForVariants.has(optUpper)) return true;
+                                      const matchedBox = (bottlePerBoxes || []).find(b => 
+                                        (b.plainBottleName || b.bottleName || '').trim().toUpperCase() === optUpper
+                                      );
+                                      if (matchedBox) {
+                                        const names = (Array.isArray(matchedBox.bottleNames) && matchedBox.bottleNames.length > 0)
+                                          ? matchedBox.bottleNames
+                                          : [matchedBox.bottleName || matchedBox.plainBottleName].filter(Boolean);
+                                        return names.some(n => bottleNamesForVariants.has(n.trim().toUpperCase()));
+                                      }
+                                      return false;
+                                    });
+                                  }
+                                }
+
+                                if (row.bottleName && !availablePlainBottleOptions.some(o => o.value === row.bottleName)) {
+                                  availablePlainBottleOptions = [{ value: row.bottleName, label: row.bottleName }, ...availablePlainBottleOptions];
+                                }
+
+                                const selectedPlain = (row.bottleName || '').trim();
+                                let groupedBottleNames = new Set();
+                                if (selectedPlain) {
+                                  groupedBottleNames.add(selectedPlain.toUpperCase());
+                                  const matchedBox = (bottlePerBoxes || []).find(b => 
+                                    (b.plainBottleName || b.bottleName || '').trim().toLowerCase() === selectedPlain.toLowerCase()
+                                  );
+                                  if (matchedBox) {
+                                    const names = (Array.isArray(matchedBox.bottleNames) && matchedBox.bottleNames.length > 0)
+                                      ? matchedBox.bottleNames
+                                      : [matchedBox.bottleName || matchedBox.plainBottleName].filter(Boolean);
+                                    names.forEach(n => groupedBottleNames.add(n.trim().toUpperCase()));
+                                  }
+                                }
+
+                                const matchingSpecs = selectedPlain
+                                  ? companySpecs.filter(bs => groupedBottleNames.has((bs.bottleName || '').trim().toUpperCase()) && (bs.brandId?._id || bs.brandId)?.toString() === gBrandId?.toString())
                                   : companySpecs.filter(bs => (bs.brandId?._id || bs.brandId)?.toString() === gBrandId?.toString());
                                 const matchingSpecIds = matchingSpecs.map(bs => bs._id);
 
-                                const variantOptions = (variants || [])
+                                const selectedSiblingVariantNames = new Set(
+                                  group.items
+                                    .filter((r, i) => i !== localIndex && (r.bottleName || '') === (row.bottleName || ''))
+                                    .flatMap(r => r.variantId || [])
+                                    .map(vid => (variants || []).find(v => v._id === vid)?.variantName?.trim().toUpperCase())
+                                    .filter(Boolean)
+                                );
+
+                                const seenVariantNames = new Set();
+                                const variantOptions = [];
+                                (variants || [])
                                   .filter(v => matchingSpecIds.includes(v.bottleSpecId?._id || v.bottleSpecId))
                                   .filter(v => v.variantName)
-                                  .filter(v => !group.items.filter((r, i) => i !== localIndex && r.bottleName === row.bottleName).flatMap(r => r.variantId || []).includes(v._id.toString()))
-                                  .map(v => ({ value: v._id, label: v.variantName }));
+                                  .forEach(v => {
+                                    const vNameUpper = v.variantName.trim().toUpperCase();
+                                    if (!seenVariantNames.has(vNameUpper) && !selectedSiblingVariantNames.has(vNameUpper)) {
+                                      seenVariantNames.add(vNameUpper);
+                                      variantOptions.push({ value: v._id, label: v.variantName.trim() });
+                                    }
+                                  });
+                                variantOptions.sort((a, b) => a.label.localeCompare(b.label));
+
+                                const selectedVariantObjects = (row.variantId || []).map(vid => {
+                                  const found = variantOptions.find(o => o.value === vid);
+                                  if (found) return found;
+                                  const vObj = (variants || []).find(v => v._id === vid);
+                                  return vObj ? { value: vid, label: vObj.variantName } : null;
+                                }).filter(Boolean);
 
                                 return (
                                   <tr key={index}>
@@ -953,19 +1311,13 @@ export default function EditLacquerPlan() {
                                     {renderGroupCell && (
                                     <td rowSpan={rowSpan} className="align-middle" style={{ backgroundColor: isGrouped ? '#f8f9fa' : 'inherit' }}>
                                       <CreatableSelect
-                                        options={rowBottleOptions}
-                                        value={rowBottleOptions.find(o => o.value === row.bottleName) || (row.bottleName ? { value: row.bottleName, label: row.bottleName } : null)}
+                                        options={availablePlainBottleOptions}
+                                        value={availablePlainBottleOptions.find(o => o.value === row.bottleName) || (row.bottleName ? { value: row.bottleName, label: row.bottleName } : null)}
                                         onChange={(selected) => handleRowChange(index, 'bottleName', selected ? selected.value.toUpperCase() : '')}
                                         placeholder={gBrandId ? "Select bottle..." : "Select brand first..."}
                                         isDisabled={!gBrandId}
                                         isClearable
                                         required
-                                        filterOption={(option, inputValue) => {
-                                           if (option.data.__isNew__) return true;
-                                           if (!option.data.isBrandSpecific) return false;
-                                           if (!inputValue) return true;
-                                           return option.label.toLowerCase().includes(inputValue.toLowerCase());
-                                        }}
                                         menuPortalTarget={document.body}
                                         styles={{ menuPortal: base => ({ ...base, zIndex: 9999 }) }}
                                       />
@@ -975,11 +1327,11 @@ export default function EditLacquerPlan() {
                                       <Select
                                         isMulti
                                         options={variantOptions}
-                                        value={variantOptions.filter(o => row.variantId.includes(o.value))}
+                                        value={selectedVariantObjects}
                                         onChange={(selected) => handleRowChange(index, 'variantId', selected ? selected.map(s => s.value) : [])}
-                                        placeholder="Variant..."
+                                        placeholder={isShrenoSection ? "Variant (optional)..." : "Variant..."}
                                         isClearable
-                                        required
+                                        required={!isShrenoSection}
                                         menuPortalTarget={document.body}
                                         styles={{ 
                                           menuPortal: base => ({ ...base, zIndex: 9999 }),
@@ -988,7 +1340,7 @@ export default function EditLacquerPlan() {
                                           multiValueLabel: base => ({ ...base, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' })
                                         }}
                                       />
-                                      {row.bottleName && variantOptions.length === 0 && (
+                                      {row.bottleName && variantOptions.length === 0 && !isShrenoSection && (
                                         <div style={{ fontSize: '0.7rem' }} className="text-warning mt-1">
                                           <i className="bi bi-exclamation-triangle-fill me-1"></i>
                                           No variants. <button type="button" onClick={() => handleAddVariantClick(row.bottleName, gBrandId, index, row.colour)} className="text-decoration-underline text-warning fw-bold btn btn-link p-0 border-0 align-baseline" style={{ fontSize: 'inherit' }}>Add Variant</button>
@@ -1034,8 +1386,8 @@ export default function EditLacquerPlan() {
                                       />
                                     </td>
                                     )}
-                                    {renderGroupCell && (
-                                    <td rowSpan={rowSpan} className="align-middle" style={{ backgroundColor: isGrouped ? '#f8f9fa' : 'inherit' }}>
+                                    {renderProcessCell && (
+                                    <td rowSpan={processRowSpan} className="align-middle" style={{ backgroundColor: (isGrouped && processRowSpan > 1) ? '#f8f9fa' : 'inherit' }}>
                                       <select className="form-select form-select-sm shadow-none" value={row.process} onChange={(e) => handleRowChange(index, 'process', e.target.value)} required>
                                         <option value="C">C</option>
                                         <option value="P">P</option>
@@ -1049,13 +1401,8 @@ export default function EditLacquerPlan() {
                                     </td>
                                     )}
                                     {renderGroupCell && (
-                                    <td rowSpan={rowSpan} className="align-middle" style={{ backgroundColor: isGrouped ? '#f8f9fa' : 'inherit' }}>
-                                      <input type="number" className="form-control form-control-sm shadow-none text-center" value={row.plainStock} onChange={(e) => handleRowChange(index, 'plainStock', e.target.value)} min="0" />
-                                    </td>
-                                    )}
-                                    {renderGroupCell && (
-                                    <td rowSpan={rowSpan} className="align-middle" style={{ backgroundColor: isGrouped ? '#f8f9fa' : 'inherit' }}>
-                                      <input type="number" className="form-control form-control-sm shadow-none text-center" value={row.boxQty} onChange={(e) => handleRowChange(index, 'boxQty', e.target.value)} min="1" />
+                                    <td rowSpan={rowSpan} className="align-middle" style={{ backgroundColor: row.isExceedingStock ? '#fff3cd' : (isGrouped ? '#f8f9fa' : 'inherit') }}>
+                                      <input type="number" className={`form-control form-control-sm shadow-none text-center ${row.isExceedingStock ? 'bg-warning' : ''}`} value={row.plainStock} onChange={(e) => handleRowChange(index, 'plainStock', e.target.value)} min="0" />
                                     </td>
                                     )}
                                     <td>
@@ -1064,41 +1411,16 @@ export default function EditLacquerPlan() {
                                         className={`form-control form-control-sm shadow-none text-center ${row.isExceedingStock ? 'bg-warning' : ''}`} 
                                         value={row.orderQty} 
                                         onChange={(e) => handleRowChange(index, 'orderQty', e.target.value)}
-                                        onBlur={async () => {
-                                          // Check stock warning only on quantity INCREASE in Edit mode
-                                          const newQty = parseFloat(row.orderQty) || 0;
-                                          const oldQty = originalQties[index] || 0;
-                                          
-                                          if (newQty > oldQty && row.bottleName && row.companyId) {
-                                            try {
-                                              const res = await API.get('/lacquer-plan/validate-stock', {
-                                                params: {
-                                                  bottleName: row.bottleName,
-                                                  companyId: row.companyId,
-                                                  orderQty: newQty,
-                                                  excludeRowId: row._id
-                                                }
-                                              });
-                                              if (res.data.success) {
-                                                if (res.data.data.hasWarning) {
-                                                  setStockWarnings(prev => ({ ...prev, [index]: res.data.data }));
-                                                } else {
-                                                  setStockWarnings(prev => {
-                                                    const updated = { ...prev };
-                                                    delete updated[index];
-                                                    return updated;
-                                                  });
-                                                }
-                                              }
-                                            } catch (err) {
-                                              console.error('Stock validation error:', err);
-                                            }
-                                          } else if (newQty <= oldQty) {
-                                            // Clear warning if qty decreased or unchanged
-                                            setStockWarnings(prev => {
-                                              const updated = { ...prev };
-                                              delete updated[index];
-                                              return updated;
+                                        onBlur={() => {
+                                          // Show popup once on blur if this row is exceeding opening stock
+                                          if (row.isExceedingStock) {
+                                            Swal.fire({
+                                              toast: true,
+                                              position: 'top-end',
+                                              icon: 'warning',
+                                              title: labels.orderExceedsOpeningStock,
+                                              showConfirmButton: false,
+                                              timer: 3000
                                             });
                                           }
                                         }}
@@ -1111,6 +1433,17 @@ export default function EditLacquerPlan() {
                                     </td>
                                     <td>
                                       <input type="number" className="form-control form-control-sm shadow-none text-center" value={row.balanceToMake} onChange={(e) => handleRowChange(index, 'balanceToMake', e.target.value)} />
+                                      {isPlanRowCompleted(row) && (
+                                        <span className="badge bg-success d-block mt-1" style={{ fontSize: 10 }}>COMPLETED</span>
+                                      )}
+                                    </td>
+                                    {renderGroupCell && (
+                                    <td rowSpan={rowSpan} className="align-middle" style={{ backgroundColor: isGrouped ? '#f8f9fa' : 'inherit' }}>
+                                      <input type="number" className="form-control form-control-sm shadow-none text-center" value={row.boxQty} onChange={(e) => handleRowChange(index, 'boxQty', e.target.value)} min="1" />
+                                    </td>
+                                    )}
+                                    <td>
+                                      <input type="number" className="form-control form-control-sm shadow-none text-center" value={row.noOfBoxes} onChange={(e) => handleRowChange(index, 'noOfBoxes', e.target.value)} min="0" />
                                     </td>
                                     <td>
                                       <input type="number" className="form-control form-control-sm shadow-none text-center" value={row.dispatchBalance} onChange={(e) => handleRowChange(index, 'dispatchBalance', e.target.value)} min="0" />
@@ -1119,13 +1452,9 @@ export default function EditLacquerPlan() {
                                       <input type="number" className="form-control form-control-sm shadow-none text-center" value={row.soldQty} onChange={(e) => handleRowChange(index, 'soldQty', e.target.value)} min="0" />
                                     </td>
                                     <td>
-                                      <input type="number" className="form-control form-control-sm shadow-none text-center" value={row.noOfBoxes} onChange={(e) => handleRowChange(index, 'noOfBoxes', e.target.value)} min="0" />
-                                    </td>
-                                    <td>
                                       <input type="text" className="form-control form-control-sm shadow-none" value={row.remarks} onChange={(e) => handleRowChange(index, 'remarks', e.target.value)} />
                                     </td>
-                                    {renderGroupCell && (
-                                    <td rowSpan={rowSpan} className="text-center align-middle" style={{ backgroundColor: isGrouped ? '#f8f9fa' : 'inherit' }}>
+                                    <td className="text-center align-middle">
                                       <button
                                         type="button"
                                         className="btn btn-sm btn-light text-danger rounded-circle shadow-sm"
@@ -1135,7 +1464,6 @@ export default function EditLacquerPlan() {
                                         <i className="bi bi-trash"></i>
                                       </button>
                                     </td>
-                                    )}
                                   </tr>
                                 );
                               })}
@@ -1143,64 +1471,7 @@ export default function EditLacquerPlan() {
                           </table>
                         </div>
 
-                        {/* Stock Warning Display */}
-                        {Object.keys(stockWarnings).some(idx => {
-                          const groupItems = group.items.map(item => item.originalIndex);
-                          return groupItems.includes(parseInt(idx));
-                        }) && (
-                          <div className="alert alert-warning border-warning p-3 mb-3 rounded-3" role="alert">
-                            <h6 className="fw-bold mb-3 text-warning">
-                              <i className="bi bi-exclamation-triangle-fill me-2"></i>⚠️ Stock Warning(s) Detected
-                            </h6>
-                            {group.items.map((rowItem) => {
-                              const index = rowItem.originalIndex;
-                              const warning = stockWarnings[index];
-                              if (!warning) return null;
-                              
-                              const newQty = parseFloat(rowItem.orderQty) || 0;
-                              const oldQty = originalQties[index] || 0;
-                              const delta = newQty - oldQty;
-                              
-                              return (
-                                <div key={index} className="mb-3 p-3 bg-white rounded border-warning border-2">
-                                  <div className="row mb-2">
-                                    <div className="col-md-6">
-                                      <small className="text-muted fw-bold">Row {rowItem.bottleName}</small>
-                                      <div className="text-dark fw-bold">
-                                        Increasing from {oldQty} to {newQty} (delta: +{delta})
-                                      </div>
-                                    </div>
-                                    <div className="col-md-6">
-                                      <small className="text-muted fw-bold">Available Stock</small>
-                                      <div className="text-danger fw-bold">Over by: {warning.overBy} units</div>
-                                    </div>
-                                  </div>
-                                  <div className="row mb-3">
-                                    <div className="col-12">
-                                      <small className="text-muted">
-                                        Current Stock: <strong>{warning.details?.totalStock || 0}</strong> | 
-                                        Allocated: <strong>{warning.details?.allocated || 0}</strong> | 
-                                        Available: <strong className="text-danger">{warning.availableStock}</strong>
-                                      </small>
-                                    </div>
-                                  </div>
-                                  <div className="form-check">
-                                    <input 
-                                      className="form-check-input" 
-                                      type="checkbox" 
-                                      id={`acknowledge-warning-${index}`}
-                                      checked={acknowledgeStockWarning[index] || false}
-                                      onChange={(e) => setAcknowledgeStockWarning(prev => ({ ...prev, [index]: e.target.checked }))}
-                                    />
-                                    <label className="form-check-label small text-muted" htmlFor={`acknowledge-warning-${index}`}>
-                                      I understand the risk and want to update this quantity anyway
-                                    </label>
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        )}
+                        {/* No acknowledgement banner — stock exceeded rows are highlighted yellow inline */}
 
                         <div className="d-flex justify-content-between">
                           <button type="button" className="btn btn-sm btn-outline-primary shadow-sm" onClick={() => addEntryRow(group.id)}>
