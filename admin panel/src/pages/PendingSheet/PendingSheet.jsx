@@ -52,16 +52,16 @@ const PendingSheet = () => {
     }));
     const worksheet = XLSX.utils.json_to_sheet(exportData);
     const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, 'Pending Sheet');
-    XLSX.writeFile(workbook, `Pending_Sheet_${new Date().toISOString().split('T')[0]}.xlsx`);
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Ready Stock');
+    XLSX.writeFile(workbook, `Ready_Stock_${new Date().toISOString().split('T')[0]}.xlsx`);
   };
 
   return (
     <div className="page-content">
       <div className="page-header d-flex align-items-center justify-content-between companies-page-header">
         <div>
-          <h1 className="page-title">Pending Sheet</h1>
-          <p className="page-subtitle">Manage and track your pending sheets</p>
+          <h1 className="page-title">Ready Stock</h1>
+          <p className="page-subtitle">Manage and track ready stock entries</p>
         </div>
         <div className="d-flex gap-2">
           <button className="btn-accent companies-header-action bg-success" onClick={handleExportExcel}>
@@ -80,7 +80,7 @@ const PendingSheet = () => {
             <input
               type="text"
               className="form-control form-control-sm border-light-subtle bg-light ps-5 py-2 shadow-none"
-              placeholder="Search pending sheets..."
+              placeholder="Search ready stock entries..."
               value={searchTerm}
               onChange={e => setSearchTerm(e.target.value)}
               style={{ borderRadius: 10, fontSize: 13, minWidth: '250px' }}

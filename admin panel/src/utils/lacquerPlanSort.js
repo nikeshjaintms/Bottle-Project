@@ -68,8 +68,10 @@ export function compareVariants(aVariant, bVariant) {
  * 4. Variant (Alphabetical)
  */
 export function sortLacquerPlans(a, b) {
-  // 1. Bottle Name
-  const bottleCompare = compareBottleNames(a.bottleName, b.bottleName);
+  // 1. Plain Bottle (Group all variants belonging to the same plain bottle together)
+  const bottleA = a.plainBottle || a.bottleName;
+  const bottleB = b.plainBottle || b.bottleName;
+  const bottleCompare = compareBottleNames(bottleA, bottleB);
   if (bottleCompare !== 0) return bottleCompare;
 
   // 2. Brand Name
@@ -78,7 +80,15 @@ export function sortLacquerPlans(a, b) {
   const brandCompare = compareBrands(brandA, brandB);
   if (brandCompare !== 0) return brandCompare;
 
-  // 3. Import Group (Preserve grouped records together if they share the exact same bottle + brand)
+  // 3. Process (Group variants of the same bottle by process)
+  const processA = String(a.process || 'C').trim().toUpperCase();
+  const processB = String(b.process || 'C').trim().toUpperCase();
+  if (processA !== processB) {
+      if (processA < processB) return -1;
+      if (processA > processB) return 1;
+  }
+
+  // 4. Import Group (Preserve grouped records together if they share the exact same bottle + brand + process)
   if (a.importGroupId && b.importGroupId && a.importGroupId === b.importGroupId) {
       return (a.importGroupIndex || 0) - (b.importGroupIndex || 0);
   }
@@ -87,14 +97,6 @@ export function sortLacquerPlans(a, b) {
   if (idA !== idB) {
       if (idA < idB) return -1;
       if (idA > idB) return 1;
-  }
-
-  // 4. Shared properties for manual groups (to keep identical rows contiguous)
-  const processA = a.process || '';
-  const processB = b.process || '';
-  if (processA !== processB) {
-      if (processA < processB) return -1;
-      if (processA > processB) return 1;
   }
   
   const orderQtyA = a.orderQty || 0;

@@ -2,13 +2,13 @@ const ItemType = require("../models/ItemType");
 
 exports.createItemType = async (req, res) => {
   try {
-    const { name, status } = req.body;
+    const { name, status, options } = req.body;
     if (!name) return res.status(400).json({ message: "Name is required" });
 
     const existing = await ItemType.findOne({ name: { $regex: new RegExp(`^${name}$`, "i") }, isDeleted: false });
     if (existing) return res.status(400).json({ message: "Item Type already exists" });
 
-    const itemType = await ItemType.create({ name, status });
+    const itemType = await ItemType.create({ name, status, options: options || [] });
     res.status(201).json(itemType);
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -51,14 +51,14 @@ exports.getItemTypeById = async (req, res) => {
 
 exports.updateItemType = async (req, res) => {
   try {
-    const { name, status } = req.body;
+    const { name, status, options } = req.body;
     const existing = await ItemType.findOne({ _id: { $ne: req.params.id }, name: { $regex: new RegExp(`^${name}$`, "i") }, isDeleted: false });
     if (existing) return res.status(400).json({ message: "Another Item Type with this name already exists" });
 
     const itemType = await ItemType.findOneAndUpdate(
       { _id: req.params.id, isDeleted: false },
-      { name, status },
-      { new: true }
+      { name, status, options: options || [] },
+      { returnDocument: 'after' }
     );
     if (!itemType) return res.status(404).json({ message: "Item Type not found" });
     res.status(200).json(itemType);
@@ -72,7 +72,7 @@ exports.deleteItemType = async (req, res) => {
     const itemType = await ItemType.findOneAndUpdate(
       { _id: req.params.id, isDeleted: false },
       { isDeleted: true },
-      { new: true }
+      { returnDocument: 'after' }
     );
     if (!itemType) return res.status(404).json({ message: "Item Type not found" });
     res.status(200).json({ message: "Item Type deleted successfully" });

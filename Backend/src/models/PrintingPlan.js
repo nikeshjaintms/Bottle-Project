@@ -80,6 +80,10 @@ const printingPlanSchema = new mongoose.Schema({
   remarks: {
     type: String
   },
+  process: {
+    type: String,
+    default: null
+  },
   components: [{
     itemType: String,
     componentType: String,
@@ -89,6 +93,22 @@ const printingPlanSchema = new mongoose.Schema({
   isDeleted: {
     type: Boolean,
     default: false
+  },
+  appliedStockDeduction: {
+    type: Number,
+    default: 0
+  },
+  isEditedAfterImport: {
+    type: Boolean,
+    default: false
+  },
+  lastEditedAt: {
+    type: Date,
+    default: null
+  },
+  originalImportedValues: {
+    type: mongoose.Schema.Types.Mixed,
+    default: null
   }
 }, { timestamps: true });
 

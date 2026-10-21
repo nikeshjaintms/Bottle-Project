@@ -12,6 +12,7 @@ import ImportExcelModal from './ImportExcelModal';
 import { useLacquerPlanLanguage } from '../../hooks/useLacquerPlanLanguage';
 import { sortLacquerPlans } from '../../utils/lacquerPlanSort';
 import { buildContiguousGroups, buildMultipleContiguousGroups } from '../../utils/tableGrouping';
+import { isPlanRowCompleted } from '../../utils/lacquerPlanUtils';
 import ZoomControl from '../../components/ZoomControl';
 import * as XLSX from 'xlsx';
 
@@ -218,6 +219,37 @@ export default function LacquerPlan() {
     return result;
   }, [plans, selectedCompanyId, selectedBrandId, search]);
 
+  // Compute opening stock per (companyId, bottleName, planDate) pool from plans.
+  // openingStock = max remaining plainStock in pool + Σ coatingCompletedQty in pool.
+  // Also compute totalOrderInPool to correctly determine if ANY row in the pool exceeds.
+  const poolOpeningStocks = useMemo(() => {
+    const map = new Map();
+    (plans || []).forEach(plan => {
+      const compId = plan.canonicalCompanyId || (plan.companyId?._id || plan.companyId || '').toString();
+      const bottle = (plan.bottleName || '').toUpperCase();
+      const day = plan.planDate ? new Date(plan.planDate).toISOString().split('T')[0] : '';
+      const key = `${compId}::${bottle}::${day}`;
+      if (!map.has(key)) {
+        map.set(key, { maxRemaining: 0, totalCoated: 0, totalOrder: 0 });
+      }
+      const entry = map.get(key);
+      const remaining = parseFloat(plan.plainStock) || 0;
+      if (remaining > entry.maxRemaining) entry.maxRemaining = remaining;
+      entry.totalCoated += parseFloat(plan.coatingCompletedQty || plan.coatedQty) || 0;
+      entry.totalOrder += parseFloat(plan.orderQty) || 0;
+    });
+    // Convert to { openingStock, isExceeding } per pool
+    const result = new Map();
+    map.forEach((entry, key) => {
+      const openingStock = entry.maxRemaining + entry.totalCoated;
+      result.set(key, {
+        openingStock,
+        isExceeding: openingStock > 0 && entry.totalOrder > openingStock
+      });
+    });
+    return result;
+  }, [plans]);
+
   const handleDelete = (id) => {
     Swal.fire({
       title: 'Are you sure?',
@@ -273,8 +305,47 @@ export default function LacquerPlan() {
       const sourceDate = result.value;
 
       setImporting(true);
-      const res = await API.post('/lacquer-plan/import-previous', { targetDate: selectedDate, sourceDate });
-      if (res.data.success) {
+      
+      // First call: check if confirmation needed
+      const checkRes = await API.post('/lacquer-plan/import-previous', { targetDate: selectedDate, sourceDate });
+      
+      if (checkRes.data.requiresConfirmation && checkRes.data.hasExistingImport) {
+        // Show import mode choice dialog
+        const modeResult = await Swal.fire({
+          title: 'Import Mode',
+          text: 'This date already has imports from that source date. How would you like to proceed?',
+          icon: 'question',
+          showCancelButton: true,
+          confirmButtonText: 'With Changes (Update & Add)',
+          cancelButtonText: 'Without Changes',
+          showDenyButton: true,
+          denyButtonText: 'Cancel',
+          reverseButtons: true
+        });
+        
+        let importMode = null;
+        if (modeResult.isConfirmed) {
+          importMode = 'with_changes';
+        } else if (modeResult.isDenied) {
+          setImporting(false);
+          return;
+        } else if (!modeResult.isDismissed) {
+          importMode = 'without_changes';
+        }
+        
+        if (importMode) {
+          const res = await API.post('/lacquer-plan/import-previous', { 
+            targetDate: selectedDate, 
+            sourceDate,
+            importMode
+          });
+          if (res.data.success) {
+            dispatch(fetchLacquerPlans({ date: selectedDate }));
+            Swal.fire('Imported!', `Previous plan imported (${importMode === 'with_changes' ? 'with changes' : 'without changes'}).`, 'success');
+          }
+        }
+      } else if (checkRes.data.success) {
+        // First import or no special prompt needed
         dispatch(fetchLacquerPlans({ date: selectedDate }));
         Swal.fire('Imported!', 'Previous plan imported successfully.', 'success');
       }
@@ -413,6 +484,7 @@ export default function LacquerPlan() {
             <th className="py-3 text-uppercase fw-bolder text-center" style={{ fontSize: '15px', backgroundColor: 'var(--accent)', color: 'white' }}>{labels.bottlePerBox}</th>
             <th className="py-3 text-uppercase fw-bolder text-center" style={{ fontSize: '15px', backgroundColor: 'var(--accent)', color: 'white' }}>{labels.noOfOrderBoxes}</th>
             <th className="py-3 text-uppercase fw-bolder text-center" style={{ fontSize: '15px', backgroundColor: 'var(--accent)', color: 'white' }}>{labels.remarks}</th>
+            <th className="py-3 text-uppercase fw-bolder text-center" style={{ fontSize: '15px', backgroundColor: 'var(--accent)', color: 'white' }}>⚠️ Alert</th>
             <th className="py-3 text-uppercase fw-bolder text-center" style={{ width: 100, fontSize: '15px', backgroundColor: 'var(--accent)', color: 'white' }}>{labels.actions || 'Actions'}</th>
           </tr>
         </thead>
@@ -494,15 +566,33 @@ export default function LacquerPlan() {
                 </td>
               )}
               
-              {(!plan._bottleVisualId || isFirstInBottleVisualGroup) && (
-                <td className="py-3 text-center align-middle" rowSpan={bottleVisualRowSpan}>{plan.plainStock !== null && plan.plainStock !== undefined ? plan.plainStock : 0}</td>
-              )}
-              
-              <td className="py-3 text-center fw-bold">{plan.orderQty !== null && plan.orderQty !== undefined ? plan.orderQty : '-'}</td>
+              {(!plan._bottleVisualId || isFirstInBottleVisualGroup) && (() => {
+                const compId = plan.canonicalCompanyId || (plan.companyId?._id || plan.companyId || '').toString();
+                const bottle = (plan.bottleName || '').toUpperCase();
+                const day = plan.planDate ? new Date(plan.planDate).toISOString().split('T')[0] : '';
+                const poolKey = `${compId}::${bottle}::${day}`;
+                const poolData = poolOpeningStocks.get(poolKey);
+                const isExceeding = poolData?.isExceeding || false;
+                return (
+                  <td className={`py-3 text-center align-middle ${isExceeding ? 'bg-warning' : ''}`} rowSpan={bottleVisualRowSpan}>{plan.plainStock !== null && plan.plainStock !== undefined ? plan.plainStock : 0}</td>
+                );
+              })()}
+
+              {(() => {
+                const compId = plan.canonicalCompanyId || (plan.companyId?._id || plan.companyId || '').toString();
+                const bottle = (plan.bottleName || '').toUpperCase();
+                const day = plan.planDate ? new Date(plan.planDate).toISOString().split('T')[0] : '';
+                const poolKey = `${compId}::${bottle}::${day}`;
+                const poolData = poolOpeningStocks.get(poolKey);
+                const isExceeding = poolData?.isExceeding || false;
+                return (
+                  <td className={`py-3 text-center fw-bold ${isExceeding ? 'bg-warning' : ''}`}>{plan.orderQty !== null && plan.orderQty !== undefined ? plan.orderQty : '-'}</td>
+                );
+              })()}
               <td className="py-3 text-center">{plan.coatingCompletedQty !== null && plan.coatingCompletedQty !== undefined ? plan.coatingCompletedQty : (plan.coatedQty || 0)}</td>
               <td className={`py-3 text-center fw-bold ${plan.balanceToMake >= 0 ? 'text-success' : 'text-danger'}`}>
                 {plan.balanceToMake !== null && plan.balanceToMake !== undefined ? plan.balanceToMake : '-'}
-                {plan.balanceToMake >= 0 && <span className="d-block mt-1 badge bg-success" style={{ fontSize: 10 }}>COMPLETED</span>}
+                {isPlanRowCompleted(plan) && <span className="d-block mt-1 badge bg-success" style={{ fontSize: 10 }}>COMPLETED</span>}
               </td>
               <td className="py-3 text-center">{plan.dispatchPendingQty !== null && plan.dispatchPendingQty !== undefined ? plan.dispatchPendingQty : (plan.dispatchBalance || 0)}</td>
               <td className="py-3 text-center">{plan.soldQty || 0}</td>
@@ -512,6 +602,18 @@ export default function LacquerPlan() {
               )}
               <td className="py-3 text-center">{plan.noOfBoxes !== null && plan.noOfBoxes !== undefined ? plan.noOfBoxes : '-'}</td>
               <td className="py-3 text-center small text-muted">{plan.remarks || '-'}</td>
+              <td className="py-3 text-center">
+                {plan.stockWarningAcknowledged && (
+                  <span 
+                    className="badge bg-warning text-dark me-2" 
+                    title={`Stock Warning Override: Order: ${plan.orderQty} | Available: ${plan.plainStock} | Acknowledged: ${plan.acknowledgedAt ? new Date(plan.acknowledgedAt).toLocaleDateString() : 'N/A'}`}
+                    style={{ cursor: 'pointer' }}
+                    data-bs-toggle="tooltip"
+                  >
+                    ⚠️ Stock Override
+                  </span>
+                )}
+              </td>
               <td className="py-3 text-center">
                 <div className="d-flex gap-2 justify-content-center">
                   <Link to={`/lacquer-plan/view/${plan._id}`} className="btn btn-sm btn-outline-info border-0 rounded-3 shadow-none p-2" title="View">
@@ -534,7 +636,7 @@ export default function LacquerPlan() {
           );
           }) : (
             <tr>
-              <td colSpan={showDate ? "17" : "16"} className="text-center py-5 text-muted">No plans found</td>
+              <td colSpan={showDate ? "18" : "17"} className="text-center py-5 text-muted">No plans found</td>
             </tr>
           )}
         </tbody>

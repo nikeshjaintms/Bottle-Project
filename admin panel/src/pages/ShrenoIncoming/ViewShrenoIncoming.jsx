@@ -78,7 +78,7 @@ export default function ViewShrenoIncoming() {
           <div className="d-flex flex-column gap-3">
             {/* Header Row */}
             <div className="row px-3 small fw-bold text-muted text-uppercase mb-1">
-              <div className="col-4">Bottle Name</div>
+              <div className="col-4">Plain Bottle</div>
               <div className="col-2 text-center">Item Type</div>
               <div className="col-3 text-center">Configuration</div>
               <div className="col-3 text-end">Quantity</div>
@@ -87,12 +87,22 @@ export default function ViewShrenoIncoming() {
             {/* Item Rows */}
             {data.items?.map((item, index) => (
               <div key={index} className="row align-items-center px-3 py-3 bg-light rounded-4 border border-light-subtle">
-                <div className="col-4 fw-bold fs-6 text-dark">{item.bottleName?.bottleName || 'Unknown'}</div>
+                <div className="col-4 fw-bold fs-6 text-dark">
+                  {typeof item.plainBottle === 'object' && item.plainBottle
+                    ? (item.plainBottle.plainBottleName || item.plainBottle.bottleName || 'Unknown') 
+                    : 'N/A'}
+                </div>
                 <div className="col-2 text-center">
-                  <span className="badge bg-white text-dark border px-3 py-2 rounded-pill fs-6 shadow-sm">{item.itemType?.name || item.itemType || 'Unknown'}</span>
+                  <span className="badge bg-white text-dark border px-3 py-2 rounded-pill fs-6 shadow-sm">
+                    {typeof item.itemType === 'object' && item.itemType?.name
+                      ? item.itemType.name 
+                      : '-'}
+                  </span>
                 </div>
                 <div className="col-3 text-center fw-500">
-                  <span className="badge bg-white text-dark border px-3 py-2 rounded-pill fs-6 shadow-sm">{item.configuration || '-'}</span>
+                  <span className="badge bg-white text-dark border px-3 py-2 rounded-pill fs-6 shadow-sm">
+                    {item.configuration || '-'}
+                  </span>
                 </div>
                 <div className="col-3 text-end fw-bold text-accent fs-5">
                   {Number(item.quantity || 0).toLocaleString()}

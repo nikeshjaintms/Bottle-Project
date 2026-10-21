@@ -4,6 +4,8 @@ import { Link, useParams, useNavigate } from 'react-router-dom';
 import { fetchPrintingPlans, deletePrintingPlan } from '../../redux/slices/printingPlanSlice';
 import { fetchCompanies } from '../../redux/slices/companySlice';
 import { fetchBrands } from '../../redux/slices/brandSlice';
+import { fetchVariants } from '../../redux/slices/variantSlice';
+import { fetchBottleSpecs } from '../../redux/slices/bottleSpecSlice';
 import API from '../../services/api';
 import Swal from 'sweetalert2';
 import Select from 'react-select';
@@ -97,6 +99,8 @@ export default function PrintingPlan() {
   const { plans, loading } = useSelector((state) => state.printingPlans);
   const { companies } = useSelector((state) => state.companies || { companies: [] });
   const { brands } = useSelector((state) => state.brands || { brands: [] });
+  const { variants } = useSelector((state) => state.variants || { variants: [] });
+  const { bottleSpecs } = useSelector((state) => state.bottleSpecs || { bottleSpecs: [] });
   const { labels, language, toggleLanguage } = usePrintingPlanLanguage();
   
   const today = new Date();
@@ -134,6 +138,8 @@ export default function PrintingPlan() {
   useEffect(() => {
     dispatch(fetchCompanies({ pagination: 'false' }));
     dispatch(fetchBrands({ pagination: 'false' }));
+    dispatch(fetchVariants({ pagination: 'false' }));
+    dispatch(fetchBottleSpecs({ pagination: 'false', type: 'all' }));
   }, [dispatch]);
 
   useEffect(() => {
@@ -141,6 +147,17 @@ export default function PrintingPlan() {
       fetchPlans();
     }, 500);
     return () => clearTimeout(delayDebounceFn);
+  }, [dispatch, selectedDate, fromDate, toDate, search, selectedCompanyId, selectedBrandId]);
+
+  // Refetch when user returns to this page (tab/window focus or navigation)
+  useEffect(() => {
+    const handleFocus = () => {
+      console.log('Printing Plan page focused, refetching...');
+      fetchPlans();
+    };
+    
+    window.addEventListener('focus', handleFocus);
+    return () => window.removeEventListener('focus', handleFocus);
   }, [dispatch, selectedDate, fromDate, toDate, search, selectedCompanyId, selectedBrandId]);
 
   const handleCompanyChange = (companyId) => {
@@ -201,8 +218,30 @@ export default function PrintingPlan() {
         (p.variantName?.toLowerCase().includes(s))
       );
     }
+    
+    // Auto-fill printingToBeDone and textColor from variants if missing
+    result = result.map(p => {
+       if (!p.printingToBeDone || p.printingToBeDone === '-' || !p.textColor || p.textColor === '-') {
+          const spec = (bottleSpecs || []).find(bs => bs.bottleName?.trim().toUpperCase() === p.bottleName?.trim().toUpperCase());
+          if (spec) {
+             const variant = (variants || []).find(v => 
+                 (v.bottleSpecId?._id || v.bottleSpecId) === spec._id &&
+                 v.coatingShade?.trim().toUpperCase() === p.coatingShade?.trim().toUpperCase()
+             );
+             if (variant) {
+                 return {
+                     ...p,
+                     printingToBeDone: (p.printingToBeDone && p.printingToBeDone !== '-') ? p.printingToBeDone : (variant.variantName || ''),
+                     textColor: (p.textColor && p.textColor !== '-') ? p.textColor : (variant.detectedTextColor || '')
+                 };
+             }
+          }
+       }
+       return p;
+    });
+
     return result;
-  }, [plans, selectedCompanyId, selectedBrandId, search]);
+  }, [plans, selectedCompanyId, selectedBrandId, search, variants, bottleSpecs]);
 
   const handleDelete = (id) => {
     Swal.fire({
@@ -261,8 +300,48 @@ export default function PrintingPlan() {
       setImporting(true);
       const res = await API.post('/printing-plan/import-previous', { targetDate: selectedDate, sourceDate });
       if (res.data.success) {
-        dispatch(fetchPrintingPlans({ date: selectedDate }));
-        Swal.fire('Imported!', 'Previous plan imported successfully.', 'success');
+        if (res.data.requiresConfirmation) {
+          setImporting(false);
+          const choice = await Swal.fire({
+            title: 'Previous Plan Modified',
+            html: `
+              <p class="text-muted mb-2">The source plan for <strong>${sourceDate}</strong> has <strong>${res.data.editedCount}</strong> entry(s) that were manually edited after import.</p>
+              <p class="mb-0 fw-bold">How would you like to carry forward this plan?</p>
+            `,
+            icon: 'warning',
+            showCancelButton: true,
+            showDenyButton: true,
+            confirmButtonText: 'Import with changes',
+            confirmButtonColor: '#3085d6',
+            denyButtonText: 'Import without changes',
+            denyButtonColor: '#10b981',
+            cancelButtonText: 'Cancel'
+          });
+
+          if (!choice.isConfirmed && !choice.isDenied) {
+            return;
+          }
+
+          const importMode = choice.isConfirmed ? 'with_changes' : 'without_changes';
+          setImporting(true);
+          const finalRes = await API.post('/printing-plan/import-previous', {
+            targetDate: selectedDate,
+            sourceDate,
+            importMode
+          });
+
+          if (finalRes.data.success) {
+            fetchPlans();
+            Swal.fire(
+              'Imported!',
+              `Previous plan imported ${importMode === 'with_changes' ? 'with edited changes' : 'with original values'}.`,
+              'success'
+            );
+          }
+        } else {
+          fetchPlans();
+          Swal.fire('Imported!', 'Previous plan imported successfully.', 'success');
+        }
       }
     } catch(err) {
       Swal.fire('Error', err.response?.data?.message || 'Failed to import previous day', 'error');
@@ -398,24 +477,28 @@ export default function PrintingPlan() {
     const getRowStableId = (r) => r._id || `temp-${r.excelRowNumber || r.srNo || Math.floor(Math.random() * 1000000)}`;
     
     const groupConfigs = [
-        { idKey: '_cBottle', keySelector: r => `${getBoundary(r)}_${r.bottleName}` },
-        { idKey: '_cShade', keySelector: r => `${getBoundary(r)}_${r.bottleName}_${r.coatingShade}` },
-        { idKey: '_cPrinting', keySelector: r => isShreno ? `nogroup_${getRowStableId(r)}` : `${getBoundary(r)}_${r.bottleName}_${r.coatingShade}_${r.printingToBeDone}` },
-        { idKey: '_cTextColor', keySelector: r => isShreno ? `nogroup_${getRowStableId(r)}` : `${getBoundary(r)}_${r.bottleName}_${r.coatingShade}_${r.printingToBeDone}_${r.textColor}` },
-        { idKey: '_cStock', keySelector: r => {
-             const shade = r.coatingShade ? String(r.coatingShade).trim().toUpperCase() : '';
-             if (shade === 'PLAIN') return `${getBoundary(r)}_${r.bottleName}_${r.plainBottleStock}`;
-             return `nogroup_${getRowStableId(r)}`;
+        { idKey: '_cBottle', keySelector: r => {
+             // Extract plain bottle name from plainBottleName (backend field), plainBottle, or BottleSpec lookup
+             // This ensures PLAIN and colored rows of the same bottle get grouped together
+             const plainName = (r.plainBottleName || r.plainBottle || r.bottleName || '').trim().toUpperCase();
+             return `${getBoundary(r)}_${plainName}`;
         }},
-        { idKey: '_cOrderQty', keySelector: r => `${getBoundary(r)}_${r.bottleName}_${r.orderQty}` },
-        { idKey: '_cBalance', keySelector: r => `${getBoundary(r)}_${r.bottleName}_${r.balanceToMake}` },
-        { idKey: '_cBoxQty', keySelector: r => `${getBoundary(r)}_${r.bottleName}_${r.boxQty}` },
-        { idKey: '_cNoOfBoxes', keySelector: r => `${getBoundary(r)}_${r.bottleName}_${r.noOfBoxes}` },
-        { idKey: '_cProduced', keySelector: r => `${getBoundary(r)}_${r.bottleName}_${r.producedQty}` },
-        { idKey: '_cDispatch', keySelector: r => `${getBoundary(r)}_${r.bottleName}_${r.dispatchBalance}` },
-        { idKey: '_cSold', keySelector: r => `${getBoundary(r)}_${r.bottleName}_${r.soldQty}` },
-        { idKey: '_cReadyBoxes', keySelector: r => `${getBoundary(r)}_${r.bottleName}_${r.readyBoxes}` },
-        { idKey: '_cRemarks', keySelector: r => `${getBoundary(r)}_${r.bottleName}_${r.remarks}` }
+        { idKey: '_cShade', keySelector: r => {
+             const shade = (r.coatingShade || '').trim().toUpperCase();
+             return shade ? `${getBoundary(r)}_${(r.plainBottle || r.bottleName || '').trim().toUpperCase()}_${shade}` : `nogroup_${getRowStableId(r)}`;
+        }},
+        { idKey: '_cPrinting', keySelector: r => isShreno ? `nogroup_${getRowStableId(r)}` : `${getBoundary(r)}_${(r.plainBottle || r.bottleName || '').trim().toUpperCase()}_${r.coatingShade}_${r.printingToBeDone}` },
+        { idKey: '_cTextColor', keySelector: r => isShreno ? `nogroup_${getRowStableId(r)}` : `${getBoundary(r)}_${(r.plainBottle || r.bottleName || '').trim().toUpperCase()}_${r.coatingShade}_${r.printingToBeDone}_${r.textColor}` },
+        { idKey: '_cStock', keySelector: r => {
+             const bName = (r.plainBottle || r.bottleName || '').trim().toUpperCase();
+             const shade = (r.coatingShade || '').trim().toUpperCase();
+             if (isShreno) {
+                 return shade ? `${getBoundary(r)}_${bName}_${shade}` : `nogroup_${getRowStableId(r)}`;
+             }
+             // Plain/Coloured bottle stock groups per (bottle, Coating Shade) combination
+             return `${getBoundary(r)}_${bName}_${shade}`;
+        }},
+        { idKey: '_cBoxQty', keySelector: r => `${getBoundary(r)}_${(r.plainBottle || r.bottleName || '').trim().toUpperCase()}` }
     ];
     
     const { contiguousList: contiguousPlanList, groupSpans } = buildMultipleContiguousGroups(planList, groupConfigs);
@@ -426,20 +509,14 @@ export default function PrintingPlan() {
         _cPrinting: new Set(),
         _cTextColor: new Set(),
         _cStock: new Set(),
-        _cOrderQty: new Set(),
-        _cBalance: new Set(),
-        _cBoxQty: new Set(),
-        _cNoOfBoxes: new Set(),
-        _cProduced: new Set(),
-        _cDispatch: new Set(),
-        _cSold: new Set(),
-        _cReadyBoxes: new Set(),
-        _cRemarks: new Set()
+        _cBoxQty: new Set()
     };
 
     const shrenoComponentHeaders = isShreno ? 
         (contiguousPlanList.find(p => p.componentHeadersList && p.componentHeadersList.length > 0)?.componentHeadersList || []) 
         : [];
+
+    const hasPrintingToBeDone = contiguousPlanList.some(p => p.printingToBeDone || p.variantId?.variantName || p.variantName);
 
     return (
       <table className="data-table" style={{ minWidth: '1800px', borderCollapse: 'separate', borderSpacing: 0 }}>
@@ -449,7 +526,8 @@ export default function PrintingPlan() {
             {showDate && <th className="py-3 text-uppercase fw-bolder text-center" style={{ fontSize: '15px', backgroundColor: 'var(--accent)', color: 'white' }}>{labels.date}</th>}
             <th className="py-3 text-uppercase fw-bolder text-center" style={{ fontSize: '15px', backgroundColor: 'var(--accent)', color: 'white' }}>{labels.bottleName}</th>
             <th className="py-3 text-uppercase fw-bolder text-center" style={{ fontSize: '15px', backgroundColor: 'var(--accent)', color: 'white' }}>{labels.coatingShade}</th>
-            <th className="py-3 text-uppercase fw-bolder text-center" style={{ fontSize: '15px', backgroundColor: 'var(--accent)', color: 'white' }}>{labels.printingToBeDone}</th>
+            <th className="py-3 text-uppercase fw-bolder text-center" style={{ fontSize: '15px', backgroundColor: 'var(--accent)', color: 'white' }}>{labels.brand}</th>
+            {hasPrintingToBeDone && <th className="py-3 text-uppercase fw-bolder text-center" style={{ fontSize: '15px', backgroundColor: 'var(--accent)', color: 'white', minWidth: '220px' }}>{labels.printingToBeDone}</th>}
             <th className="py-3 text-uppercase fw-bolder text-center" style={{ fontSize: '15px', backgroundColor: 'var(--accent)', color: 'white' }}>{isShreno && language === 'gu' ? 'ટાઈપ' : labels.textColor}</th>
             <th className="py-3 text-uppercase fw-bolder text-center" style={{ fontSize: '15px', backgroundColor: 'var(--accent)', color: 'white' }}>{labels.plainColouredBottleStock}</th>
             <th className="py-3 text-uppercase fw-bolder text-center" style={{ fontSize: '15px', backgroundColor: 'var(--accent)', color: 'white' }}>{labels.orderQty}</th>
@@ -528,45 +606,66 @@ export default function PrintingPlan() {
               </td>
               {showDate && <td className="py-3 text-center">{new Date(plan.planDate).toLocaleDateString()}</td>}
               
-              {renderGroupedTd('_cBottle', plan.bottleName || '*', "py-3 text-center fw-600 text-dark align-middle")}
+              {renderGroupedTd('_cBottle', plan.plainBottleName || plan.plainBottle || plan.bottleName || '*', "py-3 text-center fw-600 text-dark align-middle")}
               
               {renderGroupedTd('_cShade', plan.coatingShade ? (
                 <span className="badge bg-soft-warning text-warning-accent px-2 py-1" style={{ fontSize: 10 }}>{plan.coatingShade}</span>
               ) : '-')}
               
-              {renderGroupedTd('_cPrinting', (
-                <span className="badge bg-soft-info text-info px-2 py-1" style={{ fontSize: 11 }}>{plan.printingToBeDone || '-'}</span>
-              ))}
+              <td className="py-3 text-center text-accent fw-500 align-middle">
+                {plan.brandId?.name || plan.brandName || '-'}
+              </td>
+              
+              {hasPrintingToBeDone && (
+                <td className="py-3 text-center">
+                  <span className="badge bg-soft-primary text-primary px-2 py-1 text-wrap" style={{ fontSize: 11, maxWidth: '280px', display: 'inline-block', whiteSpace: 'normal', wordBreak: 'break-word', lineHeight: '1.3' }}>
+                    {plan.printingToBeDone || plan.variantId?.variantName || plan.variantName || '-'}
+                  </span>
+                </td>
+              )}
               
               {renderGroupedTd('_cTextColor', (
                 <span className="badge bg-soft-secondary text-secondary px-2 py-1" style={{ fontSize: 11 }}>{plan.textColor || '-'}</span>
               ))}
               
-              {renderGroupedTd('_cStock', plan.plainBottleStock !== null && plan.plainBottleStock !== undefined && plan.plainBottleStock !== '' ? plan.plainBottleStock : '')}
+              {renderGroupedTd('_cStock', (
+                (() => {
+                  return (
+                    <>
+                      {plan.plainBottleStock !== null && plan.plainBottleStock !== undefined && plan.plainBottleStock !== '' ? plan.plainBottleStock : ''}
+                    </>
+                  );
+                })()
+              ))}
               
-              {renderGroupedTd('_cOrderQty', plan.orderQty, "py-3 text-center fw-bold")}
+              <td className={`py-3 text-center fw-bold align-middle ${
+                (plan.coatingShade || '').trim().toUpperCase() === 'PLAIN' && 
+                plan.plainBottleStock > 0 && 
+                plan.orderQty > plan.plainBottleStock 
+                  ? 'bg-warning' 
+                  : ''
+              }`}>
+                {plan.orderQty !== null && plan.orderQty !== undefined ? plan.orderQty : '-'}
+              </td>
               
-              {renderGroupedTd('_cBalance', (
-                <>
-                  {plan.balanceToMake}
-                  {plan.balanceToMake <= 0 && <span className="d-block mt-1 badge bg-success" style={{ fontSize: 10 }}>COMPLETED</span>}
-                </>
-              ), `py-3 text-center fw-bold align-middle ${plan.balanceToMake <= 0 ? 'text-success' : 'text-danger'}`)}
+              <td className={`py-3 text-center fw-bold align-middle ${plan.balanceToMake < 0 ? 'text-danger' : 'text-dark'}`}>
+                {plan.balanceToMake !== null && plan.balanceToMake !== undefined ? plan.balanceToMake : '-'}
+              </td>
               
               {renderGroupedTd('_cBoxQty', plan.boxQty !== null && plan.boxQty !== undefined && plan.boxQty > 0 ? plan.boxQty : '-')}
               
-              {renderGroupedTd('_cNoOfBoxes', plan.noOfBoxes || '-')}
-              {renderGroupedTd('_cProduced', plan.producedQty || 0)}
-              {renderGroupedTd('_cDispatch', plan.dispatchBalance || 0)}
-              {renderGroupedTd('_cSold', plan.soldQty || 0)}
-              {renderGroupedTd('_cReadyBoxes', plan.readyBoxes || '-')}
+              <td className="py-3 text-center align-middle">{plan.noOfBoxes !== null && plan.noOfBoxes !== undefined ? plan.noOfBoxes : '-'}</td>
+              <td className="py-3 text-center align-middle">{plan.producedQty !== null && plan.producedQty !== undefined ? plan.producedQty : 0}</td>
+              <td className="py-3 text-center align-middle">{plan.dispatchBalance !== null && plan.dispatchBalance !== undefined ? plan.dispatchBalance : 0}</td>
+              <td className="py-3 text-center align-middle">{plan.soldQty !== null && plan.soldQty !== undefined ? plan.soldQty : 0}</td>
+              <td className="py-3 text-center align-middle">{plan.readyBoxes !== null && plan.readyBoxes !== undefined ? plan.readyBoxes : '-'}</td>
               
               {shrenoComponentHeaders.map((comp, idx) => {
                   const compData = plan.components?.find(c => (c.itemType || c.componentType) === comp);
                   return <td key={`comp_td_${idx}`} className="py-3 text-center align-middle fw-bold">{compData ? compData.quantity : '-'}</td>;
               })}
               
-              {renderGroupedTd('_cRemarks', plan.remarks || '-', "py-3 text-center small text-muted")}
+              <td className="py-3 text-center small text-muted align-middle">{plan.remarks || '-'}</td>
               
               <td className="py-3 text-center">
                 <div className="d-flex gap-2 justify-content-center">
@@ -574,8 +673,28 @@ export default function PrintingPlan() {
                     <i className="bi bi-eye fs-6"></i>
                   </Link>
                   <Link 
-                     to={`/printing-plan/edit/${contiguousPlanList.filter(p => p._cBottle === plan._cBottle).map(p => p._id).join(',')}`} 
-                     state={{ editGroup: contiguousPlanList.filter(p => p._cBottle === plan._cBottle) }}
+                     to={`/printing-plan/edit/${(() => {
+                       const curBottle = (plan.plainBottle || plan.bottleName || '').trim().toUpperCase();
+                       const curBrand = (plan.brandId?._id || plan.brandId || plan.brandName || '').toString();
+                       const matchingPlans = contiguousPlanList.filter(p => {
+                         const pBottle = (p.plainBottle || p.bottleName || '').trim().toUpperCase();
+                         const pBrand = (p.brandId?._id || p.brandId || p.brandName || '').toString();
+                         return pBottle === curBottle && pBrand === curBrand;
+                       });
+                       return (matchingPlans.length > 0 ? matchingPlans : [plan]).map(p => p._id).join(',');
+                     })()}`} 
+                     state={{ 
+                       editGroup: (() => {
+                         const curBottle = (plan.plainBottle || plan.bottleName || '').trim().toUpperCase();
+                         const curBrand = (plan.brandId?._id || plan.brandId || plan.brandName || '').toString();
+                         const matchingPlans = contiguousPlanList.filter(p => {
+                           const pBottle = (p.plainBottle || p.bottleName || '').trim().toUpperCase();
+                           const pBrand = (p.brandId?._id || p.brandId || p.brandName || '').toString();
+                           return pBottle === curBottle && pBrand === curBrand;
+                         });
+                         return matchingPlans.length > 0 ? matchingPlans : [plan];
+                       })()
+                     }}
                      className="btn btn-sm btn-outline-primary border-0 rounded-3 shadow-none p-2" 
                      title="Edit Group"
                   >
@@ -590,7 +709,7 @@ export default function PrintingPlan() {
           );
           }) : (
             <tr>
-              <td colSpan={showDate ? "19" : "18"} className="text-center py-5 text-muted">No plans found</td>
+              <td colSpan={showDate ? "20" : "19"} className="text-center py-5 text-muted">No plans found</td>
             </tr>
           )}
         </tbody>
@@ -650,8 +769,24 @@ export default function PrintingPlan() {
           <button onClick={toggleLanguage} className="btn btn-outline-secondary shadow-sm px-3 py-2 rounded-3 fw-bold">
             {language === 'en' ? 'ગુજરાતી' : 'English'}
           </button>
+          {(!fromDate && !toDate && ((plans && plans.length > 0) || (filteredPlans && filteredPlans.length > 0))) && (
+            <button
+              onClick={handleImportPrevious}
+              className="btn btn-outline-secondary shadow-sm px-3 py-2 rounded-3 fw-bold"
+              disabled={importing}
+            >
+              {importing ? (
+                <><span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span> Importing...</>
+              ) : (
+                <><i className="bi bi-clock-history me-2" /> {labels.importPreviousPlan || 'Import Previous Plan'}</>
+              )}
+            </button>
+          )}
           <button onClick={handleExport} className="btn btn-outline-primary shadow-sm px-4 py-2 rounded-3">
             <i className="bi bi-file-earmark-excel-fill me-2" /> Export Excel
+          </button>
+          <button onClick={fetchPlans} className="btn btn-outline-secondary shadow-sm px-4 py-2 rounded-3" title="Refresh list to show latest stock changes">
+            <i className="bi bi-arrow-clockwise me-2" /> Refresh
           </button>
           <button onClick={() => setShowImportModal(true)} className="btn btn-outline-success shadow-sm px-4 py-2 rounded-3">
             <i className="bi bi-file-earmark-excel-fill me-2" /> {labels.importExcel}

@@ -44,7 +44,7 @@ exports.updateTemplate = async (req, res) => {
     const template = await SgLabelTwoTemplate.findByIdAndUpdate(
       req.params.id,
       req.body,
-      { new: true, runValidators: true }
+      { returnDocument: 'after', runValidators: true }
     );
     if (!template) {
       return res.status(404).json({ message: 'Template not found' });

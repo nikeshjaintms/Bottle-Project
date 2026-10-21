@@ -44,7 +44,7 @@ exports.updateRecord = async (req, res) => {
     const record = await PendingSheet.findByIdAndUpdate(
       req.params.id,
       req.body,
-      { new: true, runValidators: true }
+      { returnDocument: 'after', runValidators: true }
     );
     if (!record || record.isDeleted) {
       return res.status(404).json({ success: false, message: "Record not found" });
@@ -57,7 +57,7 @@ exports.updateRecord = async (req, res) => {
 
 exports.deleteRecord = async (req, res) => {
   try {
-    const record = await PendingSheet.findByIdAndUpdate(req.params.id, { isDeleted: true }, { new: true });
+    const record = await PendingSheet.findByIdAndUpdate(req.params.id, { isDeleted: true }, { returnDocument: 'after' });
     if (!record) {
       return res.status(404).json({ success: false, message: "Record not found" });
     }

@@ -43,14 +43,14 @@ exports.getShrenoIncomings = async (req, res) => {
     // if pagination=false
     if (req.query.pagination === 'false') {
       const incomings = await ShrenoIncoming.find(query)
-        .populate('items.bottleName')
+        .populate('items.plainBottle')
         .populate('items.itemType')
         .sort({ createdAt: -1 });
       return res.status(200).json({ success: true, data: incomings });
     }
 
     const incomings = await ShrenoIncoming.find(query)
-      .populate('items.bottleName')
+      .populate('items.plainBottle')
       .populate('items.itemType')
       .sort({ createdAt: -1 })
       .skip(skip)
@@ -73,7 +73,7 @@ exports.getShrenoIncomings = async (req, res) => {
 exports.getShrenoIncomingById = async (req, res) => {
   try {
     const shrenoIncoming = await ShrenoIncoming.findById(req.params.id)
-      .populate('items.bottleName')
+      .populate('items.plainBottle')
       .populate('items.itemType');
     
     if (!shrenoIncoming || shrenoIncoming.isDeleted) {
@@ -108,8 +108,8 @@ exports.updateShrenoIncoming = async (req, res) => {
     const shrenoIncoming = await ShrenoIncoming.findByIdAndUpdate(
       req.params.id,
       updateData,
-      { new: true, runValidators: true }
-    ).populate('items.bottleName').populate('items.itemType');
+      { returnDocument: 'after', runValidators: true }
+    ).populate('items.plainBottle').populate('items.itemType');
 
     if (!shrenoIncoming) {
       return res.status(404).json({ success: false, message: 'Shreno Incoming not found' });
@@ -125,7 +125,7 @@ exports.deleteShrenoIncoming = async (req, res) => {
     const shrenoIncoming = await ShrenoIncoming.findByIdAndUpdate(
       req.params.id,
       { isDeleted: true },
-      { new: true }
+      { returnDocument: 'after' }
     );
     if (!shrenoIncoming) {
       return res.status(404).json({ success: false, message: 'Shreno Incoming not found' });

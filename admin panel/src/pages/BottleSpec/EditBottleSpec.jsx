@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useNavigate, useParams, Link } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
 import { updateBottleSpec, fetchBottleSpecs } from '../../redux/slices/bottleSpecSlice';
@@ -54,22 +54,47 @@ export default function EditBottleSpec() {
   }, [dispatch]);
 
   // Combine specs to extract unique names and codes
-  const allSpecs = [...(bottleSpecs || []), ...(coatingSpecs || [])];
+  const allSpecs = useMemo(() => [...(bottleSpecs || []), ...(coatingSpecs || [])], [bottleSpecs, coatingSpecs]);
 
-  const filteredSpecs = formData.brandId
-    ? allSpecs.filter(s => (s.brandId?._id || s.brandId) === formData.brandId)
-    : allSpecs;
+  const filteredSpecs = useMemo(() => {
+    return formData.brandId
+      ? allSpecs.filter(s => (s.brandId?._id || s.brandId) === formData.brandId)
+      : allSpecs;
+  }, [allSpecs, formData.brandId]);
 
-  const uniqueBottleNames = Array.from(new Set([
-    ...filteredSpecs.map(s => s.bottleName).filter(name => name && name.trim() !== ''),
-    ...(bottlePerBoxes || []).map(b => b.bottleName).filter(name => name && name.trim() !== '')
-  ])).map(name => ({ value: name, label: name }));
+  const uniqueBottleNames = useMemo(() => {
+    const names = new Set();
 
-  const uniqueBottleCodes = Array.from(new Set(
-    filteredSpecs
-      .map(s => s.code)
-      .filter(code => code && code.trim() !== '')
-  )).map(code => ({ value: code, label: code }));
+    // 1. All existing bottle names from specs
+    (allSpecs || []).forEach(s => {
+      if (s.bottleName && s.bottleName.trim()) {
+        names.add(s.bottleName.trim());
+      }
+    });
+
+    // 2. All bottle names from BottlePerBox master (every individual name in bottleNames)
+    (bottlePerBoxes || []).forEach(b => {
+      if (Array.isArray(b.bottleNames) && b.bottleNames.length > 0) {
+        b.bottleNames.forEach(n => {
+          if (n && n.trim()) names.add(n.trim());
+        });
+      } else if (b.bottleName && b.bottleName.trim()) {
+        names.add(b.bottleName.trim());
+      }
+    });
+
+    return Array.from(names)
+      .sort((a, b) => a.localeCompare(b))
+      .map(name => ({ value: name, label: name }));
+  }, [allSpecs, bottlePerBoxes]);
+
+  const uniqueBottleCodes = useMemo(() => {
+    return Array.from(new Set(
+      filteredSpecs
+        .map(s => s.code)
+        .filter(code => code && code.trim() !== '')
+    )).map(code => ({ value: code, label: code }));
+  }, [filteredSpecs]);
 
   useEffect(() => {
     const spec = bottleSpecs.find(s => s._id === id);

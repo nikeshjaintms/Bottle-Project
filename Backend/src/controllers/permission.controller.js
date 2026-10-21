@@ -47,7 +47,7 @@ exports.updatePermission = async (req, res) => {
 // Delete Permission
 exports.deletePermission = async (req, res) => {
   try {
-    const permission = await Permission.findByIdAndUpdate(req.params.id, { isDeleted: true }, { new: true });
+    const permission = await Permission.findByIdAndUpdate(req.params.id, { isDeleted: true }, { returnDocument: 'after' });
     if (!permission) return res.status(404).json({ success: false, message: "Permission not found" });
     res.status(200).json({ success: true, message: "Permission deleted" });
   } catch (error) {

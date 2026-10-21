@@ -96,7 +96,7 @@ export default function EditPendingSheet() {
     try {
       const res = await axios.put(`${import.meta.env.VITE_API_URL?.replace('/api', '') || ''}/api/pending-sheet/${id}`, formData, { withCredentials: true });
       if (res.data.success) {
-        Swal.fire('Success', 'Pending Sheet updated successfully', 'success');
+        Swal.fire('Success', 'Ready Stock entry updated successfully', 'success');
         navigate('/pending-sheet');
       } else {
         Swal.fire('Error', res.data.message || 'Failed to update record', 'error');
@@ -129,8 +129,8 @@ export default function EditPendingSheet() {
             <i className="bi bi-arrow-left fs-5" />
           </button>
           <div>
-            <h1 className="page-title mb-0">Edit Pending Sheet Record</h1>
-            <p className="page-subtitle mb-0">Update an existing pending sheet entry</p>
+            <h1 className="page-title mb-0">Edit Ready Stock Record</h1>
+            <p className="page-subtitle mb-0">Update an existing ready stock entry</p>
           </div>
         </div>
       </div>

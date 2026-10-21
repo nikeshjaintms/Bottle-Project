@@ -115,7 +115,7 @@ exports.updateOperator = async (req, res) => {
 // ✅ DELETE
 exports.deleteOperator = async (req, res) => {
   try {
-    await Operator.findByIdAndUpdate(req.params.id, { isDeleted: true }, { new: true });
+    await Operator.findByIdAndUpdate(req.params.id, { isDeleted: true }, { returnDocument: 'after' });
     res.json({ msg: "Operator Deleted" });
   } catch (err) {
     res.status(500).json(err.message);

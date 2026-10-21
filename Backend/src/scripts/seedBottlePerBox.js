@@ -1,12 +1,17 @@
 const mongoose = require('mongoose');
+const path = require('path');
+require('dotenv').config({ path: path.resolve(__dirname, '../../../.env') });
+require('dotenv').config({ path: path.resolve(__dirname, '../../.env') });
 const BottlePerBox = require('../models/BottlePerBox');
 const mapping = require('./bottlePerBox.mapping');
 
 async function seed() {
-  await mongoose.connect('mongodb://localhost:27017/shayona-production');
-  
+  const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/shayona-production';
+  console.log(`Connecting to database at ${MONGO_URI}...`);
+  await mongoose.connect(MONGO_URI);
+
   const canonicalNames = Array.from(new Set(Object.values(mapping)));
-  
+
   let newlyCreated = 0;
   let alreadyExisting = 0;
 

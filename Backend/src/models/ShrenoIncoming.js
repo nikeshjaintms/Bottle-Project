@@ -7,7 +7,9 @@ const shrenoIncomingSchema = new mongoose.Schema({
   },
   challanNo: {
     type: String,
-    required: true,
+    required: false,
+    sparse: true,
+    unique: true,
   },
   poNo: {
     type: String,
@@ -17,19 +19,23 @@ const shrenoIncomingSchema = new mongoose.Schema({
   },
 
   items: [{
-    bottleName: {
+    // Changed from bottleName (BottleSpec) to plainBottle (BottlePerBox)
+    // This is the ONLY bottle reference now
+    plainBottle: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: 'BottleSpec',
+      ref: 'BottlePerBox',
       required: true
     },
     itemType: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'ItemType',
-      required: true
+      required: false,
+      default: null
     },
     configuration: {
       type: String,
-      required: true
+      required: false,
+      default: null
     },
 
     quantity: {

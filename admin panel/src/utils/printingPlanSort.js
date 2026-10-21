@@ -40,9 +40,35 @@ export function sortPrintingPlans(a, b) {
       return a.excelRowNumber - b.excelRowNumber;
   }
 
-  // 1. Bottle Name
-  const bottleCompare = compareBottleNames(a.bottleName, b.bottleName);
+  // 1. Plain Bottle (Group all variants belonging to the same plain bottle together)
+  const bottleA = a.plainBottle || a.bottleName;
+  const bottleB = b.plainBottle || b.bottleName;
+  const bottleCompare = compareBottleNames(bottleA, bottleB);
   if (bottleCompare !== 0) return bottleCompare;
+
+  if (isShreno) {
+    const brandA = a.brandId?.name || a.brandName;
+    const brandB = b.brandId?.name || b.brandName;
+    const brandCompare = compareBrands(brandA, brandB);
+    if (brandCompare !== 0) return brandCompare;
+
+    const shadeA = String(a.coatingShade || '').toLowerCase();
+    const shadeB = String(b.coatingShade || '').toLowerCase();
+    if (shadeA < shadeB) return -1;
+    if (shadeA > shadeB) return 1;
+
+    const varA = String(a.printingToBeDone || '').toLowerCase();
+    const varB = String(b.printingToBeDone || '').toLowerCase();
+    if (varA < varB) return -1;
+    if (varA > varB) return 1;
+
+    const textA = String(a.textColor || '').toLowerCase();
+    const textB = String(b.textColor || '').toLowerCase();
+    if (textA < textB) return -1;
+    if (textA > textB) return 1;
+
+    return 0;
+  }
 
   // 1.5. Source Group ID (keeps Excel merged groups strictly contiguous)
   if (a.sourceGroupId && b.sourceGroupId) {
@@ -60,17 +86,17 @@ export function sortPrintingPlans(a, b) {
   const brandCompare = compareBrands(brandA, brandB);
   if (brandCompare !== 0) return brandCompare;
 
-  // 3. Variant / Printing To Be Done
-  const varA = String(a.printingToBeDone || '').toLowerCase();
-  const varB = String(b.printingToBeDone || '').toLowerCase();
-  if (varA < varB) return -1;
-  if (varA > varB) return 1;
-
-  // 4. Coating Shade
+  // 3. Coating Shade (so same coating shade rows are contiguous together)
   const shadeA = String(a.coatingShade || '').toLowerCase();
   const shadeB = String(b.coatingShade || '').toLowerCase();
   if (shadeA < shadeB) return -1;
   if (shadeA > shadeB) return 1;
+
+  // 4. Variant / Printing To Be Done
+  const varA = String(a.printingToBeDone || '').toLowerCase();
+  const varB = String(b.printingToBeDone || '').toLowerCase();
+  if (varA < varB) return -1;
+  if (varA > varB) return 1;
 
   // 5. Text Color
   const textA = String(a.textColor || '').toLowerCase();

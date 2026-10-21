@@ -1,7 +1,7 @@
 import { createSlice, createAsyncThunk } from '@reduxjs/toolkit';
 import API from '../../services/api';
 
-export const fetchDispatch = createAsyncThunk('dispatch/fetchDispatch', async ({ page = 1, limit = 10, search = '', searchPrinting = '', dateFrom = '', dateTo = '', pagination }, { rejectWithValue }) => {
+export const fetchDispatch = createAsyncThunk('dispatch/fetchDispatch', async ({ page = 1, limit = 10, search = '', searchPrinting = '', dateFrom = '', dateTo = '', pagination, companyId }, { rejectWithValue }) => {
   try {
     const params = new URLSearchParams();
     if (page) params.append('page', page);
@@ -11,6 +11,7 @@ export const fetchDispatch = createAsyncThunk('dispatch/fetchDispatch', async ({
     if (dateFrom) params.append('dateFrom', dateFrom);
     if (dateTo) params.append('dateTo', dateTo);
     if (pagination !== undefined) params.append('pagination', pagination);
+    if (companyId) params.append('companyId', companyId);
     
     const res = await API.get(`/dispatch?${params.toString()}`);
     return res.data;

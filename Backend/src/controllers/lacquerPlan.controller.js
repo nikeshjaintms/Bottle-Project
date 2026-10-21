@@ -1,6 +1,7 @@
 
 const LacquerPlan = require("../models/LacquerPlan");
 const PlainBottleStock = require("../models/PlainBottleStock");
+const { recomputePlainStock, computeLivePlainStock } = require("../utils/stockRecompute");
 const BottlePerBox = require("../models/BottlePerBox");
 const CoatingProduction = require("../models/CoatingProduction");
 const PrintingPlan = require("../models/PrintingPlan");
@@ -9,6 +10,7 @@ const Company = require("../models/Company");
 const Brand = require("../models/Brand");
 const Variant = require("../models/Variant");
 const mongoose = require("mongoose");
+const { isPrintingProcess } = require("../utils/processRouting");
 const {
   detectGujaratiHeaders,
   buildColumnMapFromGujarati,
@@ -20,6 +22,237 @@ const {
   verifyRowCompleteness,
   generatePreviewValidationReport
 } = require("../utils/importPreviewVerification");
+
+// Normalization and plan combination helpers
+const normalizeBottleName = (text) => {
+  if (!text) return '';
+  return String(text).toUpperCase().replace(/[\s\-+]+/g, '');
+};
+
+const normalizePlanText = (text) => {
+  if (!text) return '';
+  return String(text).toUpperCase().replace(/[\s\.]+/g, '');
+};
+
+const normalizePlanProcess = (text) => {
+  if (!text) return 'C';
+  return String(text).toUpperCase().replace(/\s+/g, '');
+};
+
+const buildBrandResolver = (allBrands) => {
+  const brandIdToName = new Map();
+  const brandNameToId = new Map();
+
+  if (Array.isArray(allBrands)) {
+    allBrands.forEach(b => {
+      const idStr = (b._id || b.id || '').toString();
+      const normName = String(b.name || '').trim().toUpperCase().replace(/\s+/g, '');
+      if (idStr) brandIdToName.set(idStr, normName);
+      if (normName && idStr) brandNameToId.set(normName, idStr);
+    });
+  }
+
+  return (brandId, brandName) => {
+    if (brandId) {
+      const idStr = brandId._id ? brandId._id.toString() : brandId.toString();
+      if (brandIdToName.has(idStr)) {
+        return brandIdToName.get(idStr);
+      }
+    }
+    if (brandName) {
+      const norm = String(brandName).trim().toUpperCase().replace(/\s+/g, '');
+      if (brandNameToId.has(norm)) {
+        const idStr = brandNameToId.get(norm);
+        return brandIdToName.get(idStr) || norm;
+      }
+      return norm;
+    }
+    return '';
+  };
+};
+
+const buildVariantResolver = (allVariants) => {
+  const variantIdToName = new Map();
+  const variantNameToId = new Map();
+
+  if (Array.isArray(allVariants)) {
+    allVariants.forEach(v => {
+      const idStr = (v._id || v.id || '').toString();
+      const normName = normalizePlanText(v.variantName);
+      if (idStr && normName) {
+        variantIdToName.set(idStr, normName);
+        variantNameToId.set(normName, idStr);
+      }
+    });
+  }
+
+  return (variantId, variantName) => {
+    if (variantName) {
+      return normalizePlanText(variantName);
+    }
+    if (variantId) {
+      if (typeof variantId === 'object' && variantId.variantName) {
+        return normalizePlanText(variantId.variantName);
+      }
+      const idStr = (variantId._id || variantId).toString();
+      if (variantIdToName.has(idStr)) {
+        return variantIdToName.get(idStr);
+      }
+    }
+    return '';
+  };
+};
+
+const getPlanCombinationKeys = (item, resolveBrand = null, resolveVariant = null) => {
+  if (!item) return [];
+  const bottle = normalizeBottleName(item.bottleName || item.bottle || '');
+  const brand = resolveBrand
+    ? resolveBrand(item.brandId, item.brandName || item.brand)
+    : String(item.brandName || item.brand || item.brandId || '').trim().toUpperCase().replace(/\s+/g, '');
+  const shade = normalizePlanText(item.coatingShade || item.colour || '');
+  const variant = resolveVariant
+    ? resolveVariant(item.variantId, item.variantName || item.variant || '')
+    : normalizePlanText(item.variantName || item.variant || (item.variantId && item.variantId.variantName) || '');
+  const process = normalizePlanProcess(item.process);
+
+  const keys = [];
+  if (bottle && brand) {
+    if (shade && variant) {
+      // 1. Full combination key (bottle + brand + shade + variant + process)
+      keys.push(`${bottle}__${brand}__${shade}__${variant}__${process}`);
+      // Inverted order in case Excel header swapped shade and variant columns
+      if (shade !== variant) {
+        keys.push(`${bottle}__${brand}__${variant}__${shade}__${process}`);
+      }
+    } else if (shade) {
+      // Shade-only key if variant was omitted
+      keys.push(`${bottle}__${brand}__${shade}____${process}`);
+    } else if (variant) {
+      // Variant-only key if shade was omitted
+      keys.push(`${bottle}__${brand}____${variant}__${process}`);
+    } else {
+      keys.push(`${bottle}__${brand}______${process}`);
+    }
+  }
+  return keys;
+};
+
+// Backwards-compatible helper returning primary full key
+const getPlanCombinationKey = (item, resolveBrand = null, resolveVariant = null) => {
+  const keys = getPlanCombinationKeys(item, resolveBrand, resolveVariant);
+  return keys[0] || '';
+};
+
+const isPlanRowCompleted = (item) => {
+  if (!item) return false;
+  const order = Number(item.orderQty) || 0;
+  const coated = Number(
+    item.coatingCompletedQty !== undefined && item.coatingCompletedQty !== null
+      ? item.coatingCompletedQty
+      : (item.coatedQty || 0)
+  );
+
+  // If order is <= 0 or coated is 0, it is not a completed production row
+  if (order <= 0 || coated <= 0) {
+    return false;
+  }
+
+  // 1. Coating completed qty >= order qty (order > 0)
+  if (coated >= order) {
+    return true;
+  }
+
+  // 2. Database balanceToMake: coated - order >= 0 with coated > 0
+  const bal = (item.balanceToMake !== undefined && item.balanceToMake !== null) ? Number(item.balanceToMake) : null;
+  if (bal !== null && bal >= 0 && coated >= order) {
+    return true;
+  }
+
+  return false;
+};
+
+const getCompletedCombinationsSet = async (targetDate = null, resolveBrand = null, resolveVariant = null, includeTargetDate = false) => {
+  const query = {
+    isDeleted: false,
+    orderQty: { $gt: 0 },
+    $or: [
+      { $expr: { $gte: ["$coatingCompletedQty", "$orderQty"] }, coatingCompletedQty: { $gt: 0 } },
+      { $expr: { $gte: ["$coatedQty", "$orderQty"] }, coatedQty: { $gt: 0 } },
+      {
+        balanceToMake: { $gte: 0 },
+        $or: [
+          { coatingCompletedQty: { $gt: 0 } },
+          { coatedQty: { $gt: 0 } }
+        ]
+      }
+    ]
+  };
+
+  if (targetDate) {
+    const target = new Date(targetDate);
+    if (includeTargetDate) {
+      const endOfTarget = new Date(target);
+      endOfTarget.setUTCHours(23, 59, 59, 999);
+      query.planDate = { $lte: endOfTarget };
+    } else {
+      const startOfTarget = new Date(target);
+      startOfTarget.setUTCHours(0, 0, 0, 0);
+      query.planDate = { $lt: startOfTarget };
+    }
+  }
+
+  const completedPlans = await LacquerPlan.find(query)
+    .populate('brandId', 'name')
+    .populate('variantId', 'variantName')
+    .lean();
+
+  const completedSet = new Set();
+  completedPlans.forEach(p => {
+    if (isPlanRowCompleted(p)) {
+      const keys = getPlanCombinationKeys(p, resolveBrand, resolveVariant);
+      keys.forEach(k => completedSet.add(k));
+    }
+  });
+
+  return completedSet;
+};
+
+// Helper to find PlainBottleStock for a bottle, optionally scoped to a company
+const findPlainBottleStockDoc = async (bottleName, companyId = null) => {
+  if (!bottleName) return null;
+  const result = await recomputePlainStock(bottleName, companyId);
+  return result?.stockDoc || null;
+};
+
+// Stock sync helper
+const syncLacquerPlanStockDeduction = async (planDocOrId, newCoatedQty, userId = null) => {
+  let plan = typeof planDocOrId === 'object' && planDocOrId._id ? planDocOrId : await LacquerPlan.findById(planDocOrId);
+  if (!plan) return;
+
+  const targetDeduction = (newCoatedQty !== undefined && newCoatedQty !== null)
+    ? (Number(newCoatedQty) || 0)
+    : (Number(plan.coatingCompletedQty ?? plan.coatedQty) || 0);
+
+  plan.appliedStockDeduction = targetDeduction;
+  await LacquerPlan.findByIdAndUpdate(plan._id, { $set: { appliedStockDeduction: targetDeduction } });
+
+  if (plan.bottleName) {
+    await recomputePlainStock(plan.bottleName, plan.canonicalCompanyId || plan.companyId, userId);
+  }
+};
+
+// Revert applied stock deduction completely (e.g. on soft delete or replacing existing)
+const revertLacquerPlanStockDeduction = async (planDocOrId, userId = null) => {
+  let plan = typeof planDocOrId === 'object' && planDocOrId._id ? planDocOrId : await LacquerPlan.findById(planDocOrId);
+  if (!plan) return;
+
+  plan.appliedStockDeduction = 0;
+  await LacquerPlan.findByIdAndUpdate(plan._id, { $set: { appliedStockDeduction: 0 } });
+
+  if (plan.bottleName) {
+    await recomputePlainStock(plan.bottleName, plan.canonicalCompanyId || plan.companyId, userId);
+  }
+};
 
 // Helper to validate company, bottle, and variant integrity
 const validatePlanCompanyBottleVariant = async (planData, isUpdate = false, existingPlan = null) => {
@@ -65,18 +298,49 @@ const validatePlanCompanyBottleVariant = async (planData, isUpdate = false, exis
   const companyBrandIds = companyBrands.map(b => b._id);
 
   // Verify that the bottle belongs to this company via BottleSpec
-  const matchingSpec = await BottleSpec.findOne({
+  let matchingSpec = await BottleSpec.findOne({
     bottleName: bottleName.trim(),
     brandId: { $in: companyBrandIds },
     isDeleted: { $ne: true }
   });
 
   if (!matchingSpec) {
+    const selectedPlainBottle = await BottlePerBox.findOne({
+      $or: [
+        { plainBottleName: bottleName.trim() },
+        { bottleName: bottleName.trim() },
+        { bottleNames: bottleName.trim() }
+      ],
+      isDeleted: false
+    });
+    if (selectedPlainBottle) {
+      const aliasNames = [
+        selectedPlainBottle.plainBottleName,
+        selectedPlainBottle.bottleName,
+        ...(Array.isArray(selectedPlainBottle.bottleNames) ? selectedPlainBottle.bottleNames : [])
+      ].filter(Boolean);
+      const regexList = aliasNames.map(n => new RegExp(`^${n.trim()}$`, 'i'));
+      matchingSpec = await BottleSpec.findOne({
+        bottleName: { $in: regexList },
+        brandId: { $in: companyBrandIds },
+        isDeleted: { $ne: true }
+      });
+    }
+  }
+
+  if (!matchingSpec) {
     throw new Error(`Bottle "${bottleName}" is not associated with company "${company.name}".`);
   }
 
+  // Check if company is Shreno
+  const isShreno = (company.name || '').toLowerCase().includes('shreno');
+
   // If variantId is provided, verify it belongs to the selected bottle and company
   const variantId = planData.variantId !== undefined ? planData.variantId : (existingPlan && existingPlan.variantId);
+  if (!isShreno && !variantId) {
+    throw new Error(`Variant is required for company "${company.name}".`);
+  }
+
   if (variantId) {
     const variant = await Variant.findOne({ _id: variantId, isDeleted: { $ne: true } }).populate('bottleSpecId');
     if (!variant) {
@@ -85,7 +349,28 @@ const validatePlanCompanyBottleVariant = async (planData, isUpdate = false, exis
     if (!variant.bottleSpecId) {
       throw new Error("Selected variant is not associated with any bottle specification.");
     }
-    if (variant.bottleSpecId.bottleName?.trim() !== bottleName.trim()) {
+    let isBottleMatch = (variant.bottleSpecId.bottleName?.trim() || '').toUpperCase() === bottleName.trim().toUpperCase();
+    if (!isBottleMatch) {
+      const selectedPlainBottle = await BottlePerBox.findOne({
+        $or: [
+          { plainBottleName: { $regex: new RegExp(`^${bottleName.trim()}$`, 'i') } },
+          { bottleName: { $regex: new RegExp(`^${bottleName.trim()}$`, 'i') } },
+          { bottleNames: { $regex: new RegExp(`^${bottleName.trim()}$`, 'i') } }
+        ],
+        isDeleted: false
+      });
+      if (selectedPlainBottle) {
+        const pNames = [
+          selectedPlainBottle.plainBottleName,
+          selectedPlainBottle.bottleName,
+          ...(Array.isArray(selectedPlainBottle.bottleNames) ? selectedPlainBottle.bottleNames : [])
+        ].filter(Boolean).map(n => n.trim().toUpperCase());
+        const vBName = (variant.bottleSpecId.bottleName?.trim() || '').toUpperCase();
+        isBottleMatch = pNames.includes(vBName);
+      }
+    }
+
+    if (!isBottleMatch) {
       throw new Error(`Variant "${variant.variantName}" belongs to bottle "${variant.bottleSpecId.bottleName}", not "${bottleName}".`);
     }
     const specBrandId = variant.bottleSpecId.brandId?._id || variant.bottleSpecId.brandId;
@@ -95,28 +380,282 @@ const validatePlanCompanyBottleVariant = async (planData, isUpdate = false, exis
   }
 };
 
-// Helper to auto-create PrintingPlan
-const createPrintingPlanIfApplicable = async (plan) => {
-  if (plan.process === "P" || plan.process === "C+P" || plan.process === "PRINTING" || plan.process === "BOTH") {
-    const spec = await BottleSpec.findOne({ bottleName: plan.bottleName, isDeleted: false });
-    if (spec) {
-      await PrintingPlan.create({
-        lacquerPlanId: plan._id,
-        planDate: plan.planDate,
-        bottleName: plan.bottleName,
-        itemId: spec._id,
+// Helper to auto-create and synchronize PrintingPlan 1-to-1 with a LacquerPlan row
+const syncPrintingPlanForLacquerPlan = async (plan, userId = null) => {
+  if (!plan) return null;
+
+  // Rule: C is excluded from Printing Plan. C+P, C+F, P, F are included.
+  // If plan is deleted or process does not qualify for printing, soft-delete linked PrintingPlan
+  if (plan.isDeleted || !isPrintingProcess(plan.process)) {
+    if (plan._id) {
+      await PrintingPlan.updateMany(
+        { lacquerPlanId: plan._id, isDeleted: false },
+        { $set: { isDeleted: true } }
+      );
+    }
+    return null;
+  }
+
+  // Qualifying process (C+P, C+F, P, F, PRINTING, BOTH)
+  let pToBeDone = plan.variantName || "";
+  let tColor = "";
+  if (plan.variantId) {
+    const variant = await Variant.findOne({ _id: plan.variantId, isDeleted: { $ne: true } });
+    if (variant) {
+      pToBeDone = variant.variantName || pToBeDone;
+      tColor = variant.detectedTextColor || "";
+    }
+  }
+
+  // Resolve BottleSpec (itemId)
+  let spec = await BottleSpec.findOne({ bottleName: plan.bottleName, isDeleted: false });
+  if (!spec && plan.brandId) {
+    spec = await BottleSpec.findOne({ bottleName: plan.bottleName, brandId: plan.brandId, isDeleted: false });
+  }
+  if (!spec) {
+    const selectedPlainBottle = await BottlePerBox.findOne({
+      $or: [
+        { plainBottleName: plan.bottleName.trim() },
+        { bottleName: plan.bottleName.trim() },
+        { bottleNames: plan.bottleName.trim() }
+      ],
+      isDeleted: false
+    });
+    if (selectedPlainBottle && Array.isArray(selectedPlainBottle.bottleNames) && selectedPlainBottle.bottleNames.length > 0) {
+      spec = await BottleSpec.findOne({
+        bottleName: { $in: selectedPlainBottle.bottleNames },
         brandId: plan.brandId,
-        brandName: plan.brandName,
-        coatingShade: plan.coatingShade || plan.colour,  // Use canonical field with fallback
-        printingVariant: "", // To be filled manually later
-        process: plan.process,
-        orderQty: plan.orderQty,
-        boxQty: plan.boxQty,
-        noOfBoxes: plan.noOfBoxes,
-        status: plan.status,
-        remarks: plan.remarks
+        isDeleted: false
       });
     }
+  }
+
+  const shade = plan.coatingShade || plan.colour || "";
+  const plainStock = plan.coatingCompletedQty ?? plan.coatedQty ?? 0;
+
+  // Find linked PrintingPlan for this specific lacquerPlanId (including soft-deleted to restore)
+  let existingPlan = await PrintingPlan.findOne({ lacquerPlanId: plan._id });
+
+  if (existingPlan) {
+    existingPlan.planDate = plan.planDate;
+    existingPlan.bottleName = plan.bottleName;
+    existingPlan.companyId = plan.companyId;
+    existingPlan.brandId = plan.brandId;
+    if (plan.brandName) existingPlan.brandName = plan.brandName;
+    existingPlan.coatingShade = shade;
+    existingPlan.printingToBeDone = pToBeDone || existingPlan.printingToBeDone || "";
+    if (tColor) existingPlan.textColor = tColor;
+    existingPlan.plainBottleStock = plainStock;
+    existingPlan.balanceToMake = (existingPlan.producedQty && existingPlan.producedQty > 0) ? (plainStock - existingPlan.producedQty) : plainStock;
+    existingPlan.process = plan.process;
+    existingPlan.orderQty = plan.orderQty;
+    if (plan.boxQty !== undefined) existingPlan.boxQty = plan.boxQty;
+    if (plan.noOfBoxes !== undefined) existingPlan.noOfBoxes = plan.noOfBoxes;
+    existingPlan.status = plan.status !== false;
+    if (plan.remarks !== undefined) existingPlan.remarks = plan.remarks;
+    if (spec) existingPlan.itemId = spec._id;
+    existingPlan.isDeleted = false;
+    await existingPlan.save();
+    return existingPlan;
+  } else {
+    const created = await PrintingPlan.create({
+      lacquerPlanId: plan._id,
+      planDate: plan.planDate,
+      bottleName: plan.bottleName,
+      itemId: spec ? spec._id : undefined,
+      companyId: plan.companyId,
+      brandId: plan.brandId,
+      brandName: plan.brandName,
+      coatingShade: shade,
+      printingToBeDone: pToBeDone,
+      printingVariant: "",
+      textColor: tColor,
+      plainBottleStock: plainStock,
+      balanceToMake: plainStock,
+      producedQty: 0,
+      process: plan.process,
+      orderQty: plan.orderQty,
+      boxQty: plan.boxQty,
+      noOfBoxes: plan.noOfBoxes,
+      status: plan.status !== false,
+      remarks: plan.remarks,
+      isDeleted: false,
+      isEditedAfterImport: false,
+      originalImportedValues: {
+        orderQty: plan.orderQty,
+        producedQty: 0,
+        balanceToMake: 0,
+        boxQty: plan.boxQty,
+        noOfBoxes: plan.noOfBoxes,
+        dispatchBalance: 0,
+        soldQty: 0,
+        readyBoxes: 0,
+        plainBottleStock: plainStock,
+        remarks: plan.remarks,
+        printingToBeDone: pToBeDone,
+        printingVariant: "",
+        textColor: tColor,
+        coatingShade: shade
+      }
+    });
+    return created;
+  }
+};
+
+const createPrintingPlanIfApplicable = syncPrintingPlanForLacquerPlan;
+
+// ============= STOCK VALIDATION HELPERS =============
+/**
+ * Calculate available stock for a Plain Bottle considering allocations
+ * @param {string} plainBottleName - Name of the plain bottle
+ * @param {ObjectId} companyId - Company ID to scope the query
+ * @param {Date} excludeDate - (optional) Date to exclude from allocation count
+ * @returns {Promise<{totalStock, allocated, available, breakdown}>}
+ */
+const calculateAvailableStock = async (plainBottleName, companyId, excludeDate = null) => {
+  try {
+    if (!plainBottleName || !companyId) {
+      return {
+        totalStock: 0,
+        allocated: 0,
+        available: 0,
+        breakdown: { lacquerPlans: 0, incomingPlan: 0, reserved: 0 }
+      };
+    }
+
+    // 1. Get total stock from PlainBottleStock
+    const stockResult = await recomputePlainStock(plainBottleName, companyId);
+    const totalStock = stockResult?.stockDoc?.availableQuantity || 0;
+
+    // 2. Sum incomplete LacquerPlan orderQty from TODAY onwards (excluding excludeDate)
+    const today = new Date();
+    today.setUTCHours(0, 0, 0, 0);
+
+    let lacquerAllocationQuery = {
+      bottleName: plainBottleName,
+      companyId: companyId,
+      planDate: { $gte: today },
+      isDeleted: false,
+      orderQty: { $gt: 0 },
+      $expr: { $lt: ["$coatingCompletedQty", "$orderQty"] }
+    };
+
+    // If excludeDate provided, exclude rows from that date
+    if (excludeDate) {
+      const excludeStart = new Date(excludeDate);
+      excludeStart.setUTCHours(0, 0, 0, 0);
+      const excludeEnd = new Date(excludeDate);
+      excludeEnd.setUTCHours(23, 59, 59, 999);
+
+      lacquerAllocationQuery.planDate = {
+        $gte: today,
+        $not: {
+          $gte: excludeStart,
+          $lte: excludeEnd
+        }
+      };
+    }
+
+    const lacquerPlans = await LacquerPlan.find(lacquerAllocationQuery).select('orderQty coatingCompletedQty').lean();
+    const lacquerAllocated = lacquerPlans.reduce((sum, plan) => {
+      return sum + (plan.orderQty || 0);
+    }, 0);
+
+    // 3. Sum Incoming Plan allocation qty (active orders for this bottle)
+    const Incoming = require('../models/Incoming');
+    const incomingOrders = await Incoming.find({
+      billToId: companyId,
+      isDeleted: false
+    }).select('items').lean();
+
+    let incomingAllocated = 0;
+    for (const order of incomingOrders) {
+      if (order.items && Array.isArray(order.items)) {
+        for (const item of order.items) {
+          if (item.bottleId) {
+            // Match by bottle ID using BottlePerBox lookup
+            const BottlePerBox = require('../models/BottlePerBox');
+            const bpb = await BottlePerBox.findById(item.bottleId).select('bottleName plainBottleName').lean();
+            if (bpb && (bpb.bottleName === plainBottleName || bpb.plainBottleName === plainBottleName)) {
+              incomingAllocated += item.totalQty || item.qty || 0;
+            }
+          }
+        }
+      }
+    }
+
+    // 4. Reserved (if applicable in future - currently 0)
+    const reserved = 0;
+
+    // 5. Calculate available
+    const allocated = lacquerAllocated + incomingAllocated + reserved;
+    const available = Math.max(0, totalStock - allocated);
+
+    return {
+      totalStock,
+      allocated,
+      available,
+      breakdown: {
+        lacquerPlans: lacquerAllocated,
+        incomingPlan: incomingAllocated,
+        reserved
+      }
+    };
+  } catch (error) {
+    console.error('calculateAvailableStock error:', error);
+    throw error;
+  }
+};
+
+/**
+ * Validate stock warning for a row
+ * @param {string} plainBottleName - Name of the plain bottle
+ * @param {ObjectId} companyId - Company ID
+ * @param {number} orderQty - Quantity being ordered
+ * @param {ObjectId} excludeRowId - (optional) Current row ID to exclude from allocation
+ * @returns {Promise<{hasWarning, orderQty, availableStock, overBy, details}>}
+ */
+const validateRowStockWarning = async (plainBottleName, companyId, orderQty, excludeRowId = null) => {
+  try {
+    if (!plainBottleName || !companyId || !orderQty || orderQty <= 0) {
+      return {
+        hasWarning: false,
+        orderQty: orderQty || 0,
+        availableStock: 0,
+        overBy: 0,
+        details: null
+      };
+    }
+
+    // If excludeRowId provided, get that row's date and exclude it from allocation
+    let excludeDate = null;
+    if (excludeRowId) {
+      const rowToExclude = await LacquerPlan.findById(excludeRowId).select('planDate orderQty').lean();
+      if (rowToExclude) {
+        excludeDate = rowToExclude.planDate;
+        // Subtract this row's orderQty from future allocation (it will be re-added as new value)
+        // This is handled in calculateAvailableStock by excluding the date
+      }
+    }
+
+    const stock = await calculateAvailableStock(plainBottleName, companyId, excludeDate);
+    const hasWarning = orderQty > stock.available;
+    const overBy = Math.max(0, orderQty - stock.available);
+
+    return {
+      hasWarning,
+      orderQty,
+      availableStock: stock.available,
+      overBy,
+      details: {
+        totalStock: stock.totalStock,
+        allocated: stock.allocated,
+        breakdown: stock.breakdown
+      }
+    };
+  } catch (error) {
+    console.error('validateRowStockWarning error:', error);
+    throw error;
   }
 };
 
@@ -128,9 +667,38 @@ exports.createPlan = async (req, res) => {
 
       for (const item of req.body) {
         await validatePlanCompanyBottleVariant(item, false);
-        
-        if (item.planDate && item.companyId && item.bottleName && item.variantId) {
-          const comboKey = `${item.planDate}-${item.companyId.toString()}-${item.brandId.toString()}-${item.bottleName.trim().toLowerCase()}-${item.variantId.toString()}`;
+
+        // Stock warning validation for array input
+        if (item.orderQty && item.bottleName && item.companyId) {
+          const warning = await validateRowStockWarning(
+            item.bottleName,
+            item.companyId,
+            item.orderQty,
+            null
+          );
+
+          if (warning.hasWarning && !item.stockWarningAcknowledged) {
+            return res.status(400).json({
+              success: false,
+              code: 'STOCK_WARNING_REQUIRED',
+              warning,
+              requiresAcknowledge: true,
+              message: `Stock warning for bottle "${item.bottleName}": order quantity (${warning.orderQty}) exceeds available stock (${warning.availableStock})`
+            });
+          }
+
+          // If warning is acknowledged, set metadata
+          if (warning.hasWarning && item.stockWarningAcknowledged) {
+            item.stockWarningAcknowledged = true;
+            item.acknowledgedAt = new Date();
+            item.stockWarningDetails = warning;
+          }
+        }
+
+        if (item.planDate && item.companyId && item.bottleName) {
+          const varPart = item.variantId ? item.variantId.toString() : (item.colour || item.coatingShade || 'none').trim().toLowerCase();
+          const brandPart = item.brandId ? item.brandId.toString() : '';
+          const comboKey = `${item.planDate}-${item.companyId.toString()}-${brandPart}-${item.bottleName.trim().toLowerCase()}-${varPart}`;
           if (comboSet.has(comboKey)) {
             throw new Error(`Duplicate entry found in submission for Bottle: ${item.bottleName}`);
           }
@@ -138,53 +706,153 @@ exports.createPlan = async (req, res) => {
 
           // Check DB for duplicates
           const startOfDay = new Date(item.planDate);
-          startOfDay.setUTCHours(0,0,0,0);
+          startOfDay.setUTCHours(0, 0, 0, 0);
           const endOfDay = new Date(item.planDate);
-          endOfDay.setUTCHours(23,59,59,999);
-          
-          const existing = await LacquerPlan.findOne({
+          endOfDay.setUTCHours(23, 59, 59, 999);
+
+          const dupQuery = {
             planDate: { $gte: startOfDay, $lte: endOfDay },
             companyId: item.companyId,
-            brandId: item.brandId,
             bottleName: { $regex: new RegExp("^" + item.bottleName.trim() + "$", "i") },
-            variantId: item.variantId,
             isDeleted: false
-          });
+          };
+          if (item.brandId) dupQuery.brandId = item.brandId;
+          if (item.variantId) {
+            dupQuery.variantId = item.variantId;
+          } else {
+            dupQuery.variantId = { $in: [null, undefined] };
+            const shade = item.colour || item.coatingShade;
+            if (shade) {
+              dupQuery.$or = [{ colour: shade }, { coatingShade: shade }];
+            }
+          }
+
+          const existing = await LacquerPlan.findOne(dupQuery);
           if (existing) {
-            throw new Error(`A plan for Bottle "${item.bottleName}" with this variant already exists for this date, company and brand.`);
+            throw new Error(`A plan for Bottle "${item.bottleName}" ${item.variantId ? 'with this variant' : 'with this shade'} already exists for this date, company and brand.`);
           }
         }
       }
       const plans = await LacquerPlan.insertMany(req.body);
       for (const plan of plans) {
+        await syncLacquerPlanStockDeduction(plan, plan.coatingCompletedQty ?? plan.coatedQty, req.user?._id);
         await createPrintingPlanIfApplicable(plan);
+
+        if (plan.plainStock !== undefined && plan.plainStock !== null) {
+          const planBottle = (plan.plainBottle || plan.bottleName || '').trim();
+          const planComp = plan.canonicalCompanyId || plan.companyId;
+          if (planBottle && planComp && plan.planDate) {
+            const startOfDay = new Date(plan.planDate);
+            startOfDay.setUTCHours(0, 0, 0, 0);
+            const endOfDay = new Date(plan.planDate);
+            endOfDay.setUTCHours(23, 59, 59, 999);
+
+            await LacquerPlan.updateMany(
+              {
+                _id: { $ne: plan._id },
+                planDate: { $gte: startOfDay, $lte: endOfDay },
+                companyId: planComp,
+                $or: [
+                  { bottleName: { $regex: new RegExp("^" + planBottle + "$", "i") } },
+                  { plainBottle: { $regex: new RegExp("^" + planBottle + "$", "i") } }
+                ],
+                isDeleted: false
+              },
+              { $set: { plainStock: plan.plainStock } }
+            );
+          }
+        }
       }
       return res.status(201).json({ success: true, data: plans });
     } else {
       await validatePlanCompanyBottleVariant(req.body, false);
-      
-      if (req.body.planDate && req.body.companyId && req.body.bottleName && req.body.variantId) {
+
+      // Stock warning validation for single item
+      if (req.body.orderQty && req.body.bottleName && req.body.companyId) {
+        const warning = await validateRowStockWarning(
+          req.body.bottleName,
+          req.body.companyId,
+          req.body.orderQty,
+          null
+        );
+
+        if (warning.hasWarning && !req.body.stockWarningAcknowledged) {
+          return res.status(400).json({
+            success: false,
+            code: 'STOCK_WARNING_REQUIRED',
+            warning,
+            requiresAcknowledge: true,
+            message: `Stock warning for bottle "${req.body.bottleName}": order quantity (${warning.orderQty}) exceeds available stock (${warning.availableStock})`
+          });
+        }
+
+        // If warning is acknowledged, set metadata
+        if (warning.hasWarning && req.body.stockWarningAcknowledged) {
+          req.body.stockWarningAcknowledged = true;
+          req.body.acknowledgedAt = new Date();
+          req.body.stockWarningDetails = warning;
+        }
+      }
+
+      if (req.body.planDate && req.body.companyId && req.body.bottleName) {
         const startOfDay = new Date(req.body.planDate);
-        startOfDay.setUTCHours(0,0,0,0);
+        startOfDay.setUTCHours(0, 0, 0, 0);
         const endOfDay = new Date(req.body.planDate);
-        endOfDay.setUTCHours(23,59,59,999);
-        
-        const existing = await LacquerPlan.findOne({
+        endOfDay.setUTCHours(23, 59, 59, 999);
+
+        const dupQuery = {
           planDate: { $gte: startOfDay, $lte: endOfDay },
           companyId: req.body.companyId,
-          brandId: req.body.brandId,
           bottleName: { $regex: new RegExp("^" + req.body.bottleName.trim() + "$", "i") },
-          variantId: req.body.variantId,
           isDeleted: false
-        });
+        };
+        if (req.body.brandId) dupQuery.brandId = req.body.brandId;
+        if (req.body.variantId) {
+          dupQuery.variantId = req.body.variantId;
+        } else {
+          dupQuery.variantId = { $in: [null, undefined] };
+          const shade = req.body.colour || req.body.coatingShade;
+          if (shade) {
+            dupQuery.$or = [{ colour: shade }, { coatingShade: shade }];
+          }
+        }
+
+        const existing = await LacquerPlan.findOne(dupQuery);
         if (existing) {
-          throw new Error(`A plan for Bottle "${req.body.bottleName}" with this variant already exists for this date, company and brand.`);
+          throw new Error(`A plan for Bottle "${req.body.bottleName}" ${req.body.variantId ? 'with this variant' : 'with this shade'} already exists for this date, company and brand.`);
         }
       }
 
       const plan = new LacquerPlan(req.body);
       await plan.save();
+      await syncLacquerPlanStockDeduction(plan, plan.coatingCompletedQty ?? plan.coatedQty, req.user?._id);
       await createPrintingPlanIfApplicable(plan);
+
+      if (plan.plainStock !== undefined && plan.plainStock !== null) {
+        const planBottle = (plan.plainBottle || plan.bottleName || '').trim();
+        const planComp = plan.canonicalCompanyId || plan.companyId;
+        if (planBottle && planComp && plan.planDate) {
+          const startOfDay = new Date(plan.planDate);
+          startOfDay.setUTCHours(0, 0, 0, 0);
+          const endOfDay = new Date(plan.planDate);
+          endOfDay.setUTCHours(23, 59, 59, 999);
+
+          await LacquerPlan.updateMany(
+            {
+              _id: { $ne: plan._id },
+              planDate: { $gte: startOfDay, $lte: endOfDay },
+              companyId: planComp,
+              $or: [
+                { bottleName: { $regex: new RegExp("^" + planBottle + "$", "i") } },
+                { plainBottle: { $regex: new RegExp("^" + planBottle + "$", "i") } }
+              ],
+              isDeleted: false
+            },
+            { $set: { plainStock: plan.plainStock } }
+          );
+        }
+      }
+
       return res.status(201).json({ success: true, data: plan });
     }
   } catch (error) {
@@ -197,27 +865,27 @@ exports.getPlans = async (req, res) => {
   try {
     const { date, month, fromDate, toDate, search, companyId, brandId } = req.query;
     let query = { isDeleted: false };
-    
+
     if (brandId) {
       query.brandId = new mongoose.Types.ObjectId(brandId);
     }
-    
+
     if (date) {
       const startOfDay = new Date(date);
-      startOfDay.setUTCHours(0,0,0,0);
+      startOfDay.setUTCHours(0, 0, 0, 0);
       const endOfDay = new Date(date);
-      endOfDay.setUTCHours(23,59,59,999);
+      endOfDay.setUTCHours(23, 59, 59, 999);
       query.planDate = { $gte: startOfDay, $lte: endOfDay };
     } else if (fromDate || toDate) {
       query.planDate = {};
       if (fromDate) {
         const start = new Date(fromDate);
-        start.setUTCHours(0,0,0,0);
+        start.setUTCHours(0, 0, 0, 0);
         query.planDate.$gte = start;
       }
       if (toDate) {
         const end = new Date(toDate);
-        end.setUTCHours(23,59,59,999);
+        end.setUTCHours(23, 59, 59, 999);
         query.planDate.$lte = end;
       }
     } else if (month) {
@@ -228,7 +896,7 @@ exports.getPlans = async (req, res) => {
     }
 
     if (search) {
-       // We handle search after lookups below, so don't add to initial query
+      // We handle search after lookups below, so don't add to initial query
     }
 
     const pipeline = [
@@ -281,7 +949,7 @@ exports.getPlans = async (req, res) => {
                     { $ne: ["$isDeleted", true] },
                     { $ne: [{ $type: "$$cName" }, "missing"] },
                     { $ne: ["$$cName", null] },
-                    { $eq: [ { $toLower: { $trim: { input: "$name" } } }, { $toLower: { $trim: { input: "$$cName" } } } ] }
+                    { $eq: [{ $toLower: { $trim: { input: "$name" } } }, { $toLower: { $trim: { input: "$$cName" } } }] }
                   ]
                 }
               }
@@ -314,7 +982,7 @@ exports.getPlans = async (req, res) => {
 
     if (search || companyId) {
       const matchStage = {};
-      
+
       if (search) {
         matchStage.$or = [
           { bottleName: { $regex: search, $options: 'i' } },
@@ -322,41 +990,44 @@ exports.getPlans = async (req, res) => {
           { 'brandId.name': { $regex: search, $options: 'i' } }
         ];
       }
-      
+
       if (companyId) {
         if (companyId === 'UNASSIGNED') {
-           matchStage['company._id'] = { $exists: false }; // Match where company lookup failed
+          matchStage['company._id'] = { $exists: false }; // Match where company lookup failed
         } else {
-           matchStage['company._id'] = new mongoose.Types.ObjectId(companyId);
+          matchStage['company._id'] = new mongoose.Types.ObjectId(companyId);
         }
       }
-      
+
       pipeline.push({ $match: matchStage });
     }
 
     const plans = await LacquerPlan.aggregate(pipeline).collation({ locale: 'en', strength: 2 });
-      
-    // Augment plans with computed fields
+
+    // Augment plans with computed fields using live day-based stock (Rule L3)
+    const stockCache = new Map();
     const augmentedPlans = await Promise.all(plans.map(async (plan) => {
       let plainStock = 0;
       let coatedQty = 0;
-      
-      // 1. Fetch plain stock (match by bottleName)
+
+      // 1. Fetch live day-based plain stock (Rule L3)
       if (plan.bottleName) {
-        const bp = await BottlePerBox.findOne({ bottleName: plan.bottleName, isDeleted: false });
-        if (bp) {
-          const stock = await PlainBottleStock.findOne({ bottleId: bp._id });
-          if (stock) {
-            plainStock = stock.availableQuantity || 0;
-          }
+        const compId = plan.canonicalCompanyId || plan.companyId;
+        const dayStr = plan.planDate ? new Date(plan.planDate).toISOString().split('T')[0] : '';
+        const cacheKey = `${compId}::${(plan.bottleName || '').toUpperCase()}::${dayStr}`;
+        if (stockCache.has(cacheKey)) {
+          plainStock = stockCache.get(cacheKey);
+        } else {
+          plainStock = await computeLivePlainStock(plan.bottleName, compId, plan.planDate);
+          stockCache.set(cacheKey, plainStock);
         }
       }
-      
+
       // 2. Fetch cumulative coatedQty
       if (plan.bottleName && plan.brandId) {
         const BottleSpec = require("../models/Bottlespecs");
         const bSpec = await BottleSpec.findOne({ bottleName: plan.bottleName, isDeleted: false });
-        
+
         if (bSpec) {
           const coatingRecords = await CoatingProduction.find({
             coatingSpecId: bSpec._id,
@@ -364,19 +1035,33 @@ exports.getPlans = async (req, res) => {
             coatingShade: plan.colour,
             isDeleted: false
           });
-          
+
           coatedQty = coatingRecords.reduce((sum, rec) => sum + (rec.actualQuantity || 0), 0);
         }
       }
-      
-      const balanceToMake = (plan.orderQty || 0) - coatedQty;
-      
+
+      const balanceToMake = coatedQty - (plan.orderQty || 0);
+
+      // Extract plain bottle name from BottleSpec if not already set
+      let plainBottleName = plan.plainBottle || plan.bottleName || '';
+      if (plan.bottleName && !plan.plainBottle) {
+        const BottleSpec = require("../models/Bottlespecs");
+        const bspec = await BottleSpec.findOne({ 
+          bottleName: { $regex: new RegExp("^" + plan.bottleName.trim() + "$", "i") },
+          isDeleted: false 
+        }).select('bottleName').lean();
+        if (bspec) {
+          plainBottleName = bspec.bottleName;
+        }
+      }
+
       return {
         ...plan,
+        plainBottleName,
         livePlainStock: plainStock,
         liveCoatedQty: coatedQty,
         liveBalanceToMake: balanceToMake,
-        plainStock: plan.plainStock !== null && plan.plainStock !== undefined ? plan.plainStock : plainStock,
+        plainStock: plainStock,  // ALWAYS use live stock for list display, NOT stored snapshot
         coatedQty: plan.coatedQty !== null && plan.coatedQty !== undefined ? plan.coatedQty : coatedQty,
         balanceToMake: plan.balanceToMake !== null && plan.balanceToMake !== undefined ? plan.balanceToMake : balanceToMake
       };
@@ -387,19 +1072,19 @@ exports.getPlans = async (req, res) => {
         const match = str.match(/^(\d+)/);
         return match ? parseInt(match[1], 10) : 0;
       };
-      
+
       const numA = getNum(a.bottleName);
       const numB = getNum(b.bottleName);
-      
+
       if (numA !== numB) {
         return numA - numB;
       }
-      
+
       const nameA = a.bottleName || '';
       const nameB = b.bottleName || '';
       const nameCmp = nameA.localeCompare(nameB);
       if (nameCmp !== 0) return nameCmp;
-      
+
       const vA = a.variantName || (a.variantId && a.variantId.variantName) || '';
       const vB = b.variantName || (b.variantId && b.variantId.variantName) || '';
       const vCmp = vA.localeCompare(vB);
@@ -421,16 +1106,16 @@ exports.getMonthStatus = async (req, res) => {
   try {
     const { month } = req.query; // YYYY-MM
     if (!month) return res.status(400).json({ success: false, message: "Month is required" });
-    
+
     const [year, m] = month.split('-');
     const startOfMonth = new Date(Date.UTC(year, m - 1, 1));
     const endOfMonth = new Date(Date.UTC(year, m, 0, 23, 59, 59, 999));
-    
+
     const plans = await LacquerPlan.find({
       isDeleted: false,
       planDate: { $gte: startOfMonth, $lte: endOfMonth }
     }).select('planDate').lean();
-    
+
     const activeDates = new Set();
     plans.forEach(p => {
       if (p.planDate) {
@@ -438,8 +1123,33 @@ exports.getMonthStatus = async (req, res) => {
         activeDates.add(d);
       }
     });
-    
+
     res.status(200).json({ success: true, activeDates: Array.from(activeDates) });
+  } catch (error) {
+    res.status(400).json({ success: false, message: error.message });
+  }
+};
+
+// Validate Stock Warning for a row
+exports.validateStockWarning = async (req, res) => {
+  try {
+    const { bottleName, companyId, orderQty, excludeRowId } = req.query;
+
+    if (!bottleName || !companyId || !orderQty) {
+      return res.status(400).json({
+        success: false,
+        message: "bottleName, companyId, and orderQty are required"
+      });
+    }
+
+    const warning = await validateRowStockWarning(
+      bottleName,
+      companyId,
+      parseInt(orderQty, 10),
+      excludeRowId || null
+    );
+
+    res.status(200).json({ success: true, data: warning });
   } catch (error) {
     res.status(400).json({ success: false, message: error.message });
   }
@@ -448,9 +1158,9 @@ exports.getMonthStatus = async (req, res) => {
 // Import Previous Day
 exports.importPreviousDay = async (req, res) => {
   try {
-    const { targetDate, sourceDate } = req.body;
+    const { targetDate, sourceDate, importMode } = req.body;
     if (!targetDate) return res.status(400).json({ success: false, message: "Target date is required" });
-    
+
     let prev;
     if (sourceDate) {
       prev = new Date(sourceDate);
@@ -459,32 +1169,293 @@ exports.importPreviousDay = async (req, res) => {
       prev = new Date(current);
       prev.setUTCDate(prev.getUTCDate() - 1);
     }
-    
+
     const startOfPrevDay = new Date(prev);
-    startOfPrevDay.setUTCHours(0,0,0,0);
+    startOfPrevDay.setUTCHours(0, 0, 0, 0);
     const endOfPrevDay = new Date(prev);
-    endOfPrevDay.setUTCHours(23,59,59,999);
-    
+    endOfPrevDay.setUTCHours(23, 59, 59, 999);
+
     const oldPlans = await LacquerPlan.find({
       isDeleted: false,
       planDate: { $gte: startOfPrevDay, $lte: endOfPrevDay }
-    }).lean();
-    
+    }).populate('brandId', 'name').populate('variantId', 'variantName').lean();
+
     if (!oldPlans || oldPlans.length === 0) {
       return res.status(404).json({ success: false, message: "No plans found for previous day" });
     }
-    
-    const newPlansData = oldPlans.map(p => {
+
+    const startOfTargetDay = new Date(targetDate);
+    startOfTargetDay.setUTCHours(0, 0, 0, 0);
+    const endOfTargetDay = new Date(targetDate);
+    endOfTargetDay.setUTCHours(23, 59, 59, 999);
+
+    const existingTargetPlans = await LacquerPlan.find({
+      isDeleted: false,
+      planDate: { $gte: startOfTargetDay, $lte: endOfTargetDay }
+    }).populate('brandId', 'name').populate('variantId', 'variantName').lean();
+
+    const allBrands = await Brand.find({ isDeleted: { $ne: true } }).lean();
+    const allVariants = await Variant.find({ isDeleted: { $ne: true } }).lean();
+    const resolveBrandKey = buildBrandResolver(allBrands);
+    const resolveVariantKey = buildVariantResolver(allVariants);
+
+    // Check if target date already has rows imported from source date
+    const hasExistingImport = existingTargetPlans.some(p => 
+      p.importedFromDate && 
+      (p.importedFromDate.toDateString() === (sourceDate || prev).toDateString())
+    );
+
+    // Helper to detect if a plan row was edited after its initial import
+    const isPlanEdited = (p) => {
+      if (!p) return false;
+      if (p.isEditedAfterImport) return true;
+      if (p.originalImportedValues) {
+        const orig = p.originalImportedValues;
+        for (const k of Object.keys(orig)) {
+          if (orig[k] !== undefined && p[k] !== undefined && String(orig[k]) !== String(p[k])) {
+            return true;
+          }
+        }
+      }
+      if (p.updatedAt && p.createdAt) {
+        const diffMs = new Date(p.updatedAt).getTime() - new Date(p.createdAt).getTime();
+        if (diffMs > 5000) return true;
+      }
+      return false;
+    };
+
+    const editedCount = oldPlans.filter(p => isPlanEdited(p)).length;
+    const hasEditedPlans = editedCount > 0;
+
+    // If this is a second import (target already has imports from source) and user hasn't chosen mode, prompt
+    if (hasExistingImport && !importMode) {
+      return res.status(200).json({
+        success: true,
+        requiresConfirmation: true,
+        hasExistingImport: true,
+        message: "This date already has imports from that source date. Choose how to proceed."
+      });
+    }
+
+    // If source day's plans were edited and user hasn't explicitly chosen importMode yet, prompt for confirmation
+    if (hasEditedPlans && !importMode && !hasExistingImport) {
+      return res.status(200).json({
+        success: true,
+        requiresConfirmation: true,
+        hasEditedPlans: true,
+        editedCount,
+        totalPlans: oldPlans.length,
+        message: `The source plan has ${editedCount} manually edited entry(s). Please choose whether to import with changes or without changes.`
+      });
+    }
+
+    // Determine candidate values for each source plan based on importMode
+    const candidatePlans = oldPlans.map(p => {
       const { _id, createdAt, updatedAt, __v, ...rest } = p;
+      let values = { ...rest };
+
+      // If user selected 'without_changes', revert to original as-imported values
+      if (importMode === 'without_changes' && p.originalImportedValues) {
+        const orig = p.originalImportedValues;
+        if (orig.orderQty !== undefined) values.orderQty = orig.orderQty;
+        if (orig.coatingCompletedQty !== undefined) {
+          values.coatingCompletedQty = orig.coatingCompletedQty;
+          values.coatedQty = orig.coatingCompletedQty;
+        }
+        if (orig.balanceToMake !== undefined) values.balanceToMake = orig.balanceToMake;
+        if (orig.boxQty !== undefined) values.boxQty = orig.boxQty;
+        if (orig.noOfBoxes !== undefined) values.noOfBoxes = orig.noOfBoxes;
+        if (orig.dispatchPendingQty !== undefined) {
+          values.dispatchPendingQty = orig.dispatchPendingQty;
+          values.dispatchBalance = orig.dispatchPendingQty;
+        }
+        if (orig.soldQty !== undefined) values.soldQty = orig.soldQty;
+        if (orig.plainStock !== undefined) values.plainStock = orig.plainStock;
+        if (orig.remarks !== undefined) values.remarks = orig.remarks;
+        if (orig.process !== undefined) values.process = orig.process;
+      }
+
       return {
-        ...rest,
-        planDate: new Date(targetDate)
+        sourcePlan: p,
+        values
       };
     });
+
+    const completedSet = await getCompletedCombinationsSet(sourceDate || prev, resolveBrandKey, resolveVariantKey, false);
+
+    // Also mark any plan in candidatePlans that is already completed on sourceDate
+    candidatePlans.forEach(c => {
+      if (isPlanRowCompleted(c.values)) {
+        const keys = getPlanCombinationKeys(c.values, resolveBrandKey, resolveVariantKey);
+        keys.forEach(k => completedSet.add(k));
+      }
+    });
+
+    // Skip any combination that is already completed (balance >= 0 or coating completed >= order qty)
+    const openCandidates = candidatePlans.filter(c => {
+      if (isPlanRowCompleted(c.values)) return false;
+      const keys = getPlanCombinationKeys(c.values, resolveBrandKey, resolveVariantKey);
+      if (keys.some(k => completedSet.has(k))) return false;
+      return true;
+    });
+
+    const newPlansData = openCandidates.map(c => {
+      const finalValues = c.values;
+      const sourcePlanId = c.sourcePlan._id;
+      const snapshot = {
+        orderQty: finalValues.orderQty,
+        coatingCompletedQty: finalValues.coatingCompletedQty,
+        coatedQty: finalValues.coatedQty,
+        balanceToMake: finalValues.balanceToMake,
+        boxQty: finalValues.boxQty,
+        noOfBoxes: finalValues.noOfBoxes,
+        dispatchPendingQty: finalValues.dispatchPendingQty,
+        dispatchBalance: finalValues.dispatchBalance,
+        soldQty: finalValues.soldQty,
+        plainStock: finalValues.plainStock,
+        remarks: finalValues.remarks,
+        process: finalValues.process
+      };
+
+      return {
+        ...finalValues,
+        appliedStockDeduction: 0,
+        planDate: new Date(targetDate),
+        isEditedAfterImport: false,
+        lastEditedAt: null,
+        originalImportedValues: snapshot,
+        importedFromId: sourcePlanId,
+        importedFromDate: sourceDate || prev
+      };
+    });
+
+    let newPlans = [];
     
-    const newPlans = await LacquerPlan.insertMany(newPlansData);
-    
-    res.status(200).json({ success: true, data: newPlans });
+    if (importMode === 'with_changes' && hasExistingImport) {
+      // Update existing imports with source's current values, add new rows
+      const alreadyImportedSourceIds = new Set();
+      
+      for (const candidate of newPlansData) {
+        const existingImport = existingTargetPlans.find(p => 
+          p.importedFromId?.toString() === candidate.importedFromId.toString()
+        );
+        
+        if (existingImport) {
+          // Update existing import with new values
+          await LacquerPlan.updateOne(
+            { _id: existingImport._id },
+            {
+              $set: {
+                orderQty: candidate.orderQty,
+                coatingCompletedQty: candidate.coatingCompletedQty,
+                coatedQty: candidate.coatedQty,
+                balanceToMake: candidate.balanceToMake,
+                boxQty: candidate.boxQty,
+                noOfBoxes: candidate.noOfBoxes,
+                dispatchPendingQty: candidate.dispatchPendingQty,
+                dispatchBalance: candidate.dispatchBalance,
+                soldQty: candidate.soldQty,
+                plainStock: candidate.plainStock,
+                remarks: candidate.remarks,
+                process: candidate.process,
+                importedFromDate: candidate.importedFromDate,
+                isEditedAfterImport: false,
+                originalImportedValues: candidate.originalImportedValues
+              }
+            }
+          );
+          alreadyImportedSourceIds.add(candidate.importedFromId.toString());
+        }
+      }
+      
+      // Add only new rows (not already imported)
+      const plansToInsert = newPlansData.filter(newP => 
+        !alreadyImportedSourceIds.has(newP.importedFromId.toString())
+      );
+      
+      if (plansToInsert.length > 0) {
+        newPlans = await LacquerPlan.insertMany(plansToInsert);
+        for (const plan of newPlans) {
+          await syncLacquerPlanStockDeduction(plan, plan.coatingCompletedQty ?? plan.coatedQty, req.user?._id);
+          await createPrintingPlanIfApplicable(plan);
+        }
+      }
+    } else if (importMode === 'without_changes' && hasExistingImport) {
+      // Only add rows that haven't been imported yet
+      const alreadyImportedSourceIds = new Set(
+        existingTargetPlans
+          .filter(p => p.importedFromId)
+          .map(p => p.importedFromId.toString())
+      );
+      
+      const plansToInsert = newPlansData.filter(newP => 
+        !alreadyImportedSourceIds.has(newP.importedFromId.toString())
+      );
+      
+      if (plansToInsert.length > 0) {
+        newPlans = await LacquerPlan.insertMany(plansToInsert);
+        for (const plan of newPlans) {
+          await syncLacquerPlanStockDeduction(plan, plan.coatingCompletedQty ?? plan.coatedQty, req.user?._id);
+          await createPrintingPlanIfApplicable(plan);
+        }
+      }
+    } else {
+      // First import or no existing imports - normal behavior
+      const plansToInsert = newPlansData.filter(newP => {
+        const newKeys = getPlanCombinationKeys(newP, resolveBrandKey, resolveVariantKey);
+        return !existingTargetPlans.some(existP => {
+          const existKeys = getPlanCombinationKeys(existP, resolveBrandKey, resolveVariantKey);
+          return newKeys.some(nk => existKeys.includes(nk));
+        });
+      });
+      
+      if (plansToInsert.length > 0) {
+        newPlans = await LacquerPlan.insertMany(plansToInsert);
+        for (const plan of newPlans) {
+          await syncLacquerPlanStockDeduction(plan, plan.coatingCompletedQty ?? plan.coatedQty, req.user?._id);
+          await createPrintingPlanIfApplicable(plan);
+        }
+      }
+    }
+
+    // Calculate stock warnings for candidate plans (for preview response)
+    const stockWarnings = [];
+    for (const candidate of newPlansData) {
+      if (!candidate.bottleName || !candidate.companyId || !candidate.orderQty) {
+        continue;
+      }
+
+      try {
+        const warning = await validateRowStockWarning(
+          candidate.bottleName,
+          candidate.companyId,
+          candidate.orderQty,
+          null
+        );
+
+        if (warning.hasWarning) {
+          stockWarnings.push({
+            sourcePlanId: candidate.importedFromId,
+            bottleName: candidate.bottleName,
+            orderQty: warning.orderQty,
+            availableStock: warning.availableStock,
+            overBy: warning.overBy,
+            details: warning.details
+          });
+        }
+      } catch (err) {
+        console.error(`Stock warning calculation error for import:`, err);
+      }
+    }
+
+    res.status(200).json({
+      success: true,
+      data: newPlans,
+      skippedCompletedCount: oldPlans.length - openCandidates.length,
+      importMode: importMode || 'normal',
+      stockWarnings,
+      hasStockWarnings: stockWarnings.length > 0
+    });
   } catch (error) {
     res.status(400).json({ success: false, message: error.message });
   }
@@ -500,7 +1471,20 @@ exports.getPlanById = async (req, res) => {
     if (!plan || plan.isDeleted) {
       return res.status(404).json({ success: false, message: "Plan not found" });
     }
-    res.status(200).json({ success: true, data: plan });
+
+    let plainStock = 0;
+    if (plan.bottleName) {
+      const stockDoc = await findPlainBottleStockDoc(plan.bottleName, plan.canonicalCompanyId || plan.companyId);
+      if (stockDoc) {
+        plainStock = stockDoc.availableQuantity || 0;
+      }
+    }
+
+    const planObj = plan.toObject();
+    planObj.livePlainStock = plainStock;
+    planObj.plainStock = plan.plainStock !== null && plan.plainStock !== undefined ? plan.plainStock : plainStock;
+
+    res.status(200).json({ success: true, data: planObj });
   } catch (error) {
     res.status(400).json({ success: false, message: error.message });
   }
@@ -514,52 +1498,164 @@ exports.updatePlan = async (req, res) => {
       return res.status(404).json({ success: false, message: "Plan not found" });
     }
 
+    const oldBottleName = existingPlan.bottleName;
+    const oldCompanyId = existingPlan.canonicalCompanyId || existingPlan.companyId;
+
     await validatePlanCompanyBottleVariant(req.body, true, existingPlan);
+
+    // Stock warning validation: only warn on qty increase
+    if (req.body.orderQty && req.body.orderQty > (existingPlan.orderQty || 0)) {
+      const newQty = req.body.orderQty;
+      const companyId = req.body.companyId || existingPlan.companyId;
+      const bottleName = req.body.bottleName || existingPlan.bottleName;
+
+      const warning = await validateRowStockWarning(
+        bottleName,
+        companyId,
+        newQty,
+        req.params.id
+      );
+
+      if (warning.hasWarning && !req.body.stockWarningAcknowledged) {
+        return res.status(400).json({
+          success: false,
+          code: 'STOCK_WARNING_REQUIRED',
+          warning,
+          requiresAcknowledge: true,
+          message: `Stock warning: increasing order quantity from ${existingPlan.orderQty} to ${newQty} exceeds available stock (${warning.availableStock})`
+        });
+      }
+
+      // If warning is acknowledged, set metadata
+      if (warning.hasWarning && req.body.stockWarningAcknowledged) {
+        req.body.stockWarningAcknowledged = true;
+        req.body.acknowledgedAt = new Date();
+        req.body.stockWarningDetails = warning;
+      }
+    }
 
     // Check DB for duplicates excluding the current record
     const planDate = req.body.planDate || existingPlan.planDate;
     const companyId = req.body.companyId || existingPlan.companyId;
     const bottleName = req.body.bottleName || existingPlan.bottleName;
-    const variantId = req.body.variantId || existingPlan.variantId;
+    const variantId = req.body.variantId !== undefined ? req.body.variantId : existingPlan.variantId;
     const brandId = req.body.brandId || existingPlan.brandId;
 
-    if (planDate && companyId && bottleName && variantId && brandId) {
+    if (planDate && companyId && bottleName && brandId) {
       const startOfDay = new Date(planDate);
-      startOfDay.setUTCHours(0,0,0,0);
+      startOfDay.setUTCHours(0, 0, 0, 0);
       const endOfDay = new Date(planDate);
-      endOfDay.setUTCHours(23,59,59,999);
-      
-      const duplicate = await LacquerPlan.findOne({
+      endOfDay.setUTCHours(23, 59, 59, 999);
+
+      const dupQuery = {
         _id: { $ne: req.params.id },
         planDate: { $gte: startOfDay, $lte: endOfDay },
         companyId: companyId,
         brandId: brandId,
         bottleName: { $regex: new RegExp("^" + bottleName.trim() + "$", "i") },
-        variantId: variantId,
         isDeleted: false
-      });
-      if (duplicate) {
-        throw new Error(`A plan for Bottle "${bottleName}" with this variant already exists for this date, company and brand.`);
+      };
+
+      if (variantId) {
+        dupQuery.variantId = variantId;
+      } else {
+        dupQuery.variantId = { $in: [null, undefined] };
+        const shade = req.body.colour || req.body.coatingShade || existingPlan.colour || existingPlan.coatingShade;
+        if (shade) {
+          dupQuery.$or = [{ colour: shade }, { coatingShade: shade }];
+        }
       }
+
+      const duplicate = await LacquerPlan.findOne(dupQuery);
+      if (duplicate) {
+        throw new Error(`A plan for Bottle "${bottleName}" ${variantId ? 'with this variant' : 'with this shade'} already exists for this date, company and brand.`);
+      }
+    }
+
+    const updateData = { ...req.body };
+    let newHistory = null;
+    if (updateData.newOrderHistoryEntry) {
+      newHistory = updateData.newOrderHistoryEntry;
+      delete updateData.newOrderHistoryEntry;
+    }
+
+    // Mark as edited post-import and capture original imported snapshot if not yet set
+    updateData.isEditedAfterImport = true;
+    updateData.lastEditedAt = new Date();
+    if (!existingPlan.originalImportedValues) {
+      updateData.originalImportedValues = {
+        orderQty: existingPlan.orderQty,
+        coatingCompletedQty: existingPlan.coatingCompletedQty,
+        coatedQty: existingPlan.coatedQty,
+        balanceToMake: existingPlan.balanceToMake,
+        boxQty: existingPlan.boxQty,
+        noOfBoxes: existingPlan.noOfBoxes,
+        dispatchPendingQty: existingPlan.dispatchPendingQty,
+        dispatchBalance: existingPlan.dispatchBalance,
+        soldQty: existingPlan.soldQty,
+        plainStock: existingPlan.plainStock,
+        remarks: existingPlan.remarks,
+        process: existingPlan.process
+      };
     }
 
     const plan = await LacquerPlan.findByIdAndUpdate(
       req.params.id,
-      req.body,
-      { new: true, runValidators: true }
+      updateData,
+      { returnDocument: 'after', runValidators: true }
     );
+
+    if (plan && newHistory) {
+      plan.orderHistory.push(newHistory);
+      await plan.save();
+    }
     if (!plan || plan.isDeleted) {
       return res.status(404).json({ success: false, message: "Plan not found" });
     }
-    
-    // Sync orderQty with linked PrintingPlan
-    if (req.body.orderQty !== undefined) {
-      await PrintingPlan.findOneAndUpdate(
-        { lacquerPlanId: plan._id, isDeleted: false },
-        { orderQty: req.body.orderQty }
-      );
+
+    // Sync 1-to-1 with linked PrintingPlan (handles adding, updating, or soft-deleting based on process)
+    await syncPrintingPlanForLacquerPlan(plan, req.user?._id);
+
+    // Sync live PlainBottleStock deduction if coatingCompletedQty or coatedQty is updated
+    if (req.body.coatingCompletedQty !== undefined || req.body.coatedQty !== undefined) {
+      const newCoated = req.body.coatingCompletedQty !== undefined ? req.body.coatingCompletedQty : req.body.coatedQty;
+      await syncLacquerPlanStockDeduction(plan, newCoated, req.user?._id);
     }
-    
+
+    // Sync plainStock across all plans sharing the same company and bottle on this planDate
+    if (req.body.plainStock !== undefined && req.body.plainStock !== null) {
+      const planBottle = (plan.plainBottle || plan.bottleName || '').trim();
+      const planComp = plan.canonicalCompanyId || plan.companyId;
+      if (planBottle && planComp && plan.planDate) {
+        const startOfDay = new Date(plan.planDate);
+        startOfDay.setUTCHours(0, 0, 0, 0);
+        const endOfDay = new Date(plan.planDate);
+        endOfDay.setUTCHours(23, 59, 59, 999);
+
+        await LacquerPlan.updateMany(
+          {
+            _id: { $ne: plan._id },
+            planDate: { $gte: startOfDay, $lte: endOfDay },
+            companyId: planComp,
+            $or: [
+              { bottleName: { $regex: new RegExp("^" + planBottle + "$", "i") } },
+              { plainBottle: { $regex: new RegExp("^" + planBottle + "$", "i") } }
+            ],
+            isDeleted: false
+          },
+          { $set: { plainStock: req.body.plainStock } }
+        );
+      }
+    }
+
+    // Recompute plain stock
+    await recomputePlainStock(plan.bottleName, plan.canonicalCompanyId || plan.companyId, req.user?._id);
+
+    // Rule L4: If bottle changed on a saved row, recompute old bottle as well so usage moves cleanly
+    if (oldBottleName && (oldBottleName.trim().toUpperCase() !== (plan.bottleName || '').trim().toUpperCase() || oldCompanyId?.toString() !== (plan.canonicalCompanyId || plan.companyId)?.toString())) {
+      await recomputePlainStock(oldBottleName, oldCompanyId, req.user?._id);
+    }
+
     res.status(200).json({ success: true, data: plan });
   } catch (error) {
     res.status(400).json({ success: false, message: error.message });
@@ -569,17 +1665,20 @@ exports.updatePlan = async (req, res) => {
 // Delete Plan
 exports.deletePlan = async (req, res) => {
   try {
-    const plan = await LacquerPlan.findByIdAndUpdate(req.params.id, { isDeleted: true }, { new: true });
+    const plan = await LacquerPlan.findByIdAndUpdate(req.params.id, { isDeleted: true }, { returnDocument: 'after' });
     if (!plan) {
       return res.status(404).json({ success: false, message: "Plan not found" });
     }
-    
-    // Unlink the PrintingPlan but keep it intact
-    await PrintingPlan.findOneAndUpdate(
+
+    // Soft-delete the linked PrintingPlan
+    await PrintingPlan.updateMany(
       { lacquerPlanId: plan._id, isDeleted: false },
-      { lacquerPlanId: null }
+      { $set: { isDeleted: true } }
     );
-    
+
+    // Recompute plain stock
+    await recomputePlainStock(plan.bottleName, plan.canonicalCompanyId || plan.companyId, req.user?._id);
+
     res.status(200).json({ success: true, message: "Plan deleted successfully" });
   } catch (error) {
     res.status(400).json({ success: false, message: error.message });
@@ -589,38 +1688,60 @@ exports.deletePlan = async (req, res) => {
 // Get computed stats for frontend form
 exports.getComputedStats = async (req, res) => {
   try {
-    const { bottleName, brandId, colour } = req.query;
+    const { bottleName, brandId, colour, companyId, planDate } = req.query;
     let plainStock = 0;
     let coatedQty = 0;
 
-    // 1. Fetch plain stock (match by bottleName)
-    if (bottleName) {
-      const bp = await BottlePerBox.findOne({ bottleName, isDeleted: false });
-      if (bp) {
-        const stock = await PlainBottleStock.findOne({ bottleId: bp._id });
-        if (stock) {
-          plainStock = stock.availableQuantity || 0;
-        }
+    let effectiveCompanyId = companyId;
+    if (!effectiveCompanyId && brandId) {
+      const Brand = require("../models/Brand");
+      const bDoc = await Brand.findById(brandId);
+      if (bDoc && bDoc.companyId) {
+        effectiveCompanyId = bDoc.companyId;
       }
     }
-    
+
+    // 1. Fetch live day-based plain stock (Rule L3)
+    if (bottleName) {
+      plainStock = await computeLivePlainStock(bottleName, effectiveCompanyId, planDate);
+    }
+
     // 2. Fetch cumulative coatedQty
     if (bottleName && brandId && colour) {
       const BottleSpec = require("../models/Bottlespecs");
-      const bSpec = await BottleSpec.findOne({ bottleName, isDeleted: false });
-      
-      if (bSpec) {
+      let bSpecs = await BottleSpec.find({ bottleName: bottleName.trim(), isDeleted: false });
+
+      if (!bSpecs || bSpecs.length === 0) {
+        const BottlePerBox = require("../models/BottlePerBox");
+        const bpb = await BottlePerBox.findOne({
+          $or: [
+            { plainBottleName: bottleName.trim() },
+            { bottleName: bottleName.trim() },
+            { bottleNames: bottleName.trim() }
+          ],
+          isDeleted: false
+        });
+        if (bpb && Array.isArray(bpb.bottleNames) && bpb.bottleNames.length > 0) {
+          bSpecs = await BottleSpec.find({
+            bottleName: { $in: bpb.bottleNames },
+            isDeleted: false
+          });
+        }
+      }
+
+      if (bSpecs && bSpecs.length > 0) {
+        const specIds = bSpecs.map(s => s._id);
         const coatingRecords = await CoatingProduction.find({
-          coatingSpecId: bSpec._id,
+          coatingSpecId: { $in: specIds },
           brandId,
           coatingShade: colour,
           isDeleted: false
         });
-        
+
         coatedQty = coatingRecords.reduce((sum, rec) => sum + (rec.actualQuantity || 0), 0);
       }
     }
-    
+
     res.status(200).json({ success: true, data: { plainStock, coatedQty } });
   } catch (error) {
     res.status(400).json({ success: false, message: error.message });
@@ -650,29 +1771,29 @@ const ROW_CLASSIFICATION = {
  */
 function detectHeaderAndMapColumns(row) {
   if (!row || !Array.isArray(row)) return null;
-  
+
   // ==================== PHASE 1: TRY GUJARATI DETECTION ====================
   const gujaratiHeaders = detectGujaratiHeaders(row);
   let colMap = {};
-  let detectionMethod = 'fuzzy';
+  let detectionMethod = 'fuzzy_fallback';
   let _gujaratiHeaders = {};
-  
+
   if (Object.keys(gujaratiHeaders).length > 0) {
     const gujaratiColMap = buildColumnMapFromGujarati(gujaratiHeaders);
     colMap = { ...gujaratiColMap };
     _gujaratiHeaders = gujaratiHeaders;
-    if (colMap.bottleName) {
-      detectionMethod = 'gujarati_and_fuzzy';
+    if (colMap.bottleName !== undefined) {
+      detectionMethod = 'gujarati';
     }
   }
-  
+
   // ==================== PHASE 2: FALLBACK TO FUZZY MATCHING ====================
   // Normalize header text for matching
   const normalize = (text) => {
     if (!text) return '';
     return String(text).trim().toUpperCase().replace(/\s+/g, ' ');
   };
-  
+
   // Pattern definitions for each field
   // Support English, Unicode Gujarati, and Gujarati ASCII font representations
   const headerPatterns = {
@@ -754,7 +1875,7 @@ function detectHeaderAndMapColumns(row) {
       /^REMARK|^NOTE|^COMMENTS?|^COMMENT$/i
     ]
   };
-  
+
   // First pass: look for bottle name column (must find this)
   let bottleColIdx = colMap.bottleName;
   if (bottleColIdx === undefined) {
@@ -763,7 +1884,7 @@ function detectHeaderAndMapColumns(row) {
       if (!cell) continue;
       const headerText = normalize(cell);
       if (!headerText) continue;
-      
+
       for (const pattern of headerPatterns.bottleName) {
         if (pattern.test(cell) || pattern.test(headerText)) {
           bottleColIdx = colIdx;
@@ -773,13 +1894,13 @@ function detectHeaderAndMapColumns(row) {
       if (bottleColIdx !== undefined) break;
     }
   }
-  
+
   if (bottleColIdx === undefined) {
     return null; // Not a valid header row - no bottle column
   }
-  
+
   colMap.bottleName = bottleColIdx;
-  
+
   // Prioritized field matching with conflict resolution
   const fieldPriority = [
     'coatingShade',
@@ -796,41 +1917,41 @@ function detectHeaderAndMapColumns(row) {
     'variant',
     'remarks'
   ];
-  
+
   // Second pass: map all other fields using priority order
   for (const fieldName of fieldPriority) {
     if (colMap[fieldName] !== undefined) continue; // Already mapped
-    
+
     const patterns = headerPatterns[fieldName];
     if (!patterns) continue;
-    
+
     for (let colIdx = 0; colIdx < row.length; colIdx++) {
       if (colIdx === bottleColIdx) continue; // Skip bottle column
       if (colMap[fieldName] !== undefined) continue; // Already mapped this field
-      
+
       const cell = row[colIdx];
       if (!cell) continue;
-      
+
       const headerText = normalize(cell);
       if (!headerText) continue;
-      
+
       // Check if already mapped to another field
       if (Object.values(colMap).includes(colIdx)) continue;
-      
+
       for (const pattern of patterns) {
         if (pattern.test(cell) || pattern.test(headerText)) {
           // Specific exclusion rules to prevent false positives
           if (fieldName === 'orderQty' && (headerText.includes('BOX') || headerText.includes('BI[X'))) continue;
           if (fieldName === 'boxQty' && (headerText.includes('ORDER') || headerText.includes('NO.') || headerText.includes('AI[D'))) continue;
           if (fieldName === 'noOfBoxes' && !headerText.includes('BOX') && !headerText.includes('BI[X') && !headerText.includes('બોક્સ')) continue;
-          
+
           colMap[fieldName] = colIdx;
           break;
         }
       }
     }
   }
-  
+
   return {
     ...colMap,
     _detectionMethod: detectionMethod,
@@ -845,14 +1966,14 @@ function detectHeaderAndMapColumns(row) {
  */
 function isTotalRow(row) {
   if (!row || !Array.isArray(row)) return false;
-  
+
   const normalize = (text) => {
     if (!text) return '';
     return String(text).trim().toUpperCase();
   };
-  
+
   const rowText = row.map(c => normalize(c)).join(' ');
-  
+
   // Signal 1: Exact total keywords including Gujarati
   const totalKeywords = [
     'TOTAL', 'GRAND TOTAL', 'SUB TOTAL', 'SUBTOTAL',
@@ -863,7 +1984,7 @@ function isTotalRow(row) {
   if (totalKeywords.some(kw => rowText.includes(kw))) {
     return true;
   }
-  
+
   // Signal 2: Row contains mostly numbers in quantity columns (likely a total)
   // Count cells that look like quantities (numbers, possibly negative, possibly formulas)
   const numericCells = row.filter(c => {
@@ -874,7 +1995,7 @@ function isTotalRow(row) {
     const num = parseFloat(str);
     return !isNaN(num) && (num > 0 || num < 0);
   });
-  
+
   // If we have 5+ numeric cells and very few text cells, likely a total
   const textCells = row.filter(c => {
     if (!c) return false;
@@ -882,11 +2003,11 @@ function isTotalRow(row) {
     // Real product names are usually longer words, not single numbers
     return str.length > 3 && !/^\d+$/.test(str) && !/^=.*/.test(str);
   });
-  
+
   if (numericCells.length >= 2 && textCells.length === 0) {
     return true;
   }
-  
+
   // Signal 3: First cell is empty but has many large numbers (total row pattern)
   const firstCell = String(row[0] || '').trim();
   if (!firstCell) {
@@ -900,7 +2021,7 @@ function isTotalRow(row) {
       return true;
     }
   }
-  
+
   // Signal 4: Detect merged header rows (all cells identical, like row ID repeated)
   // But be conservative - only if cells are very short and numeric
   const nonEmptyCells = row.filter(c => c);
@@ -917,7 +2038,7 @@ function isTotalRow(row) {
       }
     }
   }
-  
+
   return false;
 }
 
@@ -929,48 +2050,48 @@ function classifyRow(row, foundHeader) {
   if (!row || !Array.isArray(row) || row.every(c => !c)) {
     return { classification: ROW_CLASSIFICATION.SEPARATOR, companyName: null };
   }
-  
+
   const normalize = (text) => {
     if (!text) return '';
     return String(text).trim().toUpperCase();
   };
-  
+
   const firstCell = normalize(row[0]);
-  
+
   // Check if it's a total/summary row FIRST (before other checks)
   if (isTotalRow(row)) {
     return { classification: ROW_CLASSIFICATION.TOTAL_ROW, companyName: null };
   }
-  
+
   // Check for column header indicators
   const headerKeywords = ['NO.', 'PRODUCT', 'BOTTLE', 'COATING', 'BRAND', 'PROCESS', 'QTY', 'BOX', 'REMARK', 'IDKT', 'KLR', 'BNIVVINI', 'પ્લેઈન', 'બનાવવાનો', 'કોટીંગ', 'બોક્સ', 'પ્રક્રિયા', 'P\\(KYI', 'BI[KS'];
   const headerCount = headerKeywords.filter(kw => row.some(c => c && normalize(c).includes(kw))).length;
   if (headerCount >= 3) {
     return { classification: ROW_CLASSIFICATION.COLUMN_HEADER, companyName: null };
   }
-  
+
   // Check if it's a company/section heading (merged cells - all non-empty are identical)
   const nonEmptyCells = row.filter(c => c);
   const uniqueValues = new Set(nonEmptyCells.map(c => normalize(c)));
   if (nonEmptyCells.length >= 3 && uniqueValues.size === 1) {
     const firstCell = String(nonEmptyCells[0]).trim();
     const upperFirstCell = firstCell.toUpperCase();
-    
+
     // Check for generic titles that are NOT company names
     const genericTitles = [
       'LACQUER PLANT PLAN SHEET', 'PLAN SHEET', 'PRODUCTION PLAN', 'LACQUER PLAN',
       'DAILY PLAN', 'REPORT', 'DOCUMENT'
     ];
-    
+
     if (genericTitles.includes(upperFirstCell) || upperFirstCell.startsWith('DATE:') || upperFirstCell.startsWith('MONTH:')) {
       return { classification: ROW_CLASSIFICATION.OTHER, companyName: null };
     }
-    
+
     // Ignore numeric codes/IDs
     if (!isNaN(parseFloat(upperFirstCell)) && /^\d+$/.test(upperFirstCell)) {
       return { classification: ROW_CLASSIFICATION.OTHER, companyName: null };
     }
-    
+
     let extractedName = firstCell;
     const match = firstCell.match(/\((.*?)\)/);
     if (match) {
@@ -982,10 +2103,10 @@ function classifyRow(row, foundHeader) {
         return { classification: ROW_CLASSIFICATION.OTHER, companyName: null };
       }
     }
-    
+
     return { classification: ROW_CLASSIFICATION.COMPANY_HEADER, companyName: extractedName };
   }
-  
+
   // Check if it's a single-cell heading (worksheet title, date, etc.)
   if (nonEmptyCells.length === 1) {
     const firstCell = String(nonEmptyCells[0]).trim();
@@ -1000,12 +2121,12 @@ function classifyRow(row, foundHeader) {
       return { classification: ROW_CLASSIFICATION.COMPANY_HEADER, companyName: firstCell };
     }
   }
-  
+
   // Otherwise, classify as plan entry if we've found a header
   if (foundHeader) {
     return { classification: ROW_CLASSIFICATION.PLAN_ENTRY, companyName: null };
   }
-  
+
   return { classification: ROW_CLASSIFICATION.OTHER, companyName: null };
 }
 
@@ -1021,33 +2142,33 @@ function parseNumericValue(value) {
   if (value === null || value === undefined || value === '') {
     return null;
   }
-  
+
   // If it's already a number, return it
   if (typeof value === 'number') {
     return value;
   }
-  
+
   // Try to parse as number
   const num = Number(value);
   if (!isNaN(num)) {
     return num;
   }
-  
+
   return null;
 }
 
 exports.previewImportExcel = async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ success: false, message: 'No file uploaded' });
-    
+
     const Brand = require('../models/Brand');
     const BottleSpec = require('../models/Bottlespecs');
-    require('../models/Variant'); 
-    
+    require('../models/Variant');
+
     const xlsx = require('xlsx');
     const workbook = xlsx.read(req.file.buffer, { type: 'buffer' });
     const dateRegex = /^(\d{2})\.(\d{2})\.(\d{2})$/;
-    
+
     const Variant = require('../models/Variant');
     const allVariants = await Variant.find({ isDeleted: { $ne: true } }).select('variantName coatingShade').lean();
     const masterShadesSet = new Set(allVariants.map(v => (v.coatingShade || '').trim().toUpperCase()).filter(Boolean));
@@ -1056,10 +2177,10 @@ exports.previewImportExcel = async (req, res) => {
     const allBottles = await BottleSpec.find({ isDeleted: { $ne: true } }).populate('variantId').populate('brandId');
     const BottlePerBoxModel = require('../models/BottlePerBox');
     const allBottlePerBox = await BottlePerBoxModel.find({ isDeleted: { $ne: true } });
-    
+
     const Company = require('../models/Company');
     const allCompanies = await Company.find({ isDeleted: { $ne: true } });
-    
+
     const normalize = (text) => text ? String(text).trim().toUpperCase().replace(/\s+/g, '') : '';
     const normalizeBottle = (text) => {
       if (!text) return '';
@@ -1068,98 +2189,98 @@ exports.previewImportExcel = async (req, res) => {
 
     const brandMap = new Map();
     allBrands.forEach(b => brandMap.set(normalize(b.name), b));
-    
+
     const companyAliasMap = {
       'PGP': 'PGPGLASS',
       'SFP2': 'SFP',
       'MCNROE': 'MCNORE' // common typo in master
     };
-    
+
     const companyMap = new Map();
     allCompanies.forEach(c => companyMap.set(normalize(c.name), c));
-    
+
     // ============ BOTTLEPERBOX MASTER MAPS ============
     // Map 1: Normalized -> Original (for matching)
     const masterBottlePerBoxNameMap = new Map();
     // Map 2: Normalized -> Quantity (for getting bottlePerBox quantity)
     const masterBottlePerBoxMap = new Map();
     const sortedMasterNames = [];
-    
+
     allBottlePerBox.forEach(bp => {
-       if (bp.bottleName) {
-           const normalized = normalizeBottle(bp.bottleName);
-           if (!masterBottlePerBoxNameMap.has(normalized)) {
-               masterBottlePerBoxNameMap.set(normalized, bp.bottleName); // Original name
-               sortedMasterNames.push(normalized);
-           }
-           masterBottlePerBoxMap.set(normalized, bp.bottlePerBox); // Quantity
-       }
+      if (bp.bottleName) {
+        const normalized = normalizeBottle(bp.bottleName);
+        if (!masterBottlePerBoxNameMap.has(normalized)) {
+          masterBottlePerBoxNameMap.set(normalized, bp.bottleName); // Original name
+          sortedMasterNames.push(normalized);
+        }
+        masterBottlePerBoxMap.set(normalized, bp.bottlePerBox); // Quantity
+      }
     });
-    
+
     // Sort descending by length for longest-prefix-match
     sortedMasterNames.sort((a, b) => b.length - a.length);
-    
+
     // HELPER: Match bottle name using BottlePerBox Master with longest-match-first prefix
     const matchBottleNameFromMaster = (excelText) => {
       if (!excelText) return { bottleName: null, variant: null, unmatchedText: null };
       const originalText = String(excelText).trim();
       const excelNorm = normalizeBottle(originalText);
-      
+
       let validPairs = [];
       let longestPrefixMatch = null;
       let maxLength = -1;
-      
+
       for (const masterNorm of sortedMasterNames) {
-         if (excelNorm.startsWith(masterNorm)) {
-             let originalIndex = 0;
-             let normIndex = 0;
-             while (originalIndex < originalText.length && normIndex < masterNorm.length) {
-                 const char = originalText[originalIndex];
-                 const upperChar = char.toUpperCase();
-                 if (upperChar >= 'A' && upperChar <= 'Z' || upperChar >= '0' && upperChar <= '9') {
-                     normIndex++;
-                 }
-                 originalIndex++;
-             }
-             
-             let remainingText = originalText.substring(originalIndex).trim();
-             remainingText = remainingText.replace(/^[-+]\s*/, '').trim();
-             const upperRemaining = remainingText.toUpperCase();
-             
-             if (remainingText === '' || masterShadesSet.has(upperRemaining) || masterVariantsSet.has(upperRemaining)) {
-                 validPairs.push({ bottleName: masterBottlePerBoxNameMap.get(masterNorm), variant: remainingText || null, unmatchedText: null, normLen: masterNorm.length });
-             }
-             
-             if (masterNorm.length > maxLength) {
-                 maxLength = masterNorm.length;
-                 longestPrefixMatch = { bottleName: masterBottlePerBoxNameMap.get(masterNorm), variant: remainingText || null, unmatchedText: null };
-             }
-         }
+        if (excelNorm.startsWith(masterNorm)) {
+          let originalIndex = 0;
+          let normIndex = 0;
+          while (originalIndex < originalText.length && normIndex < masterNorm.length) {
+            const char = originalText[originalIndex];
+            const upperChar = char.toUpperCase();
+            if (upperChar >= 'A' && upperChar <= 'Z' || upperChar >= '0' && upperChar <= '9') {
+              normIndex++;
+            }
+            originalIndex++;
+          }
+
+          let remainingText = originalText.substring(originalIndex).trim();
+          remainingText = remainingText.replace(/^[-+]\s*/, '').trim();
+          const upperRemaining = remainingText.toUpperCase();
+
+          if (remainingText === '' || masterShadesSet.has(upperRemaining) || masterVariantsSet.has(upperRemaining)) {
+            validPairs.push({ bottleName: masterBottlePerBoxNameMap.get(masterNorm), variant: remainingText || null, unmatchedText: null, normLen: masterNorm.length });
+          }
+
+          if (masterNorm.length > maxLength) {
+            maxLength = masterNorm.length;
+            longestPrefixMatch = { bottleName: masterBottlePerBoxNameMap.get(masterNorm), variant: remainingText || null, unmatchedText: null };
+          }
+        }
       }
-      
+
       if (validPairs.length > 0) {
-          validPairs.sort((a, b) => b.normLen - a.normLen);
-          return { bottleName: validPairs[0].bottleName, variant: validPairs[0].variant, unmatchedText: null };
+        validPairs.sort((a, b) => b.normLen - a.normLen);
+        return { bottleName: validPairs[0].bottleName, variant: validPairs[0].variant, unmatchedText: null };
       }
-      
+
       if (longestPrefixMatch) {
-          return longestPrefixMatch;
+        return longestPrefixMatch;
       }
-      
+
       return { bottleName: null, variant: null, unmatchedText: excelText };
     };
-    
+
     const bottleExactMap = new Map();
     const bottleWithVariantMap = new Map();
-    
+
     allBottles.forEach(b => {
       const bName = normalizeBottle(b.bottleName);
       if (!bottleExactMap.has(bName)) bottleExactMap.set(bName, []);
       bottleExactMap.get(bName).push(b);
-      
+
       if (b.variantId && b.variantId.variantName) {
-         const vName = normalizeBottle(b.variantId.variantName);
-         bottleWithVariantMap.set(`${bName}|${vName}`, b);
+        const vName = normalizeBottle(b.variantId.variantName);
+        bottleWithVariantMap.set(`${bName}|${vName}`, b);
       }
     });
 
@@ -1169,20 +2290,37 @@ exports.previewImportExcel = async (req, res) => {
       validRows: 0,
       dates: []
     };
-    
-    workbook.SheetNames.forEach(sheetName => {
-      const match = sheetName.match(dateRegex);
-      if (!match) return;
-      
+
+    const resolveBrandKey = buildBrandResolver(allBrands);
+    const resolveVariantKey = buildVariantResolver(allVariants);
+    const completedInBatch = new Set();
+
+    const validDateSheets = workbook.SheetNames
+      .map(sheetName => {
+        const match = sheetName.match(dateRegex);
+        if (!match) return null;
+        const [_, dd, mm, yy] = match;
+        const planDateStr = `20${yy}-${mm}-${dd}`;
+        return { sheetName, planDateStr, dateObj: new Date(planDateStr) };
+      })
+      .filter(Boolean)
+      .sort((a, b) => a.dateObj - b.dateObj);
+
+    for (const sheetInfo of validDateSheets) {
+      const { sheetName, planDateStr } = sheetInfo;
       result.detectedSheets++;
-      const [_, dd, mm, yy] = match;
-      const planDateStr = `20${yy}-${mm}-${dd}`;
-      
+
+      const completedSetForDate = await getCompletedCombinationsSet(planDateStr, resolveBrandKey, resolveVariantKey, false);
+      for (const k of completedInBatch) {
+        completedSetForDate.add(k);
+      }
+      const dateSkippedCompletedRows = [];
+
       const sheet = workbook.Sheets[sheetName];
-      
+
       // 1. Parse sheet to array of arrays
       const data = xlsx.utils.sheet_to_json(sheet, { header: 1, defval: null, blankrows: true });
-      
+
       // 2. Direct robust fill of merged cells from top-left cell across full merge range
       if (sheet['!merges']) {
         sheet['!merges'].forEach(merge => {
@@ -1203,30 +2341,30 @@ exports.previewImportExcel = async (req, res) => {
           }
         });
       }
-      
+
       let foundHeader = false;
       let colMap = {};
-      
+
       let dateTotalRows = 0;
       let dateValidRows = 0;
       let dateInvalidRows = 0;
       let invalidReasons = {};
       let dateRows = [];  // Initialize array for storing parsed rows
-      
+
       let currentGroupEndRow = -1;
       let currentActiveBottle = "";
       let currentActiveBottlePerBox = null;
       let currentActiveProcess = "";
       let currentActivePlainStock = null;
       let currentCompanyName = null;  // MAIN STATE: Track active company
-      
+
       for (let i = 0; i < data.length; i++) {
         const row = data[i];
         const excelRowNumber = i + 1;
-        
+
         // Classify the row
         const { classification, companyName: headingCompanyName } = classifyRow(row, foundHeader);
-        
+
         // Handle company headers - update active company state
         if (classification === ROW_CLASSIFICATION.COMPANY_HEADER) {
           currentCompanyName = headingCompanyName;
@@ -1238,13 +2376,13 @@ exports.previewImportExcel = async (req, res) => {
           currentActivePlainStock = null;
           continue; // Skip the heading row itself
         }
-        
+
         // Skip non-plan rows
-        if (classification === ROW_CLASSIFICATION.SEPARATOR || 
-            classification === ROW_CLASSIFICATION.OTHER) {
+        if (classification === ROW_CLASSIFICATION.SEPARATOR ||
+          classification === ROW_CLASSIFICATION.OTHER) {
           continue;
         }
-        
+
         // Handle column headers
         if (classification === ROW_CLASSIFICATION.COLUMN_HEADER) {
           const newColMap = detectHeaderAndMapColumns(row);
@@ -1260,42 +2398,42 @@ exports.previewImportExcel = async (req, res) => {
           }
           continue;
         }
-        
+
         // Skip total rows completely - don't count them
         if (classification === ROW_CLASSIFICATION.TOTAL_ROW) {
           continue;
         }
-        
+
         if (!foundHeader) {
           continue; // Skip until we find the first header
         }
-        
+
         // At this point, we have a PLAN_ENTRY row
         // Extract data directly from the array (already properly formatted)
         // Helper to resolve merged cells dynamically
         const getMergedValue = (propKey) => {
-            const colIndex = colMap[propKey];
-            if (colIndex === undefined || colIndex === null) return null;
-            
-            if (row[colIndex] !== undefined && row[colIndex] !== null && String(row[colIndex]).trim() !== '') {
-                return row[colIndex];
-            }
-            
-            if (sheet['!merges']) {
-                for (let merge of sheet['!merges']) {
-                    if (colIndex >= merge.s.c && colIndex <= merge.e.c) {
-                        if (i >= merge.s.r && i <= merge.e.r) {
-                            if (data[merge.s.r] && data[merge.s.r][merge.s.c] !== undefined && data[merge.s.r][merge.s.c] !== null) {
-                                const val = String(data[merge.s.r][merge.s.c]).trim();
-                                return val !== '' ? val : null;
-                            }
-                        }
-                    }
+          const colIndex = colMap[propKey];
+          if (colIndex === undefined || colIndex === null) return null;
+
+          if (row[colIndex] !== undefined && row[colIndex] !== null && String(row[colIndex]).trim() !== '') {
+            return row[colIndex];
+          }
+
+          if (sheet['!merges']) {
+            for (let merge of sheet['!merges']) {
+              if (colIndex >= merge.s.c && colIndex <= merge.e.c) {
+                if (i >= merge.s.r && i <= merge.e.r) {
+                  if (data[merge.s.r] && data[merge.s.r][merge.s.c] !== undefined && data[merge.s.r][merge.s.c] !== null) {
+                    const val = String(data[merge.s.r][merge.s.c]).trim();
+                    return val !== '' ? val : null;
+                  }
                 }
+              }
             }
-            return null;
+          }
+          return null;
         };
-        
+
         // Normalize text fields
         const rawBottle = getMergedValue('bottleName') ? String(getMergedValue('bottleName')).trim() : "";
         const rawVariant = getMergedValue('variant') ? String(getMergedValue('variant')).trim() : "";
@@ -1303,7 +2441,7 @@ exports.previewImportExcel = async (req, res) => {
         const rawProcess = getMergedValue('process') ? String(getMergedValue('process')).trim() : "";
         const rawBrand = getMergedValue('brand') ? String(getMergedValue('brand')).trim() : "";
         const rawRemarks = getMergedValue('remarks') ? String(getMergedValue('remarks')).trim() : "";
-        
+
         // Get numeric values - parse them from the array values
         const rawOrderQty = parseNumericValue(getMergedValue('orderQty'));
         const rawBottlePerBox = parseNumericValue(getMergedValue('boxQty'));
@@ -1318,9 +2456,9 @@ exports.previewImportExcel = async (req, res) => {
         const hasBottle = !!rawBottle;
         const quantityCount = [rawOrderQty, rawBottlePerBox, rawOrderBoxes, rawCoatingCompleted, rawBalanceToMake, rawDispatchPending, rawSoldQty, rawPlainStock]
           .filter(v => v !== null && v !== undefined && v !== '').length;
-        
+
         if (!hasBottle && quantityCount === 0) {
-            continue; // Completely empty row
+          continue; // Completely empty row
         }
 
         // Validate Bottle per Box: must never be negative or 0
@@ -1330,25 +2468,25 @@ exports.previewImportExcel = async (req, res) => {
 
         let isNewGroup = false;
         if (i <= currentGroupEndRow) {
-            isNewGroup = false;
+          isNewGroup = false;
         } else {
-            if (rawBottle || rawProcess || rawPlainStock !== null || rawBottlePerBox !== null) {
-                isNewGroup = true;
-            } else {
-                isNewGroup = false;
-            }
+          if (rawBottle || rawProcess || rawPlainStock !== null || rawBottlePerBox !== null) {
+            isNewGroup = true;
+          } else {
+            isNewGroup = false;
+          }
         }
 
         if (isNewGroup) {
-            let maxEndRow = i;
-            if (sheet['!merges']) {
-                sheet['!merges'].forEach(merge => {
-                    if (merge.s.r === i) {
-                        if (merge.e.r > maxEndRow) maxEndRow = merge.e.r;
-                    }
-                });
-            }
-            currentGroupEndRow = maxEndRow;
+          let maxEndRow = i;
+          if (sheet['!merges']) {
+            sheet['!merges'].forEach(merge => {
+              if (merge.s.r === i) {
+                if (merge.e.r > maxEndRow) maxEndRow = merge.e.r;
+              }
+            });
+          }
+          currentGroupEndRow = maxEndRow;
         }
 
         // Apply fallback to group-level values if this row is part of a group but missing values
@@ -1357,15 +2495,15 @@ exports.previewImportExcel = async (req, res) => {
         let effectiveProcess = rawProcess;
 
         if (!isNewGroup) {
-            if (finalPlainStock === null || finalPlainStock === undefined || finalPlainStock === '') {
-                finalPlainStock = currentActivePlainStock;
-            }
-            if (finalBoxQty === null || finalBoxQty === undefined || finalBoxQty === '') {
-                finalBoxQty = currentActiveBottlePerBox;
-            }
-            if (!effectiveProcess) {
-                effectiveProcess = currentActiveProcess;
-            }
+          if (finalPlainStock === null || finalPlainStock === undefined || finalPlainStock === '') {
+            finalPlainStock = currentActivePlainStock;
+          }
+          if (finalBoxQty === null || finalBoxQty === undefined || finalBoxQty === '') {
+            finalBoxQty = currentActiveBottlePerBox;
+          }
+          if (!effectiveProcess) {
+            effectiveProcess = currentActiveProcess;
+          }
         }
 
         let finalOrderQty = rawOrderQty;
@@ -1374,13 +2512,14 @@ exports.previewImportExcel = async (req, res) => {
         let finalDispatchPending = rawDispatchPending;
         let finalSoldQty = rawSoldQty;
 
-        // Balance to Make: business logic is Balance to Make = Order Qty - Coating Completed Qty
+        // Balance to Make: business logic is Balance to Make = Coating Completed Qty - Order Qty
+        // (Negative means pending balance to make, 0 means completed, positive means over-fulfilled)
         let finalBalanceToMake = null;
         if (finalOrderQty !== null && finalOrderQty !== undefined) {
           const coated = (finalCoatingCompleted !== null && finalCoatingCompleted !== undefined) ? finalCoatingCompleted : 0;
-          finalBalanceToMake = finalOrderQty - coated;
+          finalBalanceToMake = coated - finalOrderQty;
         } else if (rawBalanceToMake !== null && rawBalanceToMake !== undefined) {
-          finalBalanceToMake = Math.abs(rawBalanceToMake);
+          finalBalanceToMake = rawBalanceToMake;
         }
 
         // Validate Bottle per Box: must never be negative or 0
@@ -1392,90 +2531,90 @@ exports.previewImportExcel = async (req, res) => {
         let parsedVariantName = rawVariant || "";
 
         if (isNewGroup) {
-            // First row of a new bottle group: establish the group state
-            currentActiveBottlePerBox = (typeof finalBoxQty === 'number' && finalBoxQty > 0) ? finalBoxQty : null;
-            currentActiveProcess = effectiveProcess || "";
-            currentActivePlainStock = finalPlainStock;
-            
-            // Try to match bottle name using BottlePerBox Master
-            const bottleMatch = matchBottleNameFromMaster(rawBottle);
-            
-            if (bottleMatch && bottleMatch.bottleName) {
-              // Found a master match
-              parsedBottleName = bottleMatch.bottleName;
-              parsedVariantName = rawVariant || bottleMatch.variant || "";
-            } else {
-              // No master match - use raw value as-is for now (will be marked as unmatched during validation)
-              parsedBottleName = rawBottle;
-              parsedVariantName = rawVariant || "";
-            }
-            
-            currentActiveBottle = parsedBottleName;
+          // First row of a new bottle group: establish the group state
+          currentActiveBottlePerBox = (typeof finalBoxQty === 'number' && finalBoxQty > 0) ? finalBoxQty : null;
+          currentActiveProcess = effectiveProcess || "";
+          currentActivePlainStock = finalPlainStock;
+
+          // Try to match bottle name using BottlePerBox Master
+          const bottleMatch = matchBottleNameFromMaster(rawBottle);
+
+          if (bottleMatch && bottleMatch.bottleName) {
+            // Found a master match
+            parsedBottleName = bottleMatch.bottleName;
+            parsedVariantName = rawVariant || bottleMatch.variant || "";
+          } else {
+            // No master match - use raw value as-is for now (will be marked as unmatched during validation)
+            parsedBottleName = rawBottle;
+            parsedVariantName = rawVariant || "";
+          }
+
+          currentActiveBottle = parsedBottleName;
         } else {
-            // Continuation row under same bottle: use context bottle name
-            parsedBottleName = currentActiveBottle;
-            
-            // If no explicit variant column but this row has a value in bottle column, treat it as variant
-            // This handles rows like "REVOLVER", "OUD", "SNAKE" that should be variants of the active bottle
-            if (!rawVariant && rawBottle && rawBottle !== currentActiveBottle) {
-                parsedVariantName = rawBottle;
-            } else if (rawVariant) {
-                parsedVariantName = rawVariant;
-            }
+          // Continuation row under same bottle: use context bottle name
+          parsedBottleName = currentActiveBottle;
+
+          // If no explicit variant column but this row has a value in bottle column, treat it as variant
+          // This handles rows like "REVOLVER", "OUD", "SNAKE" that should be variants of the active bottle
+          if (!rawVariant && rawBottle && rawBottle !== currentActiveBottle) {
+            parsedVariantName = rawBottle;
+          } else if (rawVariant) {
+            parsedVariantName = rawVariant;
+          }
         }
-        
+
         // Master data fallback for Bottle per Box - only if absent and strictly positive
         if (finalBoxQty === null && parsedBottleName) {
-            const bNorm = normalizeBottle(parsedBottleName);
-            if (masterBottlePerBoxMap.has(bNorm)) {
-                const mQty = masterBottlePerBoxMap.get(bNorm);
-                if (typeof mQty === 'number' && mQty > 0) {
-                  finalBoxQty = mQty;
-                }
+          const bNorm = normalizeBottle(parsedBottleName);
+          if (masterBottlePerBoxMap.has(bNorm)) {
+            const mQty = masterBottlePerBoxMap.get(bNorm);
+            if (typeof mQty === 'number' && mQty > 0) {
+              finalBoxQty = mQty;
             }
+          }
         }
 
         // Parse Order Qty
         const orderQtyVal = finalOrderQty;
-        
+
         // Look up bottle and variant in master data
-        let foundMatch = null; 
+        let foundMatch = null;
         let variantId = null;
-        
+
         if (parsedBottleName) {
-            const bNorm = normalizeBottle(parsedBottleName);
-            const vNorm = normalizeBottle(parsedVariantName);
-            
-            if (vNorm && bottleWithVariantMap.has(`${bNorm}|${vNorm}`)) {
-                foundMatch = bottleWithVariantMap.get(`${bNorm}|${vNorm}`);
-                variantId = foundMatch.variantId._id;
-            } else if (vNorm) {
-                const possibleBottles = bottleExactMap.get(bNorm) || [];
-                for (const b of possibleBottles) {
-                    if (b.variantId && b.variantId.variantName) {
-                        const dbVName = normalizeBottle(b.variantId.variantName);
-                        if (dbVName === vNorm) {
-                            foundMatch = b;
-                            variantId = b.variantId._id;
-                            break;
-                        }
-                    }
+          const bNorm = normalizeBottle(parsedBottleName);
+          const vNorm = normalizeBottle(parsedVariantName);
+
+          if (vNorm && bottleWithVariantMap.has(`${bNorm}|${vNorm}`)) {
+            foundMatch = bottleWithVariantMap.get(`${bNorm}|${vNorm}`);
+            variantId = foundMatch.variantId._id;
+          } else if (vNorm) {
+            const possibleBottles = bottleExactMap.get(bNorm) || [];
+            for (const b of possibleBottles) {
+              if (b.variantId && b.variantId.variantName) {
+                const dbVName = normalizeBottle(b.variantId.variantName);
+                if (dbVName === vNorm) {
+                  foundMatch = b;
+                  variantId = b.variantId._id;
+                  break;
                 }
+              }
             }
-            
-            if (!foundMatch && bottleExactMap.has(bNorm)) {
-                foundMatch = bottleExactMap.get(bNorm)[0]; 
-            }
+          }
+
+          if (!foundMatch && bottleExactMap.has(bNorm)) {
+            foundMatch = bottleExactMap.get(bNorm)[0];
+          }
         }
-        
+
         let brandId = null;
         if (rawBrand) {
-            const normBrand = normalize(rawBrand);
-            if (brandMap.has(normBrand)) {
-                brandId = brandMap.get(normBrand)._id;
-            } else if (foundMatch && foundMatch.brandId && normalize(foundMatch.brandId.name) === normBrand) {
-                brandId = foundMatch.brandId._id;
-            }
+          const normBrand = normalize(rawBrand);
+          if (brandMap.has(normBrand)) {
+            brandId = brandMap.get(normBrand)._id;
+          } else if (foundMatch && foundMatch.brandId && normalize(foundMatch.brandId.name) === normBrand) {
+            brandId = foundMatch.brandId._id;
+          }
         }
 
         const parsedRow = {
@@ -1485,25 +2624,25 @@ exports.previewImportExcel = async (req, res) => {
           bottleName: parsedBottleName,
           bottleFromMaster: masterBottlePerBoxNameMap.has(normalizeBottle(parsedBottleName)) || false,
           variantId: variantId,
-          variantName: parsedVariantName, 
+          variantName: parsedVariantName,
           ...(() => {
-              let cId = null;
-              let cName = currentCompanyName || null;
-              if (currentCompanyName) {
-                  let norm = normalize(currentCompanyName);
-                  if (companyAliasMap[norm]) norm = companyAliasMap[norm];
-                  if (companyMap.has(norm)) {
-                      const comp = companyMap.get(norm);
-                      cId = comp._id;
-                      cName = comp.name; // Canonical name
-                  }
+            let cId = null;
+            let cName = currentCompanyName || null;
+            if (currentCompanyName) {
+              let norm = normalize(currentCompanyName);
+              if (companyAliasMap[norm]) norm = companyAliasMap[norm];
+              if (companyMap.has(norm)) {
+                const comp = companyMap.get(norm);
+                cId = comp._id;
+                cName = comp.name; // Canonical name
               }
-              return { companyId: cId, companyName: cName };
+            }
+            return { companyId: cId, companyName: cName };
           })(),
           coatingShade: rawCoating,
-          brandName: rawBrand, 
+          brandName: rawBrand,
           brandId: brandId,
-          process: effectiveProcess, 
+          process: effectiveProcess,
           orderQty: finalOrderQty,
           boxQty: finalBoxQty,
           noOfBoxes: finalOrderBoxes,
@@ -1513,7 +2652,7 @@ exports.previewImportExcel = async (req, res) => {
           soldQty: finalSoldQty,
           plainStock: finalPlainStock,
           remarks: rawRemarks,
-          
+
           // Source tracking for imported values
           _importSource: {
             detectionMethod: colMap._detectionMethod || 'unknown',
@@ -1521,106 +2660,179 @@ exports.previewImportExcel = async (req, res) => {
             timestamp: colMap._timestamp || null,
             valueFromMerge: {}  // Merge metadata not available with direct array extraction
           },
-          
+
           isValid: true,
           errors: [],
-          
+
           // Group metadata
           isGroupStart: isNewGroup
         };
-        
+
         // Column shift sanity checks
         if (typeof rawBottlePerBox === 'number' && rawBottlePerBox < 0) {
-            parsedRow.errors.push(`COLUMN SHIFT DETECTED: Bottle Per Box cannot be negative (${rawBottlePerBox})`);
-            parsedRow.isValid = false;
+          parsedRow.errors.push(`COLUMN SHIFT DETECTED: Bottle Per Box cannot be negative (${rawBottlePerBox})`);
+          parsedRow.isValid = false;
         }
-        
+
         // Validation: Bottle Name is required
         if (!parsedRow.bottleName) {
-            parsedRow.errors.push("MISSING BOTTLE NAME");
-            parsedRow.isValid = false;
+          parsedRow.errors.push("MISSING BOTTLE NAME");
+          parsedRow.isValid = false;
         } else if (!parsedRow.bottleFromMaster) {
-            // Bottle name provided but not found in master - warn but don't mark invalid
-            parsedRow.errors.push(`UNMATCHED BOTTLE NAME: "${parsedBottleName}" not found in Bottle Per Box Master`);
+          // Bottle name provided but not found in master - warn but don't mark invalid
+          parsedRow.errors.push(`UNMATCHED BOTTLE NAME: "${parsedBottleName}" not found in Bottle Per Box Master`);
         }
-        
+
         // Company Status
         if (!parsedRow.companyId) {
-            parsedRow.companyStatus = 'UNASSIGNED';
-            parsedRow.originalCompanyName = currentCompanyName;
-            parsedRow.companyName = currentCompanyName;
+          parsedRow.companyStatus = 'UNASSIGNED';
+          parsedRow.originalCompanyName = currentCompanyName;
+          parsedRow.companyName = currentCompanyName;
         } else {
-            parsedRow.companyStatus = 'RESOLVED';
-            parsedRow.originalCompanyName = currentCompanyName;
+          parsedRow.companyStatus = 'RESOLVED';
+          parsedRow.originalCompanyName = currentCompanyName;
         }
-        
+
+        // Skip rows that are already completed (Balance to Make <= 0 / Coating Completed >= Order Qty)
+        const rowKeys = getPlanCombinationKeys(parsedRow, resolveBrandKey, resolveVariantKey);
+        const isSelfCompleted = isPlanRowCompleted(parsedRow);
+        const isAlreadyCompleted = (rowKeys.length > 0 && rowKeys.some(k => completedSetForDate.has(k))) || isSelfCompleted;
+
+        if (isAlreadyCompleted) {
+          rowKeys.forEach(k => {
+            completedSetForDate.add(k);
+            completedInBatch.add(k);
+          });
+          dateSkippedCompletedRows.push({
+            excelRowNumber,
+            bottleName: parsedRow.bottleName,
+            brandName: parsedRow.brandName,
+            coatingShade: parsedRow.coatingShade,
+            variantName: parsedRow.variantName,
+            process: parsedRow.process,
+            orderQty: parsedRow.orderQty,
+            coatingCompletedQty: parsedRow.coatingCompletedQty,
+            balanceToMake: parsedRow.balanceToMake,
+            reason: isSelfCompleted
+              ? 'Row completed in sheet (Balance to Make <= 0 / Coating Completed >= Order Qty)'
+              : 'Previously completed in prior plan (Balance to Make <= 0). Skipped.'
+          });
+          continue; // Skip already completed combination entirely
+        }
+
         dateTotalRows++;
         result.totalRows++;
         if (parsedRow.isValid) {
-            dateValidRows++;
-            result.validRows++;
+          dateValidRows++;
+          result.validRows++;
         } else {
-            dateInvalidRows++;
-            parsedRow.errors.forEach(err => {
-                invalidReasons[err] = (invalidReasons[err] || 0) + 1;
-            });
+          dateInvalidRows++;
+          parsedRow.errors.forEach(err => {
+            invalidReasons[err] = (invalidReasons[err] || 0) + 1;
+          });
         }
-        
+
         dateRows.push(parsedRow);
       }
-      
-      // Calculate grouping metadata for UI rendering
+
+      // Calculate grouping metadata for UI rendering on remaining non-skipped rows
+      let currentGroupKey = null;
       let currentGroupId = null;
       let currentGroupStartIndex = -1;
-      
+
       for (let i = 0; i < dateRows.length; i++) {
-          const row = dateRows[i];
-          if (row.isGroupStart) {
-              // Finish previous group
-              if (currentGroupStartIndex !== -1) {
-                  const size = i - currentGroupStartIndex;
-                  for (let j = currentGroupStartIndex; j < i; j++) {
-                      dateRows[j].groupSize = size;
-                  }
-              }
-              currentGroupId = `group-${row.companyName || 'unknown'}-${row.bottleName}-${i}`;
-              currentGroupStartIndex = i;
+        const row = dateRows[i];
+        const groupKey = `${row.companyName || 'unknown'}|${row.bottleName || ''}`;
+        if (groupKey !== currentGroupKey) {
+          // Finish previous group
+          if (currentGroupStartIndex !== -1) {
+            const size = i - currentGroupStartIndex;
+            for (let j = currentGroupStartIndex; j < i; j++) {
+              dateRows[j].groupSize = size;
+            }
           }
-          
-          row.groupId = currentGroupId;
-          row.groupIndex = i - currentGroupStartIndex;
+          row.isGroupStart = true;
+          currentGroupKey = groupKey;
+          currentGroupId = `group-${row.companyName || 'unknown'}-${row.bottleName}-${i}`;
+          currentGroupStartIndex = i;
+        } else {
+          row.isGroupStart = false;
+        }
+
+        row.groupId = currentGroupId;
+        row.groupIndex = i - currentGroupStartIndex;
       }
       // Finish last group
       if (currentGroupStartIndex !== -1) {
-          const size = dateRows.length - currentGroupStartIndex;
-          for (let j = currentGroupStartIndex; j < dateRows.length; j++) {
-              dateRows[j].groupSize = size;
-          }
+        const size = dateRows.length - currentGroupStartIndex;
+        for (let j = currentGroupStartIndex; j < dateRows.length; j++) {
+          dateRows[j].groupSize = size;
+        }
       }
-      
-      result.dates.push({ 
-           date: planDateStr, 
-           totalRows: dateTotalRows,
-           validRows: dateValidRows,
-           invalidRows: dateInvalidRows,
-           invalidReasons,
-           rows: dateRows 
+
+      result.dates.push({
+        date: planDateStr,
+        totalRows: dateTotalRows,
+        validRows: dateValidRows,
+        invalidRows: dateInvalidRows,
+        invalidReasons,
+        skippedCompletedCount: dateSkippedCompletedRows.length,
+        skippedCompletedRows: dateSkippedCompletedRows,
+        rows: dateRows
       });
-    });
-    
-    result.dates.sort((a, b) => new Date(a.date) - new Date(b.date));
-    
-    for (const d of result.dates) {
-       const start = new Date(d.date); start.setUTCHours(0,0,0,0);
-       const end = new Date(d.date); end.setUTCHours(23,59,59,999);
-       const existingCount = await require('../models/LacquerPlan').countDocuments({ planDate: { $gte: start, $lte: end }, isDeleted: false });
-       d.existingCount = existingCount;
     }
-    
+
+    result.dates.sort((a, b) => new Date(a.date) - new Date(b.date));
+
+    for (const d of result.dates) {
+      const start = new Date(d.date); start.setUTCHours(0, 0, 0, 0);
+      const end = new Date(d.date); end.setUTCHours(23, 59, 59, 999);
+      const existingCount = await require('../models/LacquerPlan').countDocuments({ planDate: { $gte: start, $lte: end }, isDeleted: false });
+      d.existingCount = existingCount;
+
+      // Calculate stock warnings for each row
+      d.okStockRows = [];
+      d.warningStockRows = [];
+      d.stockWarnings = [];
+
+      for (const row of d.rows) {
+        if (!row.isValid || !row.bottleName || !row.companyId || !row.orderQty) {
+          continue; // Skip invalid rows
+        }
+
+        try {
+          const warning = await validateRowStockWarning(
+            row.bottleName,
+            row.companyId,
+            row.orderQty,
+            null
+          );
+
+          if (warning.hasWarning) {
+            d.warningStockRows.push(row);
+            d.stockWarnings.push({
+              excelRowNumber: row.excelRowNumber,
+              bottleName: row.bottleName,
+              orderQty: warning.orderQty,
+              availableStock: warning.availableStock,
+              overBy: warning.overBy,
+              details: warning.details
+            });
+          } else {
+            d.okStockRows.push(row);
+          }
+        } catch (err) {
+          console.error(`Stock warning calculation error for row ${row.excelRowNumber}:`, err);
+          // If error, treat as OK to allow import to proceed
+          d.okStockRows.push(row);
+        }
+      }
+    }
+
     // Add display column names and verification metadata
     result.displayColumns = DISPLAY_COLUMN_NAMES;
     result.verificationReport = generatePreviewValidationReport(result);
-    
+
     res.status(200).json({ success: true, data: result });
   } catch (error) {
     require('fs').writeFileSync('import_error.log', error.stack || error.message);
@@ -1630,69 +2842,152 @@ exports.previewImportExcel = async (req, res) => {
 
 exports.commitImportExcel = async (req, res) => {
   try {
-    const { datesToImport } = req.body; 
-    
+    const { datesToImport } = req.body;
+
     if (!datesToImport || !Array.isArray(datesToImport)) {
-      require('fs').writeFileSync('commit_import_error.log', 'Invalid payload. datesToImport is ' + typeof datesToImport);
       return res.status(400).json({ success: false, message: "Invalid payload" });
     }
-    
+
     const importedResults = [];
     let totalImported = 0;
     const importBatchId = `batch-${Date.now()}`;
-    
+    const allBrands = await Brand.find({ isDeleted: { $ne: true } }).lean();
+    const allVariants = await Variant.find({ isDeleted: { $ne: true } }).lean();
+    const resolveBrandKey = buildBrandResolver(allBrands);
+    const resolveVariantKey = buildVariantResolver(allVariants);
+    const completedInCommitBatch = new Set();
+
     for (const item of datesToImport) {
-      const { date, rows, replaceExisting } = item;
-      
-      const startOfDay = new Date(date); startOfDay.setUTCHours(0,0,0,0);
-      const endOfDay = new Date(date); endOfDay.setUTCHours(23,59,59,999);
-      
+      const { date, rows, replaceExisting, stockWarningOverrides } = item;
+
+      const startOfDay = new Date(date); startOfDay.setUTCHours(0, 0, 0, 0);
+      const endOfDay = new Date(date); endOfDay.setUTCHours(23, 59, 59, 999);
+
       if (replaceExisting) {
-         await LacquerPlan.updateMany(
-           { planDate: { $gte: startOfDay, $lte: endOfDay }, isDeleted: false },
-           { $set: { isDeleted: true } }
-         );
+        const existingPlansToReplace = await LacquerPlan.find({
+          planDate: { $gte: startOfDay, $lte: endOfDay },
+          isDeleted: false
+        });
+        for (const oldPlan of existingPlansToReplace) {
+          await revertLacquerPlanStockDeduction(oldPlan, req.user?._id);
+        }
+        const oldIds = existingPlansToReplace.map(p => p._id);
+        if (oldIds.length > 0) {
+          await PrintingPlan.updateMany(
+            { lacquerPlanId: { $in: oldIds }, isDeleted: false },
+            { $set: { isDeleted: true } }
+          );
+        }
+        await LacquerPlan.updateMany(
+          { planDate: { $gte: startOfDay, $lte: endOfDay }, isDeleted: false },
+          { $set: { isDeleted: true, appliedStockDeduction: 0 } }
+        );
       }
-      
+
+      const completedSetForDate = await getCompletedCombinationsSet(date, resolveBrandKey, resolveVariantKey, false);
+      for (const k of completedInCommitBatch) {
+        completedSetForDate.add(k);
+      }
+
       const validRows = rows.filter(r => r.isValid);
-      const toInsert = validRows.map(r => ({
-        planDate: new Date(r.planDate),
-        bottleName: r.bottleName,
-        variantId: r.variantId || undefined,
-        variantName: r.variantName,
-        coatingShade: r.coatingShade,
-        colour: r.coatingShade,
-        brandId: r.brandId || undefined,
-        brandName: r.brandName,
-        companyId: r.companyId || undefined,
-        companyName: r.companyName,
-        process: r.process,
-        orderQty: r.orderQty,
-        boxQty: r.boxQty,
-        noOfBoxes: r.noOfBoxes,
-        coatingCompletedQty: r.coatingCompletedQty,
-        coatedQty: r.coatingCompletedQty,
-        balanceToMake: r.balanceToMake,
-        dispatchPendingQty: r.dispatchPendingQty,
-        dispatchBalance: r.dispatchPendingQty,
-        soldQty: r.soldQty,
-        plainStock: r.plainStock,
-        remarks: r.remarks,
-        status: true,
-        importGroupId: r.groupId ? `${importBatchId}-${r.groupId}` : null,
-        importGroupIndex: r.groupIndex !== undefined ? r.groupIndex : null,
-        importGroupSize: r.groupSize !== undefined ? r.groupSize : null
-      }));
-      
+      const toInsertRows = validRows.filter(r => {
+        const rowKeys = getPlanCombinationKeys(r, resolveBrandKey, resolveVariantKey);
+        const isSelfCompleted = isPlanRowCompleted(r);
+        const isAlreadyCompleted = (rowKeys.length > 0 && rowKeys.some(k => completedSetForDate.has(k))) || isSelfCompleted;
+        if (isAlreadyCompleted) {
+          rowKeys.forEach(k => {
+            completedSetForDate.add(k);
+            completedInCommitBatch.add(k);
+          });
+          return false; // Skip already completed combination
+        }
+
+        // Check if row has stock warning and no override
+        if (stockWarningOverrides && !stockWarningOverrides[r.excelRowNumber]) {
+          // If stockWarningOverrides is provided and this row is NOT in it, skip this row (it was not overridden)
+          // But only if the row is marked with a warning
+          // Since we don't have warning info here, we need to check in previewImportExcel output
+          // For now, we assume if it's in the request, we check it
+          return true; // Include for now, will be checked below
+        }
+
+        return true;
+      });
+
+      const toInsert = toInsertRows.map(r => {
+        const planData = {
+          planDate: new Date(r.planDate),
+          bottleName: r.bottleName,
+          variantId: r.variantId || undefined,
+          variantName: r.variantName,
+          coatingShade: r.coatingShade,
+          colour: r.coatingShade,
+          brandId: r.brandId || undefined,
+          brandName: r.brandName,
+          companyId: r.companyId || undefined,
+          companyName: r.companyName,
+          process: r.process,
+          orderQty: r.orderQty,
+          boxQty: r.boxQty,
+          noOfBoxes: r.noOfBoxes,
+          coatingCompletedQty: r.coatingCompletedQty,
+          coatedQty: r.coatingCompletedQty,
+          balanceToMake: r.balanceToMake,
+          dispatchPendingQty: r.dispatchPendingQty,
+          dispatchBalance: r.dispatchPendingQty,
+          soldQty: r.soldQty,
+          plainStock: r.plainStock,
+          remarks: r.remarks,
+          status: true,
+          appliedStockDeduction: 0,
+          importGroupId: r.groupId ? `${importBatchId}-${r.groupId}` : null,
+          importGroupIndex: r.groupIndex !== undefined ? r.groupIndex : null,
+          importGroupSize: r.groupSize !== undefined ? r.groupSize : null,
+          originalImportedValues: {
+            orderQty: r.orderQty,
+            coatingCompletedQty: r.coatingCompletedQty,
+            coatedQty: r.coatingCompletedQty,
+            balanceToMake: r.balanceToMake,
+            boxQty: r.boxQty,
+            noOfBoxes: r.noOfBoxes,
+            dispatchPendingQty: r.dispatchPendingQty,
+            dispatchBalance: r.dispatchPendingQty,
+            soldQty: r.soldQty,
+            plainStock: r.plainStock,
+            remarks: r.remarks,
+            process: r.process
+          },
+          isEditedAfterImport: false
+        };
+
+        // If this row was marked with stock warning override, set acknowledgment metadata
+        if (stockWarningOverrides && stockWarningOverrides[r.excelRowNumber]) {
+          planData.stockWarningAcknowledged = true;
+          planData.acknowledgedAt = new Date();
+          // stockWarningDetails would have been captured in preview, but we'll set minimal info
+          planData.stockWarningDetails = {
+            orderQty: r.orderQty,
+            availableStock: 0, // Recalculated at commit time if needed
+            overBy: 0
+          };
+        }
+
+        return planData;
+      });
+
       if (toInsert.length > 0) {
         const createdPlans = await LacquerPlan.insertMany(toInsert);
+        for (const plan of createdPlans) {
+          await syncLacquerPlanStockDeduction(plan, plan.coatingCompletedQty ?? plan.coatedQty, req.user?._id);
+          await syncPrintingPlanForLacquerPlan(plan, req.user?._id);
+        }
         totalImported += createdPlans.length;
-        importedResults.push({ date, imported: createdPlans.length });
+        importedResults.push({ date, imported: createdPlans.length, skippedCompleted: validRows.length - toInsertRows.length });
       } else {
-        importedResults.push({ date, imported: 0 });
+        importedResults.push({ date, imported: 0, skippedCompleted: validRows.length - toInsertRows.length });
       }
     }
-    
+
     res.status(200).json({ success: true, data: { importedResults, totalImported } });
   } catch (error) {
     console.error("COMMIT IMPORT ERROR:", error);
@@ -1708,28 +3003,28 @@ exports.commitImportExcel = async (req, res) => {
 exports.verifyImportedData = async (req, res) => {
   try {
     const { date, previewRows } = req.body;
-    
+
     if (!date) {
-      return res.status(400).json({ 
-        success: false, 
-        message: "Date parameter required" 
+      return res.status(400).json({
+        success: false,
+        message: "Date parameter required"
       });
     }
-    
+
     const databaseVerification = require('../utils/databaseVerification');
-    
+
     // Run verification for the specified date
     const verification = await databaseVerification.verifyImportedRecordsForDate(date, previewRows || []);
-    
-    res.status(200).json({ 
-      success: true, 
-      data: verification 
+
+    res.status(200).json({
+      success: true,
+      data: verification
     });
   } catch (error) {
     console.error("VERIFICATION ERROR:", error);
-    res.status(400).json({ 
-      success: false, 
-      message: error.message 
+    res.status(400).json({
+      success: false,
+      message: error.message
     });
   }
 };

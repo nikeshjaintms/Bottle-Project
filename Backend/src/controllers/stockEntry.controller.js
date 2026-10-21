@@ -318,7 +318,7 @@ exports.updateEntry = async (req, res) => {
     const entry = await StockEntry.findOneAndUpdate(
       { _id: req.params.id, isDeleted: false },
       updatedData,
-      { new: true }
+      { returnDocument: 'after' }
     );
 
     if (!entry) return res.status(404).json({ success: false, message: "Stock entry not found" });
@@ -335,7 +335,7 @@ exports.deleteEntry = async (req, res) => {
     const entry = await StockEntry.findOneAndUpdate(
       { _id: req.params.id, isDeleted: false },
       { isDeleted: true },
-      { new: true }
+      { returnDocument: 'after' }
     );
     if (!entry) return res.status(404).json({ success: false, message: "Stock entry not found" });
     res.json({ success: true, message: "Stock entry deleted successfully" });

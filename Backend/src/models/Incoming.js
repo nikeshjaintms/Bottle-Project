@@ -9,7 +9,9 @@ const incomingSchema = new mongoose.Schema(
     },
     deliveryNumber: {
       type: String,
-      required: true,
+      required: false,
+      sparse: true,
+      unique: true,
     },
     billToId: {
       type: mongoose.Schema.Types.ObjectId,

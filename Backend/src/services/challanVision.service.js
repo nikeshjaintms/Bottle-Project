@@ -691,8 +691,9 @@ function parseChallanData(ocrResult, companies, bottlePerBoxes) {
   const canonicalMap = new Map();
 
   (bottlePerBoxes || []).forEach(b => {
-    canonicalMap.set(b.bottleName, b);
-    expandedBottles.push({ _id: b._id, bottleName: b.bottleName, matchName: b.bottleName });
+    // Map by plainBottleName (the system-wide unique key)
+    canonicalMap.set(b.plainBottleName, b);
+    expandedBottles.push({ _id: b._id, plainBottleName: b.plainBottleName, matchName: b.plainBottleName });
   });
 
   Object.keys(bottleMapping).forEach(aliasName => {
@@ -702,7 +703,7 @@ function parseChallanData(ocrResult, companies, bottlePerBoxes) {
       if (canonicalBottle) {
         expandedBottles.push({
           _id: canonicalBottle._id,
-          bottleName: canonicalBottle.bottleName,
+          plainBottleName: canonicalBottle.plainBottleName,
           matchName: aliasName
         });
       }
@@ -724,7 +725,7 @@ function parseChallanData(ocrResult, companies, bottlePerBoxes) {
       .replace(/psr\s*0*(\d+)\s*0*(\d+)\b/g, 'psr $1 $2');
 
     for (const bottle of sortedBottles) {
-      if (foundNames.has(bottle.bottleName)) continue;
+      if (foundNames.has(bottle.plainBottleName)) continue;
 
       const normalizedBottleName = bottle.matchName.toLowerCase().replace(/[-_]/g, ' ').replace(/[^\w\s]/g, '').replace(/\s+/g, ' ').trim()
         .replace(/psr\s*0*(\d+)\s*0*(\d+)\b/g, 'psr $1 $2');
@@ -742,7 +743,7 @@ function parseChallanData(ocrResult, companies, bottlePerBoxes) {
 
       if (isMatch) {
         matched = true;
-        matchedBottleName = bottle.bottleName;
+        matchedBottleName = bottle.plainBottleName;
         let combinedString = "";
         let combinedWords = [];
         // Look at the line above and up to 2 lines below to catch quantities on multi-line descriptions
@@ -762,11 +763,11 @@ function parseChallanData(ocrResult, companies, bottlePerBoxes) {
         );
 
         if (bestMatchFinancials.totalQty > 0 || bestMatchFinancials.qty > 0) {
-          const matchedBottleObj = canonicalMap.get(bottle.bottleName);
+          const matchedBottleObj = canonicalMap.get(bottle.plainBottleName);
             items.push({
             bottleId: { 
               _id: bottle._id.toString(), 
-              bottleName: bottle.bottleName,
+              plainBottleName: bottle.plainBottleName,
               bottlePerBox: matchedBottleObj ? matchedBottleObj.bottlePerBox : null
             },
             bottlePerBox: matchedBottleObj ? matchedBottleObj.bottlePerBox : null,
@@ -775,7 +776,7 @@ function parseChallanData(ocrResult, companies, bottlePerBoxes) {
             totalQty: bestMatchFinancials.totalQty,
             textLine: combinedString.trim() || line
           });
-          foundNames.add(bottle.bottleName);
+          foundNames.add(bottle.plainBottleName);
 
           // Remove the previous row from unmatchedItems if it was just the first part of this multi-line description
           if (unmatchedItems.length > 0) {

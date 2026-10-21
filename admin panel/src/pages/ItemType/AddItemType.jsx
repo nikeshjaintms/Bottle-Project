@@ -8,25 +8,50 @@ export default function AddItemType() {
   const dispatch = useDispatch();
   const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
-  const [formData, setFormData] = useState({
-    name: '',
-    status: true,
-  });
+  
+  const [name, setName] = useState('');
+  const [status, setStatus] = useState(true);
+  const [optionsRows, setOptionsRows] = useState([{ name: '' }]);
+
+  const handleAddMore = () => {
+    setOptionsRows([...optionsRows, { name: '' }]);
+  };
+
+  const handleRemoveRow = (index) => {
+    if (optionsRows.length > 1) {
+      const newRows = optionsRows.filter((_, i) => i !== index);
+      setOptionsRows(newRows);
+    }
+  };
+
+  const handleRowChange = (index, value) => {
+    const newRows = [...optionsRows];
+    newRows[index].name = value;
+    setOptionsRows(newRows);
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!formData.name.trim()) {
+    if (!name.trim()) {
       Swal.fire('Error', 'Name is required', 'error');
       return;
     }
 
+    const formattedOptions = optionsRows.map(row => row.name.trim()).filter(opt => opt !== '');
+
     setLoading(true);
     try {
-      const res = await dispatch(createItemType(formData)).unwrap();
-      Swal.fire('Success', 'Item Type created successfully', 'success');
+      await dispatch(createItemType({ name, status, options: formattedOptions })).unwrap();
+      Swal.fire({
+        icon: 'success',
+        title: 'Success!',
+        text: 'Item Type created successfully!',
+        timer: 1500,
+        showConfirmButton: false
+      });
       navigate('/item-types');
     } catch (err) {
-      Swal.fire('Error', err || 'Failed to create item type', 'error');
+      Swal.fire('Error!', err || 'Failed to create item type.', 'error');
     } finally {
       setLoading(false);
     }
@@ -34,53 +59,110 @@ export default function AddItemType() {
 
   return (
     <div className="page-content">
-      <div className="page-header mb-4">
-        <h1 className="page-title">Add Item Type</h1>
-        <p className="page-subtitle">Create a new item type category</p>
+      <div className="page-header d-flex align-items-center gap-3 user-form-page-header mb-4">
+        <Link to="/item-types" className="btn-ghost" style={{ width: 40, height: 40, borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <i className="bi bi-arrow-left" style={{ fontSize: 20 }} />
+        </Link>
+        <div>
+          <h1 className="page-title">Add Item Type</h1>
+          <p className="page-subtitle">Create a new item type category</p>
+        </div>
       </div>
 
-      <div className="dash-card">
-        <div className="dash-card-header p-3 border-bottom">
-          <h5 className="mb-0">Item Type Details</h5>
-        </div>
-        <div className="dash-card-body p-4">
-          <form onSubmit={handleSubmit}>
-            <div className="row mb-4">
-              <div className="col-md-6">
-                <label className="form-label fw-bold">Name <span className="text-danger">*</span></label>
-                <input
-                  type="text"
-                  className="form-control"
-                  placeholder="Enter item type name"
-                  value={formData.name}
-                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                  required
-                />
-              </div>
-              <div className="col-md-6 d-flex align-items-center mt-md-4">
-                <div className="form-check form-switch mt-2">
-                  <input
-                    className="form-check-input"
-                    type="checkbox"
-                    id="statusSwitch"
-                    checked={formData.status}
-                    onChange={(e) => setFormData({ ...formData, status: e.target.checked })}
-                    style={{ cursor: 'pointer' }}
-                  />
-                  <label className="form-check-label fw-bold ms-2" htmlFor="statusSwitch" style={{ cursor: 'pointer' }}>
-                    {formData.status ? 'Active' : 'Inactive'}
-                  </label>
+      <div className="row justify-content-center">
+        <div className="col-lg-10">
+          <div className="dash-card">
+            <div className="dash-card-body p-4">
+              <form onSubmit={handleSubmit}>
+                <div className="row mb-4">
+                  <div className="col-lg-6">
+                    <label className="form-label fw-600 small text-uppercase text-muted">
+                      Name <span className="text-danger">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      className="form-control custom-input-field"
+                      placeholder="Enter item type name"
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
+                      required
+                      style={{ borderRadius: 12 }}
+                    />
+                  </div>
+                  <div className="col-lg-6">
+                    <label className="form-label fw-600 small text-uppercase text-muted">Initial Status</label>
+                    <select
+                      className="form-select custom-input-field"
+                      value={status ? 'active' : 'inactive'}
+                      onChange={(e) => setStatus(e.target.value === 'active')}
+                      style={{ borderRadius: 12 }}
+                    >
+                      <option value="active">Active</option>
+                      <option value="inactive">Inactive</option>
+                    </select>
+                  </div>
                 </div>
-              </div>
-            </div>
 
-            <div className="d-flex justify-content-end gap-2 mt-4 pt-3 border-top">
-              <Link to="/item-types" className="btn btn-light px-4">Cancel</Link>
-              <button type="submit" className="btn btn-primary px-4" disabled={loading}>
-                {loading ? 'Saving...' : 'Save Item Type'}
-              </button>
+                <hr className="my-4 text-muted opacity-25" />
+
+                <div className="mb-3">
+                  <label className="form-label fw-600 small text-uppercase text-muted d-block">Options Definitions</label>
+                  {optionsRows.map((row, index) => (
+                    <div key={index} className="row g-3 mb-3 align-items-end">
+                      <div className="col-md-10">
+                        <label className="form-label small text-muted">Option Name</label>
+                        <input
+                          type="text"
+                          className="form-control custom-input-field"
+                          placeholder="e.g. 2 PC GP, 4 PC GP"
+                          value={row.name}
+                          onChange={(e) => handleRowChange(index, e.target.value)}
+                          style={{ borderRadius: 12 }}
+                        />
+                      </div>
+                      <div className="col-md-2">
+                        {optionsRows.length > 1 && (
+                          <button 
+                            type="button" 
+                            onClick={() => handleRemoveRow(index)} 
+                            className="btn btn-outline-danger w-100 border-0 shadow-none"
+                            style={{ height: '48px', borderRadius: 12 }}
+                          >
+                            <i className="bi bi-trash-fill" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="mb-4">
+                  <button 
+                    type="button" 
+                    onClick={handleAddMore} 
+                    className="btn btn-outline-primary border-dashed w-100 py-3"
+                    style={{ borderRadius: 12, borderStyle: 'dashed' }}
+                  >
+                    <i className="bi bi-plus-circle-fill me-2" /> Add More Option
+                  </button>
+                </div>
+
+                <div className="d-flex gap-2 mt-5 user-form-actions">
+                  <button type="submit" className="btn-accent px-5 py-3 flex-grow-1" disabled={loading}>
+                    {loading ? (
+                      <><span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>Saving...</>
+                    ) : (
+                      <><i className="bi bi-check2-circle me-2" /> Save & Back</>
+                    )}
+                  </button>
+
+                  <button type="button" onClick={() => navigate('/item-types')} className="btn-ghost px-5 py-3">
+                    Cancel
+                  </button>
+                </div>
+              </form>
             </div>
-          </form>
+          </div>
         </div>
       </div>
     </div>

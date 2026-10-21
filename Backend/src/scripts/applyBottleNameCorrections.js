@@ -1,10 +1,15 @@
 const mongoose = require('mongoose');
+const path = require('path');
+require('dotenv').config({ path: path.resolve(__dirname, '../../../.env') });
+require('dotenv').config({ path: path.resolve(__dirname, '../../.env') });
 const BottleSpec = require('../models/Bottlespecs');
 const BottlePerBox = require('../models/BottlePerBox');
 const mapping = require('./bottlePerBox.mapping');
 
 async function applyCorrections() {
-  await mongoose.connect('mongodb://localhost:27017/shayona-production');
+  const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/shayona-production';
+  console.log(`Connecting to database at ${MONGO_URI}...`);
+  await mongoose.connect(MONGO_URI);
 
   let totalSpecsModified = 0;
   let totalPerBoxModified = 0;
@@ -30,7 +35,13 @@ async function applyCorrections() {
       const existingCanonical = await BottlePerBox.findOne({ bottleName: canonicalName });
       
       if (existingCanonical) {
-        // If the canonical one already exists, just delete the duplicate raw one to prevent unique key errors
+        // Preserve bottlePerBox value if canonical was null but raw had a value
+        if (existingCanonical.bottlePerBox == null && existingPerBox.bottlePerBox != null) {
+          existingCanonical.bottlePerBox = existingPerBox.bottlePerBox;
+          await existingCanonical.save();
+          console.log(`[BottlePerBox] Copied box count (${existingPerBox.bottlePerBox}) to "${canonicalName}"`);
+        }
+        // If the canonical one already exists, delete the duplicate raw one to prevent unique key errors
         await BottlePerBox.deleteOne({ _id: existingPerBox._id });
         console.log(`[BottlePerBox] DELETED Duplicate "${rawName}" (Merged into "${canonicalName}")`);
         totalPerBoxModified++;

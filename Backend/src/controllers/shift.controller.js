@@ -114,7 +114,7 @@ exports.updateShift = async (req, res) => {
 // ✅ DELETE
 exports.deleteShift = async (req, res) => {
   try {
-    await Shift.findByIdAndUpdate(req.params.id, { isDeleted: true }, { new: true });
+    await Shift.findByIdAndUpdate(req.params.id, { isDeleted: true }, { returnDocument: 'after' });
     res.json({ msg: "Shift Deleted" });
   } catch (err) {
     res.status(500).json(err.message);

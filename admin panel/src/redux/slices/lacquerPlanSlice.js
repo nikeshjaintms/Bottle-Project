@@ -1,7 +1,7 @@
 import { createSlice, createAsyncThunk } from '@reduxjs/toolkit';
 import API from '../../services/api';
 
-export const fetchLacquerPlans = createAsyncThunk('lacquerPlans/fetchLacquerPlans', async ({ date = '', month = '', fromDate = '', toDate = '', search = '', companyId = '', brandId = '' }, { rejectWithValue }) => {
+export const fetchLacquerPlans = createAsyncThunk('lacquerPlans/fetchLacquerPlans', async ({ date = '', month = '', fromDate = '', toDate = '', search = '', companyId = '', brandId = '' } = {}, { rejectWithValue }) => {
   try {
     const params = new URLSearchParams();
     if (date) params.append('date', date);
@@ -66,6 +66,9 @@ const lacquerPlanSlice = createSlice({
   reducers: {
     clearCurrentPlan: (state) => {
       state.currentPlan = null;
+    },
+    clearError: (state) => {
+      state.error = null;
     }
   },
   extraReducers: (builder) => {
@@ -96,5 +99,5 @@ const lacquerPlanSlice = createSlice({
   },
 });
 
-export const { clearCurrentPlan } = lacquerPlanSlice.actions;
+export const { clearCurrentPlan, clearError } = lacquerPlanSlice.actions;
 export default lacquerPlanSlice.reducer;

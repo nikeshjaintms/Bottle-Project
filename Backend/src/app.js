@@ -6,6 +6,8 @@ const app = express();
 // Add all your allowed domains in this array
 const allowedOrigins = [
   "http://localhost:5173",
+  "http://127.0.0.1:5173",
+  "http://[::1]:5173",
   "https://erp.shayonaglass.com",
   "https://application.shayonaglass.com",
   // Add more domains here anytime you need
@@ -58,7 +60,6 @@ app.use("/api/challan-vision", require("./routes/challanVision.routes"));
 app.use("/api/shreno-vision", require("./routes/shrenoVision.routes"));
 app.use("/api/unit", require("./routes/unit.routes"));
 app.use("/api/incoming", require("./routes/incoming.routes"));
-app.use("/api/gst", require("./routes/gst.routes"));
 app.use("/api/bottle-per-box", require("./routes/bottlePerBox.routes"));
 app.use("/api/item-type", require("./routes/itemType.routes"));
 app.use("/api/lacquer-plan", require("./routes/lacquerPlan.routes"));
@@ -67,6 +68,7 @@ app.use("/api/pending-sheet", require("./routes/pendingSheet.routes"));
 app.use("/api/shreno-incoming", require("./routes/shrenoIncoming.routes"));
 app.use("/api/dispatch", require("./routes/dispatch.routes"));
 app.use("/api/delivery-challan", require("./routes/deliveryChallan.routes"));
+app.use("/api/summary", require("./routes/summary.routes"));
 
 // Added testing routes for the browser
 app.get("/", (req, res) => {

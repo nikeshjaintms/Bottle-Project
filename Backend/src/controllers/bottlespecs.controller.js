@@ -67,26 +67,66 @@ exports.createSpec = async (req, res) => {
 
     const spec = await BottleSpec.create(body);
 
-    // Automatically create or update a corresponding BottlePerBox entry
+    // Automatically associate or create a corresponding BottlePerBox entry
     if (body.bottleName) {
       const BottlePerBox = require("../models/BottlePerBox");
+      const { derivePlainBottleName } = require("../utils/derivePlainBottleName");
       const normalizedName = body.bottleName.trim().replace(/\s+/g, ' ');
+      const escapeRegExp = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+      // Check if normalizedName already exists in any BottlePerBox (in bottleNames, plainBottleName, or bottleName)
       const existingPerBox = await BottlePerBox.findOne({
-        bottleName: { $regex: new RegExp(`^${normalizedName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') }
+        isDeleted: { $ne: true },
+        $or: [
+          { bottleNames: new RegExp(`^${escapeRegExp(normalizedName)}$`, 'i') },
+          { plainBottleName: new RegExp(`^${escapeRegExp(normalizedName)}$`, 'i') },
+          { bottleName: new RegExp(`^${escapeRegExp(normalizedName)}$`, 'i') }
+        ]
       });
 
       const newBpbValue = body.bottlePerBox !== undefined && body.bottlePerBox !== null && body.bottlePerBox !== "" ? parseFloat(body.bottlePerBox) : null;
 
-      if (!existingPerBox) {
-        await BottlePerBox.create({
-          bottleName: normalizedName,
-          bottlePerBox: newBpbValue,
-          status: true
+      if (existingPerBox) {
+        let changed = false;
+        if (!existingPerBox.bottleNames.some(n => n.toLowerCase() === normalizedName.toLowerCase())) {
+          existingPerBox.bottleNames.push(normalizedName);
+          changed = true;
+        }
+        if (newBpbValue !== null && (existingPerBox.bottlePerBox === null || existingPerBox.bottlePerBox === undefined)) {
+          existingPerBox.bottlePerBox = newBpbValue;
+          changed = true;
+        }
+        if (changed) {
+          await existingPerBox.save();
+        }
+      } else {
+        // Derive base mold / plain bottle
+        const derived = derivePlainBottleName(normalizedName);
+        const targetPlain = (derived && derived.plainBottleName) ? derived.plainBottleName.trim() : normalizedName;
+
+        const existingPlainDoc = await BottlePerBox.findOne({
+          isDeleted: { $ne: true },
+          plainBottleName: new RegExp(`^${escapeRegExp(targetPlain)}$`, 'i')
         });
-      } else if (newBpbValue !== null && (existingPerBox.bottlePerBox === null || existingPerBox.bottlePerBox === undefined)) {
-        // Do not overwrite an existing non-null bottlePerBox value, just set it if it was missing
-        existingPerBox.bottlePerBox = newBpbValue;
-        await existingPerBox.save();
+
+        if (existingPlainDoc) {
+          if (!existingPlainDoc.bottleNames.some(n => n.toLowerCase() === normalizedName.toLowerCase())) {
+            existingPlainDoc.bottleNames.push(normalizedName);
+          }
+          if (newBpbValue !== null && (existingPlainDoc.bottlePerBox === null || existingPlainDoc.bottlePerBox === undefined)) {
+            existingPlainDoc.bottlePerBox = newBpbValue;
+          }
+          await existingPlainDoc.save();
+        } else {
+          await BottlePerBox.create({
+            plainBottleName: targetPlain,
+            bottleName: targetPlain,
+            bottleNames: Array.from(new Set([targetPlain, normalizedName])),
+            bottlePerBox: newBpbValue,
+            status: true,
+            isDeleted: false
+          });
+        }
       }
     }
 
@@ -271,7 +311,7 @@ exports.updateSpec = async (req, res) => {
 // DELETE
 exports.deleteSpec = async (req, res) => {
   try {
-    await BottleSpec.findByIdAndUpdate(req.params.id, { isDeleted: true }, { new: true });
+    await BottleSpec.findByIdAndUpdate(req.params.id, { isDeleted: true }, { returnDocument: 'after' });
     res.json({ msg: "Deleted" });
   } catch (err) {
     res.status(500).json(err.message);
@@ -294,11 +334,29 @@ exports.getCoatingShades = async (req, res) => {
   }
 };
 
-// GET BOTTLE NAMES
+// GET BOTTLE NAMES (returns all bottle names from BottleSpec and BottlePerBox)
 exports.getBottleNames = async (req, res) => {
   try {
-    const bottleNames = await BottleSpec.distinct("bottleName", { isDeleted: { $ne: true }, bottleName: { $ne: null, $ne: "" } });
-    res.json({ success: true, data: bottleNames });
+    const BottlePerBox = require("../models/BottlePerBox");
+    const specBottleNames = await BottleSpec.distinct("bottleName", { isDeleted: { $ne: true }, bottleName: { $ne: null, $ne: "" } });
+    const bpbDocs = await BottlePerBox.find({ isDeleted: { $ne: true } }).select("bottleNames bottleName plainBottleName").lean();
+
+    const namesSet = new Set();
+    for (const name of specBottleNames) {
+      if (name && name.trim()) namesSet.add(name.trim());
+    }
+
+    for (const doc of bpbDocs) {
+      if (Array.isArray(doc.bottleNames)) {
+        for (const n of doc.bottleNames) {
+          if (n && n.trim()) namesSet.add(n.trim());
+        }
+      }
+      if (doc.bottleName && doc.bottleName.trim()) namesSet.add(doc.bottleName.trim());
+    }
+
+    const allBottleNames = Array.from(namesSet).sort((a, b) => a.localeCompare(b));
+    res.json({ success: true, data: allBottleNames });
   } catch (err) {
     res.status(500).json(err.message);
   }

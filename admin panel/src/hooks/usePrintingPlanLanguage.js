@@ -5,13 +5,13 @@ const STORAGE_KEY = 'printingPlanLanguage';
 export const PRINTING_PLAN_LABELS = {
   en: {
     sr: "Sr.",
-    bottleName: "Bottlename",
+    bottleName: "Plain Bottle",
     coatingShade: "Coating Shade",
     printingToBeDone: "Printing to be done",
     textColor: "Text Color",
     brand: "Brand",
     process: "Process",
-    plainColouredBottleStock: "Plain - Coloured Bottle Stock",
+    plainColouredBottleStock: "Plain / Coloured Bottle Stock",
     orderQty: "Order Qty",
     balanceToMake: "Balance still to be made",
     bottlePerBox: "Bottle per Box",
@@ -22,6 +22,7 @@ export const PRINTING_PLAN_LABELS = {
     readyBoxes: "Ready Boxes",
     remarks: "Remarks",
     actions: "Actions",
+    plainStockExceedWarning: "Total Order Qty exceeds Plain / Coloured Bottle Stock",
 
     // General & Actions
     addPlan: "Add Plan",
@@ -38,11 +39,13 @@ export const PRINTING_PLAN_LABELS = {
     date: "Date",
     fromDate: "From Date",
     toDate: "To Date",
-    company: "Company"
+    company: "Company",
+    status: "Status",
+    reason: "Reason"
   },
   gu: {
     sr: "નંબર",
-    bottleName: "બોટલ નામ",
+    bottleName: "પ્લેઈન બોટલ",
     coatingShade: "પ્રોડક્ટ નામ",
     printingToBeDone: "પ્રિન્ટિંગ કરવાનું",
     textColor: "ટેક્સ્ટ કલર",
@@ -59,6 +62,7 @@ export const PRINTING_PLAN_LABELS = {
     readyBoxes: "રેડી બોક્સ",
     remarks: "રીમાર્ક",
     actions: "એક્શન",
+    plainStockExceedWarning: "કુલ બનાવવાનો ઓર્ડર સ્ટોક કરતા વધી ગયો",
 
     // General & Actions (Not requested to be translated except for headers, but falling back to English just in case they are used in header context)
     addPlan: "Add Plan",
@@ -75,7 +79,9 @@ export const PRINTING_PLAN_LABELS = {
     date: "Date",
     fromDate: "From Date",
     toDate: "To Date",
-    company: "Company"
+    company: "કંપની",
+    status: "સ્ટેટસ",
+    reason: "કારણ"
   }
 };
 

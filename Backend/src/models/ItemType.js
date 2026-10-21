@@ -12,6 +12,10 @@ const itemTypeSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
+    options: [{
+      type: String,
+      trim: true
+    }],
     isDeleted: {
       type: Boolean,
       default: false,

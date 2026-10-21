@@ -68,10 +68,23 @@ export default function ImportExcelModal({ show, onClose, onImportComplete }) {
     });
     
     if (result.isConfirmed) {
+      // Collect stock warning overrides from UI
+      const stockWarningOverrides = {};
+      if (dateData.stockWarnings && Array.isArray(dateData.stockWarnings)) {
+        dateData.stockWarnings.forEach(warning => {
+          const checkboxId = `override-${dateData.date}-${warning.rowIndex}`;
+          const checkbox = document.getElementById(checkboxId);
+          if (checkbox && checkbox.checked) {
+            stockWarningOverrides[warning.rowIndex] = true;
+          }
+        });
+      }
+      
       const datesToImport = [{
         date: dateData.date,
         rows: dateData.rows,
-        replaceExisting: dateData.existingCount > 0 // Or could be derived from a specific UI dropdown if needed
+        replaceExisting: dateData.existingCount > 0,
+        stockWarningOverrides
       }];
       
       setLoading(true);
@@ -80,7 +93,6 @@ export default function ImportExcelModal({ show, onClose, onImportComplete }) {
         if (res.data.success) {
           Swal.fire('Import Completed', `Imported ${res.data.data.totalImported} records for ${dateData.date}.`, 'success');
           onImportComplete();
-          // Optionally, we could remove this date from previewData, but closing/resetting is easier
           handleReset();
           onClose();
         }
@@ -143,31 +155,52 @@ export default function ImportExcelModal({ show, onClose, onImportComplete }) {
     const activeData = previewData.dates.find(d => d.date === activeDateTab);
     if (!activeData) return null;
 
-    let filteredRows = activeData.rows;
-    if (filterTab === 'VALID') filteredRows = filteredRows.filter(r => r.isValid);
-    if (filterTab === 'INVALID') filteredRows = filteredRows.filter(r => !r.isValid);
+    // Separate OK stock and warning stock rows
+    const okStockRows = activeData.okStockRows || [];
+    const warningStockRows = activeData.warningStockRows || [];
+    
+    let filteredOkRows = okStockRows;
+    let filteredWarningRows = warningStockRows;
+    
+    if (filterTab === 'VALID') {
+      filteredOkRows = okStockRows.filter(r => r.isValid);
+      filteredWarningRows = [];
+    } else if (filterTab === 'INVALID') {
+      filteredOkRows = [];
+      filteredWarningRows = [];
+    }
 
     if (search) {
       const s = search.toLowerCase();
-      filteredRows = filteredRows.filter(r => 
+      const searchFilter = (r) => 
         String(r.bottleName).toLowerCase().includes(s) ||
         String(r.variantName).toLowerCase().includes(s) ||
         String(r.brandName).toLowerCase().includes(s) ||
         String(r.coatingShade).toLowerCase().includes(s) ||
         String(r.process).toLowerCase().includes(s) ||
-        String(r.excelRowNumber).includes(s)
-      );
+        String(r.excelRowNumber).includes(s);
+      
+      filteredOkRows = filteredOkRows.filter(searchFilter);
+      filteredWarningRows = filteredWarningRows.filter(searchFilter);
     }
 
-    // Calculate dynamic rowspans for groups based on current filters
     const visibleGroupSpans = {};
-    filteredRows.forEach(r => {
+    const visibleWarningGroupSpans = {};
+    
+    filteredOkRows.forEach(r => {
       if (r.groupId) {
         visibleGroupSpans[r.groupId] = (visibleGroupSpans[r.groupId] || 0) + 1;
       }
     });
+    
+    filteredWarningRows.forEach(r => {
+      if (r.groupId) {
+        visibleWarningGroupSpans[r.groupId] = (visibleWarningGroupSpans[r.groupId] || 0) + 1;
+      }
+    });
 
     const renderedGroups = new Set();
+    const renderedWarningGroups = new Set();
 
     return (
       <div className="d-flex flex-column h-100">
@@ -190,23 +223,19 @@ export default function ImportExcelModal({ show, onClose, onImportComplete }) {
           </div>
           <div className="col-md-3">
              <div className="card bg-success bg-opacity-10 border-success p-3 text-center h-100">
-               <h6 className="text-success fw-bold small text-uppercase mb-1">Valid Rows</h6>
-               <h4 className="text-success fw-bold mb-0">{activeData.validRows}</h4>
+               <h6 className="text-success fw-bold small text-uppercase mb-1">OK Stock</h6>
+               <h4 className="text-success fw-bold mb-0">{filteredOkRows.length}</h4>
              </div>
           </div>
           <div className="col-md-6">
-             <div className="card bg-danger bg-opacity-10 border-danger p-3 h-100">
-               <h6 className="text-danger fw-bold small text-uppercase mb-2">Invalid Rows: {activeData.invalidRows}</h6>
-               {Object.keys(activeData.invalidReasons || {}).length > 0 ? (
-                 <div className="d-flex flex-wrap gap-2">
-                   {Object.entries(activeData.invalidReasons).map(([reason, count]) => (
-                     <span key={reason} className="badge bg-danger bg-opacity-25 text-danger border border-danger">
-                       {reason}: {count}
-                     </span>
-                   ))}
-                 </div>
+             <div className="card bg-warning bg-opacity-10 border-warning p-3 h-100">
+               <h6 className="text-warning fw-bold small text-uppercase mb-2">⚠️ Over Stock: {filteredWarningRows.length}</h6>
+               {filteredWarningRows.length > 0 ? (
+                 <span className="small text-muted">
+                   {filteredWarningRows.length} row(s) exceed available stock. Check override checkbox to import anyway.
+                 </span>
                ) : (
-                 <span className="small text-muted">No invalid rows</span>
+                 <span className="small text-muted">No rows exceed available stock</span>
                )}
              </div>
           </div>
@@ -222,10 +251,6 @@ export default function ImportExcelModal({ show, onClose, onImportComplete }) {
                className={`btn btn-sm ${filterTab === 'VALID' ? 'btn-success' : 'btn-outline-success'}`}
                onClick={() => setFilterTab('VALID')}
              >VALID</button>
-             <button 
-               className={`btn btn-sm ${filterTab === 'INVALID' ? 'btn-danger' : 'btn-outline-danger'}`}
-               onClick={() => setFilterTab('INVALID')}
-             >INVALID</button>
            </div>
            
            <div className="position-relative" style={{ width: '250px' }}>
@@ -240,123 +265,134 @@ export default function ImportExcelModal({ show, onClose, onImportComplete }) {
            </div>
         </div>
 
-        <div className="table-responsive border rounded flex-grow-1" style={{ maxHeight: '400px' }}>
-          <table className="table table-sm table-hover mb-0 align-middle" style={{ fontSize: '13px' }}>
-            <thead className="table-light sticky-top">
-              <tr>
-                <th className="text-center">{LACQUER_PLAN_LABELS.en.sr}</th>
-                <th>Company</th>
-                <th>{LACQUER_PLAN_LABELS.en.bottleName}</th>
-                <th>{LACQUER_PLAN_LABELS.en.variant}</th>
-                <th>{LACQUER_PLAN_LABELS.en.coatingShade}</th>
-                <th>{LACQUER_PLAN_LABELS.en.brand}</th>
-                <th>{LACQUER_PLAN_LABELS.en.process}</th>
-                <th>{LACQUER_PLAN_LABELS.en.plainStock}</th>
-                <th>{LACQUER_PLAN_LABELS.en.orderQty}</th>
-                <th>{LACQUER_PLAN_LABELS.en.coatingCompletedQty}</th>
-                <th>{LACQUER_PLAN_LABELS.en.balanceToMake}</th>
-                <th>{LACQUER_PLAN_LABELS.en.dispatchPendingQty}</th>
-                <th>{LACQUER_PLAN_LABELS.en.soldQty}</th>
-                <th>{LACQUER_PLAN_LABELS.en.bottlePerBox}</th>
-                <th>{LACQUER_PLAN_LABELS.en.noOfOrderBoxes}</th>
-                <th>{LACQUER_PLAN_LABELS.en.remarks}</th>
-                <th>Status</th>
-                {filterTab !== 'VALID' && <th>Reason</th>}
-              </tr>
-            </thead>
-            <tbody>
-              {filteredRows.length > 0 ? filteredRows.map((r, i) => {
-                
-                const isFirstInGroup = r.groupId && !renderedGroups.has(r.groupId);
-                if (isFirstInGroup) {
-                    renderedGroups.add(r.groupId);
-                }
-                const rowSpan = r.groupId ? visibleGroupSpans[r.groupId] : 1;
-                const rowClasses = [
-                    !r.isValid ? 'table-danger' : '',
-                    isFirstInGroup ? 'border-top border-2 border-secondary' : ''
-                ].filter(Boolean).join(' ');
+        {/* OK STOCK SECTION */}
+        {(filterTab === 'ALL' || filterTab === 'VALID') && filteredOkRows.length > 0 && (
+          <>
+            <div className="mb-3">
+              <h6 className="fw-bold text-success mb-2 d-flex align-items-center">
+                <span className="badge bg-success me-2">✓</span> OK Stock Rows ({filteredOkRows.length})
+              </h6>
+              <div className="table-responsive border rounded flex-grow-1" style={{ maxHeight: '250px' }}>
+                <table className="table table-sm table-hover mb-0 align-middle" style={{ fontSize: '13px' }}>
+                  <thead className="table-light sticky-top">
+                    <tr>
+                      <th className="text-center">#</th>
+                      <th>Company</th>
+                      <th>Bottle</th>
+                      <th>Variant</th>
+                      <th>Shade</th>
+                      <th>Brand</th>
+                      <th>Order Qty</th>
+                      <th>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredOkRows.map((r, i) => {
+                      const isFirstInGroup = r.groupId && !renderedGroups.has(r.groupId);
+                      if (isFirstInGroup) {
+                        renderedGroups.add(r.groupId);
+                      }
+                      const rowSpan = r.groupId ? visibleGroupSpans[r.groupId] : 1;
 
-                return (
-                <tr key={i} className={rowClasses} title={r._importSource?.detectionMethod === 'gujarati' ? 'Gujarati header detected' : 'Fuzzy fallback used'}>
-                  <td className="text-center fw-bold">
-                    {r.excelRowNumber}
-                    {r._importSource?.detectionMethod === 'gujarati' && (
-                      <span className="badge bg-info ms-2" style={{ fontSize: '10px' }}>GJ</span>
-                    )}
-                  </td>
-                  
-                  {isFirstInGroup && (
-                    <td 
-                      className="align-middle fw-bold" 
-                      rowSpan={rowSpan}
-                      title={r.companyStatus === 'UNASSIGNED' ? `Original Company: ${r.originalCompanyName}` : undefined}
-                    >
-                      {r.companyStatus === 'UNASSIGNED' ? 'UNASSIGNED' : (r.companyName || 'UNASSIGNED')}
-                    </td>
-                  )}
+                      return (
+                        <tr key={i} className={isFirstInGroup && i > 0 ? 'border-top border-2 border-secondary' : ''}>
+                          <td className="text-center fw-bold text-muted">{r.excelRowNumber}</td>
+                          {isFirstInGroup && (
+                            <td className="align-middle fw-bold" rowSpan={rowSpan}>
+                              {r.companyName || 'UNASSIGNED'}
+                            </td>
+                          )}
+                          {isFirstInGroup && (
+                            <td className="fw-bold align-middle" rowSpan={rowSpan}>{r.bottleName || '*'}</td>
+                          )}
+                          <td>{r.variantName ? <span className="badge bg-info text-dark fw-normal">{r.variantName}</span> : '-'}</td>
+                          <td>{r.coatingShade || '-'}</td>
+                          <td>{r.brandName || '-'}</td>
+                          <td className="fw-bold">{r.orderQty !== null && r.orderQty !== undefined ? r.orderQty : '-'}</td>
+                          <td><span className="badge bg-success">OK</span></td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </>
+        )}
 
-                  {isFirstInGroup && (
-                    <td className="fw-bold align-middle" rowSpan={rowSpan}>{r.bottleName || '*'}</td>
-                  )}
-                  
-                  <td>
-                     {r.variantName ? (
-                       <span className="badge bg-info text-dark fw-normal">{r.variantName}</span>
-                     ) : (
-                       '-'
-                     )}
-                  </td>
-                  <td>{r.coatingShade || '-'}</td>
-                  <td>{r.brandName || '-'}</td>
-                  
-                  {isFirstInGroup && (
-                    <td className="align-middle" rowSpan={rowSpan}>{r.process || '-'}</td>
-                  )}
-                  {isFirstInGroup && (
-                    <td className="align-middle" rowSpan={rowSpan}>{r.plainStock !== null && r.plainStock !== undefined ? r.plainStock : '-'}</td>
-                  )}
-                  
-                  <td className="fw-bold">{r.orderQty !== null && r.orderQty !== undefined ? r.orderQty : '-'}</td>
-                  <td>{r.coatingCompletedQty !== null && r.coatingCompletedQty !== undefined ? r.coatingCompletedQty : '-'}</td>
-                  <td>{r.balanceToMake !== null && r.balanceToMake !== undefined ? r.balanceToMake : '-'}</td>
-                  <td>{r.dispatchPendingQty !== null && r.dispatchPendingQty !== undefined ? r.dispatchPendingQty : '-'}</td>
-                  <td>{r.soldQty !== null && r.soldQty !== undefined ? r.soldQty : '-'}</td>
-                  
-                  {isFirstInGroup && (
-                    <td className="align-middle" rowSpan={rowSpan}>{r.boxQty !== null && r.boxQty !== undefined ? r.boxQty : '-'}</td>
-                  )}
+        {/* OVER STOCK WARNING SECTION */}
+        {(filterTab === 'ALL') && filteredWarningRows.length > 0 && (
+          <>
+            <div className="mb-3">
+              <h6 className="fw-bold text-warning mb-2 d-flex align-items-center">
+                <span className="badge bg-warning text-dark me-2">⚠️</span> Over Stock Rows ({filteredWarningRows.length})
+              </h6>
+              <div className="alert alert-warning p-2 mb-3" role="alert">
+                <small>These rows exceed available stock. Check the override checkbox if you want to import them anyway.</small>
+              </div>
+              <div className="table-responsive border border-warning rounded flex-grow-1" style={{ maxHeight: '250px' }}>
+                <table className="table table-sm table-hover mb-0 align-middle" style={{ fontSize: '13px', backgroundColor: '#fffacd' }}>
+                  <thead className="table-light sticky-top">
+                    <tr>
+                      <th className="text-center">#</th>
+                      <th>Company</th>
+                      <th>Bottle</th>
+                      <th>Variant</th>
+                      <th>Shade</th>
+                      <th>Brand</th>
+                      <th>Order Qty</th>
+                      <th>Available</th>
+                      <th className="text-danger">Over By</th>
+                      <th className="text-center">Override</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredWarningRows.map((r, i) => {
+                      const isFirstInGroup = r.groupId && !renderedWarningGroups.has(r.groupId);
+                      if (isFirstInGroup) {
+                        renderedWarningGroups.add(r.groupId);
+                      }
+                      const rowSpan = r.groupId ? visibleWarningGroupSpans[r.groupId] : 1;
 
-                  <td>{r.noOfBoxes !== null && r.noOfBoxes !== undefined ? r.noOfBoxes : '-'}</td>
-                  <td>{r.remarks || '-'}</td>
-                  <td>
-                     {r.isValid ? (
-                       <span className="badge bg-success">VALID</span>
-                     ) : (
-                       <span className="badge bg-danger">INVALID</span>
-                     )}
-                  </td>
-                  {filterTab !== 'VALID' && (
-                    <td>
-                      {!r.isValid && (
-                         <div className="d-flex flex-column gap-1">
-                           {r.errors.map((err, errIdx) => (
-                             <span key={errIdx} className="text-danger small fw-bold">❌ {err}</span>
-                           ))}
-                         </div>
-                      )}
-                    </td>
-                  )}
-                </tr>
-              );
-              }) : (
-                <tr>
-                  <td colSpan={filterTab !== 'VALID' ? 18 : 17} className="text-center py-4 text-muted">No rows match the current filters</td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+                      return (
+                        <tr key={i} className={`table-warning ${isFirstInGroup && i > 0 ? 'border-top border-2 border-warning' : ''}`}>
+                          <td className="text-center fw-bold text-muted">{r.excelRowNumber}</td>
+                          {isFirstInGroup && (
+                            <td className="align-middle fw-bold" rowSpan={rowSpan}>
+                              {r.companyName || 'UNASSIGNED'}
+                            </td>
+                          )}
+                          {isFirstInGroup && (
+                            <td className="fw-bold align-middle" rowSpan={rowSpan}>{r.bottleName || '*'}</td>
+                          )}
+                          <td>{r.variantName ? <span className="badge bg-info text-dark fw-normal">{r.variantName}</span> : '-'}</td>
+                          <td>{r.coatingShade || '-'}</td>
+                          <td>{r.brandName || '-'}</td>
+                          <td className="fw-bold">{r.orderQty}</td>
+                          <td className="fw-bold">{r.stockWarning?.availableStock || '-'}</td>
+                          <td className="fw-bold text-danger">{r.stockWarning?.overBy || '-'}</td>
+                          <td className="text-center">
+                            <div className="form-check d-flex justify-content-center">
+                              <input 
+                                type="checkbox" 
+                                className="form-check-input" 
+                                id={`override-${activeDateTab}-${r.excelRowNumber}`}
+                              />
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </>
+        )}
+
+        {filteredOkRows.length === 0 && filteredWarningRows.length === 0 && (
+          <div className="text-center py-4 text-muted">No rows match the current filters</div>
+        )}
       </div>
     );
   };

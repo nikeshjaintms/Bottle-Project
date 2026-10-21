@@ -7,16 +7,19 @@ const plainBottleStockSchema = new mongoose.Schema(
       ref: "BottlePerBox",
       required: true,
     },
+    companyId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Company",
+      default: null,
+    },
     availableQuantity: {
       type: Number,
       default: 0,
-      min: 0,
     },
     // E.g., blocked for upcoming coating/printing
     reservedQuantity: {
       type: Number,
       default: 0,
-      min: 0,
     },
     lastUpdatedBy: {
       type: mongoose.Schema.Types.ObjectId,
@@ -26,7 +29,7 @@ const plainBottleStockSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// We need an index to ensure unique stock entry per bottle spec
-plainBottleStockSchema.index({ bottleId: 1 }, { unique: true });
+// Unique stock entry per company and bottle spec
+plainBottleStockSchema.index({ companyId: 1, bottleId: 1 }, { unique: true });
 
 module.exports = mongoose.model("PlainBottleStock", plainBottleStockSchema);

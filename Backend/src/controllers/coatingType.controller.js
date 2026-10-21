@@ -104,7 +104,7 @@ exports.updateCoatingType = async (req, res) => {
 // ✅ DELETE
 exports.deleteCoatingType = async (req, res) => {
   try {
-    await CoatingType.findByIdAndUpdate(req.params.id, { isDeleted: true }, { new: true });
+    await CoatingType.findByIdAndUpdate(req.params.id, { isDeleted: true }, { returnDocument: 'after' });
     res.json({ msg: "Coating Type Deleted" });
   } catch (err) {
     res.status(500).json(err.message);

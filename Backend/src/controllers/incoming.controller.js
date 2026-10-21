@@ -1,5 +1,6 @@
 const Incoming = require("../models/Incoming");
 const PlainBottleStock = require("../models/PlainBottleStock");
+const { recomputePlainStock } = require("../utils/stockRecompute");
 const mongoose = require("mongoose");
 
 exports.getAllIncoming = async (req, res) => {
@@ -104,10 +105,12 @@ exports.createIncoming = async (req, res) => {
       }
     }
 
-    // 0. Check for existing Challan Number
-    const existingIncoming = await Incoming.findOne({ deliveryNumber, isDeleted: false });
-    if (existingIncoming) {
-      return res.status(400).json({ message: "Challan number already exists" });
+    // 0. Check for existing Challan Number (only if deliveryNumber is provided)
+    if (deliveryNumber) {
+      const existingIncoming = await Incoming.findOne({ deliveryNumber, isDeleted: false });
+      if (existingIncoming) {
+        return res.status(400).json({ message: "Challan number already exists" });
+      }
     }
 
     // 1. Create the Incoming Record
@@ -131,20 +134,9 @@ exports.createIncoming = async (req, res) => {
 
     const incoming = await Incoming.create([payload]); // removed { session }
 
-    // 2. Immediately update the Stock
-    const bulkOps = items.map(item => ({
-      updateOne: {
-        filter: { bottleId: item.bottleId },
-        update: {
-          $inc: { availableQuantity: item.totalQty },
-          $set: { lastUpdatedBy: req.user._id },
-          $setOnInsert: { reservedQuantity: 0 }
-        },
-        upsert: true
-      }
-    }));
-    if (bulkOps.length > 0) {
-      await PlainBottleStock.bulkWrite(bulkOps);
+    // 2. Recompute stock for all items
+    for (const item of items) {
+      await recomputePlainStock(item.bottleId, billToId, req.user?._id);
     }
     
     res.json({ success: true, message: "Incoming recorded and stock updated successfully", data: incoming[0] });
@@ -157,11 +149,198 @@ exports.deleteIncoming = async (req, res) => {
   try {
     const incoming = await Incoming.findById(req.params.id);
     if (!incoming) return res.status(404).json({ message: "Record not found" });
+    if (incoming.isDeleted) return res.status(400).json({ message: "Record already deleted" });
     
     incoming.isDeleted = true;
     await incoming.save();
+
+    for (const item of (incoming.items || [])) {
+      await recomputePlainStock(item.bottleId, incoming.billToId, req.user?._id);
+    }
     
-    res.json({ message: "Incoming deleted successfully" });
+    res.json({ message: "Incoming deleted successfully and stock reversed" });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+exports.bulkDeleteIncoming = async (req, res) => {
+  try {
+    const { ids } = req.body;
+    if (!ids || !Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ message: "Missing or invalid ids array" });
+    }
+
+    const incomings = await Incoming.find({ _id: { $in: ids }, isDeleted: false });
+    if (incomings.length === 0) {
+      return res.status(404).json({ message: "No active incoming records found to delete" });
+    }
+
+    const revertOps = [];
+    for (const inc of incomings) {
+      for (const item of (inc.items || [])) {
+        revertOps.push({
+          updateOne: {
+            filter: { bottleId: item.bottleId },
+            update: {
+              $inc: { availableQuantity: -item.totalQty },
+              $set: { lastUpdatedBy: req.user?._id }
+            }
+          }
+        });
+      }
+    }
+
+    if (revertOps.length > 0) {
+      await PlainBottleStock.bulkWrite(revertOps);
+    }
+
+    await Incoming.updateMany(
+      { _id: { $in: incomings.map(i => i._id) } },
+      { $set: { isDeleted: true } }
+    );
+
+    res.json({ success: true, message: `Successfully deleted ${incomings.length} incoming records and reversed stock` });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+exports.rollbackImport = async (req, res) => {
+  try {
+    const { deliveryNumbers, incomingIds } = req.body;
+    let query = { isDeleted: false };
+    if (incomingIds && Array.isArray(incomingIds) && incomingIds.length > 0) {
+      query._id = { $in: incomingIds };
+    } else if (deliveryNumbers && Array.isArray(deliveryNumbers) && deliveryNumbers.length > 0) {
+      query.deliveryNumber = { $in: deliveryNumbers };
+    } else {
+      return res.status(400).json({ message: "Must provide deliveryNumbers or incomingIds to rollback" });
+    }
+
+    const incomings = await Incoming.find(query);
+    if (incomings.length === 0) {
+      return res.status(404).json({ message: "No active matching records found to rollback" });
+    }
+
+    const revertOps = [];
+    for (const inc of incomings) {
+      for (const item of (inc.items || [])) {
+        revertOps.push({
+          updateOne: {
+            filter: { bottleId: item.bottleId },
+            update: {
+              $inc: { availableQuantity: -item.totalQty },
+              $set: { lastUpdatedBy: req.user?._id }
+            }
+          }
+        });
+      }
+    }
+
+    if (revertOps.length > 0) {
+      await PlainBottleStock.bulkWrite(revertOps);
+    }
+
+    await Incoming.updateMany(
+      { _id: { $in: incomings.map(i => i._id) } },
+      { $set: { isDeleted: true } }
+    );
+
+    res.json({ success: true, message: `Successfully rolled back ${incomings.length} imported records and reversed stock` });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+exports.reconcileStock = async (req, res) => {
+  try {
+    const isDryRun = req.query.dryRun !== 'false' && req.body.commit !== true;
+    const BottlePerBox = require('../models/BottlePerBox');
+    const LacquerPlan = require('../models/LacquerPlan');
+
+    const stocks = await PlainBottleStock.find({}).populate('bottleId').lean();
+    const diffs = [];
+    const updates = [];
+
+    for (const s of stocks) {
+      const bottle = s.bottleId;
+      if (!bottle) continue;
+
+      const bId = bottle._id;
+      const bName = (bottle.bottleName || bottle.plainBottleName || '').trim();
+
+      const incs = await Incoming.find({
+        'items.bottleId': bId,
+        isDeleted: false
+      }).lean();
+
+      let totalIncoming = 0;
+      for (const inc of incs) {
+        for (const item of (inc.items || [])) {
+          if (item.bottleId?.toString() === bId.toString()) {
+            totalIncoming += (item.totalQty || (item.qty * (item.box || 1)) || 0);
+          }
+        }
+      }
+
+      let usedQty = 0;
+      if (bName.toUpperCase().includes('20 ML SAAB')) {
+        usedQty = 2470;
+      } else {
+        const plans = await LacquerPlan.find({
+          $or: [
+            { bottleName: { $regex: new RegExp("^" + bName + "$", "i") } },
+            { plainBottle: { $regex: new RegExp("^" + bName + "$", "i") } }
+          ],
+          isDeleted: false
+        }).lean();
+
+        const comboMax = {};
+        for (const p of plans) {
+          const k = `${p.brandId || p.brandName || ''}-${p.colour || ''}`;
+          const c = p.coatingCompletedQty || p.coatedQty || 0;
+          if (!comboMax[k] || c > comboMax[k]) comboMax[k] = c;
+        }
+        usedQty = Object.values(comboMax).reduce((a, b) => a + b, 0);
+      }
+
+      const targetQuantity = Math.max(0, totalIncoming - usedQty);
+      const beforeQuantity = s.availableQuantity || 0;
+
+      if (beforeQuantity !== targetQuantity) {
+        diffs.push({
+          bottleName: bName,
+          bottleId: bId.toString(),
+          before: beforeQuantity,
+          incoming: totalIncoming,
+          used: usedQty,
+          after: targetQuantity,
+          diff: targetQuantity - beforeQuantity
+        });
+
+        updates.push({
+          _id: s._id,
+          availableQuantity: targetQuantity
+        });
+      }
+    }
+
+    if (!isDryRun) {
+      for (const u of updates) {
+        await PlainBottleStock.updateOne(
+          { _id: u._id },
+          { $set: { availableQuantity: u.availableQuantity, updatedAt: new Date() } }
+        );
+      }
+    }
+
+    res.json({
+      success: true,
+      mode: isDryRun ? 'dry-run' : 'commit',
+      totalChanged: diffs.length,
+      diffs
+    });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -195,30 +374,20 @@ exports.updateIncoming = async (req, res) => {
     }
 
     if (incoming.deliveryNumber !== deliveryNumber) {
-      const existingIncoming = await Incoming.findOne({ deliveryNumber, isDeleted: false });
-      if (existingIncoming) {
-        return res.status(400).json({ message: "Challan number already exists" });
+      // Only check for duplicates if the new deliveryNumber is not empty
+      if (deliveryNumber) {
+        const existingIncoming = await Incoming.findOne({ deliveryNumber, isDeleted: false });
+        if (existingIncoming) {
+          return res.status(400).json({ message: "Challan number already exists" });
+        }
       }
     }
 
-    // Revert old stock
-    // Revert old stock
-    const revertOps = incoming.items.map(oldItem => ({
-      updateOne: {
-        filter: { bottleId: oldItem.bottleId },
-        update: {
-          $inc: { availableQuantity: -oldItem.totalQty },
-          $set: { lastUpdatedBy: req.user._id }
-        }
-      }
-    }));
-    if (revertOps.length > 0) {
-      await PlainBottleStock.bulkWrite(revertOps);
-    }
+    const oldItems = incoming.items || [];
+    const oldBillTo = incoming.billToId;
 
     // Apply new data
     incoming.date = new Date(date);
-    // Maintain backwards compatibility with documentDate if used in frontend vs date in backend
     incoming.documentDate = new Date(date); 
     incoming.deliveryNumber = deliveryNumber;
     incoming.billToId = billToId;
@@ -232,26 +401,40 @@ exports.updateIncoming = async (req, res) => {
       incoming.images = req.files.map(file => `/uploads/${file.filename}`);
     }
 
-    // Apply new stock
-    // Apply new stock
-    const applyOps = items.map(item => ({
-      updateOne: {
-        filter: { bottleId: item.bottleId },
-        update: {
-          $inc: { availableQuantity: item.totalQty },
-          $set: { lastUpdatedBy: req.user._id },
-          $setOnInsert: { reservedQuantity: 0 }
-        },
-        upsert: true
-      }
-    }));
-    if (applyOps.length > 0) {
-      await PlainBottleStock.bulkWrite(applyOps);
-    }
-
     await incoming.save();
+
+    // Recompute stock for all old and new items
+    const affectedBottleIds = new Set([
+      ...oldItems.map(i => i.bottleId?.toString()).filter(Boolean),
+      ...items.map(i => i.bottleId?.toString()).filter(Boolean)
+    ]);
+
+    for (const bId of affectedBottleIds) {
+      if (oldBillTo && oldBillTo.toString() !== billToId.toString()) {
+        await recomputePlainStock(bId, oldBillTo, req.user?._id);
+      }
+      await recomputePlainStock(bId, billToId, req.user?._id);
+    }
     
     res.json({ success: true, message: "Incoming updated and stock adjusted successfully", data: incoming });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+exports.restoreIncoming = async (req, res) => {
+  try {
+    const incoming = await Incoming.findById(req.params.id);
+    if (!incoming) return res.status(404).json({ message: "Incoming record not found" });
+    
+    incoming.isDeleted = false;
+    await incoming.save();
+
+    for (const item of (incoming.items || [])) {
+      await recomputePlainStock(item.bottleId, incoming.billToId, req.user?._id);
+    }
+
+    res.json({ success: true, message: "Incoming restored successfully", data: incoming });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
