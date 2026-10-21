@@ -68,6 +68,7 @@ app.use("/api/pending-sheet", require("./routes/pendingSheet.routes"));
 app.use("/api/shreno-incoming", require("./routes/shrenoIncoming.routes"));
 app.use("/api/dispatch", require("./routes/dispatch.routes"));
 app.use("/api/delivery-challan", require("./routes/deliveryChallan.routes"));
+app.use("/api/ready-to-dispatch", require("./routes/readyToDispatch.routes"));
 app.use("/api/summary", require("./routes/summary.routes"));
 
 // Added testing routes for the browser

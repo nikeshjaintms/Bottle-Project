@@ -168,37 +168,40 @@ export default function EditMcnoreChallan() {
           const variantsCacheMap = {};
 
           for (const it of c.items) {
-            const title = it.title || 'General';
+            const title = (it.title || 'General').trim();
             if (!currGrp || currGrp.title !== title) {
-              // Try to find matching bottle spec
-              const cleanTitle = title.trim().toLowerCase();
               const matchedSpec = specs.find(
                 (s) =>
-                  (s.bottleName && s.bottleName.trim().toLowerCase() === cleanTitle) ||
-                  (s.code && s.code.trim().toLowerCase() === cleanTitle) ||
-                  (s.bottleName && cleanTitle.includes(s.bottleName.trim().toLowerCase()))
+                  (s.bottleName && s.bottleName.trim().toLowerCase() === title.toLowerCase()) ||
+                  (s.code && s.code.trim().toLowerCase() === title.toLowerCase()) ||
+                  (s.bottleName && title.toLowerCase().includes(s.bottleName.trim().toLowerCase()))
               );
 
               const specId = matchedSpec ? String(matchedSpec._id) : '';
 
               currGrp = {
                 id: `grp_${Date.now()}_${Math.random()}`,
+                plainBottle: title,
                 bottleSpecId: specId,
-                title: it.title || (matchedSpec ? matchedSpec.bottleName : ''),
+                title: title,
                 hsn: it.hsn || '70109000',
                 variantLines: [],
               };
               groups.push(currGrp);
 
-              if (specId && !variantsCacheMap[specId]) {
+              if (title && !variantsCacheMap[title]) {
                 try {
                   const resVar = await API.get('/variant', {
-                    params: { bottleSpecId: specId, pagination: 'false' },
+                    params: {
+                      plainBottleName: title,
+                      companyId: cId || undefined,
+                      pagination: 'false',
+                    },
                   });
-                  variantsCacheMap[specId] = resVar.data?.data || [];
+                  variantsCacheMap[title] = resVar.data?.data || [];
                 } catch (e) {
                   console.error('Failed to fetch variants:', e);
-                  variantsCacheMap[specId] = [];
+                  variantsCacheMap[title] = [];
                 }
               }
             }
@@ -218,7 +221,8 @@ export default function EditMcnoreChallan() {
 
             // Try to match variantId
             let matchedVariantId = '';
-            const availableVars = currGrp.bottleSpecId ? (variantsCacheMap[currGrp.bottleSpecId] || []) : [];
+            const bottleKey = currGrp.plainBottle || currGrp.title || currGrp.bottleSpecId;
+            const availableVars = bottleKey ? (variantsCacheMap[bottleKey] || []) : [];
             if (availableVars.length > 0 && it.description) {
               const cleanDesc = it.description.trim().toLowerCase();
               const foundVar = availableVars.find((v) => {
@@ -264,19 +268,66 @@ export default function EditMcnoreChallan() {
     }
   }, [currentChallan, id]);
 
-  const fetchVariantsForSpec = async (bottleSpecId) => {
-    if (!bottleSpecId) return [];
-    if (specVariantsCache[bottleSpecId]) return specVariantsCache[bottleSpecId];
+  // Memoized Plain Bottle Options (Company Plain Bottles first, then remaining Master Bottles)
+  const plainBottleOptions = useMemo(() => {
+    const companyPlainNames = new Set();
+    (companyBottleSpecs || []).forEach((spec) => {
+      const raw = (spec.bottleName || spec.name || '').trim();
+      if (!raw) return;
+      const matchedBpb = (bottlePerBoxes || []).find((b) => {
+        const pName = (b.plainBottleName || b.bottleName || '').trim();
+        if (pName.toLowerCase() === raw.toLowerCase()) return true;
+        if (Array.isArray(b.bottleNames) && b.bottleNames.some((n) => n.toLowerCase() === raw.toLowerCase())) {
+          return true;
+        }
+        return false;
+      });
+      if (matchedBpb) {
+        companyPlainNames.add(matchedBpb.plainBottleName || matchedBpb.bottleName);
+      } else {
+        companyPlainNames.add(raw);
+      }
+    });
+
+    const companyList = Array.from(companyPlainNames).sort();
+    const masterList = (bottlePerBoxes || [])
+      .map((b) => (b.plainBottleName || b.bottleName || '').trim())
+      .filter(Boolean)
+      .filter((name) => !companyPlainNames.has(name))
+      .sort();
+
+    return [
+      ...companyList.map((name) => ({
+        value: name,
+        label: name,
+        sublabel: companyBottleSpecs.length > 0 ? 'Company Bottle' : '',
+      })),
+      ...masterList.map((name) => ({
+        value: name,
+        label: name,
+        sublabel: 'Master Bottle',
+      })),
+    ];
+  }, [companyBottleSpecs, bottlePerBoxes]);
+
+  // Helper to fetch variants for a plain bottle
+  const fetchVariantsForBottle = async (bottleName) => {
+    if (!bottleName) return [];
+    if (specVariantsCache[bottleName]) return specVariantsCache[bottleName];
 
     try {
       const res = await API.get('/variant', {
-        params: { bottleSpecId, pagination: 'false' },
+        params: {
+          plainBottleName: bottleName,
+          companyId: companyId || undefined,
+          pagination: 'false',
+        },
       });
       const variants = res.data?.data || [];
-      setSpecVariantsCache((prev) => ({ ...prev, [bottleSpecId]: variants }));
+      setSpecVariantsCache((prev) => ({ ...prev, [bottleName]: variants }));
       return variants;
     } catch (err) {
-      console.error(`Failed to load variants for spec ${bottleSpecId}:`, err);
+      console.error(`Failed to load variants for bottle ${bottleName}:`, err);
       return [];
     }
   };
@@ -309,25 +360,50 @@ export default function EditMcnoreChallan() {
 
   const lookupUnitForBottle = (specName) => {
     if (!specName || !bottlePerBoxes.length) return '';
-    const cleanSpec = String(specName).trim().toLowerCase();
-    const found = bottlePerBoxes.find((b) => {
-      const bName = String(b.bottleName || '').trim().toLowerCase();
-      return bName === cleanSpec || cleanSpec.includes(bName) || bName.includes(cleanSpec);
+    const cleanSpec = String(specName).trim().toLowerCase().replace(/\s+/g, ' ');
+
+    // 1. Exact match on plainBottleName or bottleName
+    const exact = bottlePerBoxes.find((b) => {
+      const p = (b.plainBottleName || '').trim().toLowerCase().replace(/\s+/g, ' ');
+      const n = (b.bottleName || '').trim().toLowerCase().replace(/\s+/g, ' ');
+      return p === cleanSpec || n === cleanSpec;
     });
-    return found?.bottlePerBox ? String(found.bottlePerBox) : '';
+    if (exact && exact.bottlePerBox) return String(exact.bottlePerBox);
+
+    // 2. In alias array
+    const inArray = bottlePerBoxes.find((b) => {
+      if (Array.isArray(b.bottleNames)) {
+        return b.bottleNames.some(
+          (alias) => alias.trim().toLowerCase().replace(/\s+/g, ' ') === cleanSpec
+        );
+      }
+      return false;
+    });
+    if (inArray && inArray.bottlePerBox) return String(inArray.bottlePerBox);
+
+    // 3. Partial
+    const partial = bottlePerBoxes.find((b) => {
+      const p = (b.plainBottleName || b.bottleName || '').trim().toLowerCase();
+      return p && (cleanSpec.includes(p) || p.includes(cleanSpec));
+    });
+    return partial?.bottlePerBox ? String(partial.bottlePerBox) : '';
   };
 
-  const handleGroupSpecChange = async (grpIdx, selectedSpecId) => {
+  const handleGroupBottleChange = async (grpIdx, selectedBottleName) => {
     const newGroups = [...specGroups];
     const grp = newGroups[grpIdx];
-    grp.bottleSpecId = selectedSpecId;
+    const cleanName = (selectedBottleName || '').trim();
 
-    const foundSpec = companyBottleSpecs.find((s) => s._id === selectedSpecId);
-    const specTitle = foundSpec ? foundSpec.bottleName : '';
-    grp.title = specTitle;
+    grp.plainBottle = cleanName;
+    grp.title = cleanName;
 
-    const suggestedUnit = lookupUnitForBottle(specTitle);
-    const variants = await fetchVariantsForSpec(selectedSpecId);
+    const foundSpec = companyBottleSpecs.find(
+      (s) => (s.bottleName || s.name || '').trim().toLowerCase() === cleanName.toLowerCase()
+    );
+    grp.bottleSpecId = foundSpec ? foundSpec._id : '';
+
+    const suggestedUnit = lookupUnitForBottle(cleanName);
+    const variants = await fetchVariantsForBottle(cleanName);
 
     // Apply unit to variant lines if empty
     grp.variantLines = grp.variantLines.map((vl) => {
@@ -409,7 +485,8 @@ export default function EditMcnoreChallan() {
     line[field] = value;
 
     if (field === 'variantId') {
-      const variants = specVariantsCache[newGroups[grpIdx].bottleSpecId] || [];
+      const bottleKey = newGroups[grpIdx].plainBottle || newGroups[grpIdx].title || newGroups[grpIdx].bottleSpecId;
+      const variants = specVariantsCache[bottleKey] || [];
       const foundVar = variants.find((v) => v._id === value);
       if (foundVar) {
         line.description = foundVar.variantName || foundVar.name || '';
@@ -442,6 +519,7 @@ export default function EditMcnoreChallan() {
       ...specGroups,
       {
         id: `grp_${Date.now()}`,
+        plainBottle: '',
         bottleSpecId: '',
         title: '',
         hsn: '70109000',
@@ -471,7 +549,7 @@ export default function EditMcnoreChallan() {
 
   const removeSpecGroup = (grpIdx) => {
     if (specGroups.length <= 1) {
-      return Swal.fire('Info', 'At least one Bottle Specification group is required.', 'info');
+      return Swal.fire('Info', 'At least one Plain Bottle group is required.', 'info');
     }
     setSpecGroups(specGroups.filter((_, idx) => idx !== grpIdx));
   };
@@ -1070,35 +1148,31 @@ export default function EditMcnoreChallan() {
           <div className="p-3 border-bottom bg-white d-flex align-items-center justify-content-between">
             <h6 className="fw-bold text-dark mb-0">
               <i className="bi bi-box-seam-fill text-primary me-2" />
-              3. Bottle Specifications &amp; Quantities
+              3. Plain Bottles &amp; Quantities
             </h6>
             <button type="button" className="btn btn-sm btn-outline-primary" onClick={addSpecGroup}>
-              <i className="bi bi-plus-lg me-1" /> Add Bottle Spec
+              <i className="bi bi-plus-lg me-1" /> Add Plain Bottle
             </button>
           </div>
 
           <div className="p-4">
             {specGroups.map((grp, grpIdx) => {
-              const specOptions = companyBottleSpecs.map((s) => ({
-                value: s._id,
-                label: s.code ? `${s.bottleName} (${s.code})` : s.bottleName,
-              }));
-
-              const variants = specVariantsCache[grp.bottleSpecId] || [];
+              const bottleKey = grp.plainBottle || grp.title || grp.bottleSpecId;
+              const variants = bottleKey ? specVariantsCache[bottleKey] || [] : [];
 
               return (
                 <div key={grp.id} className="p-3 border rounded-3 mb-4 bg-white shadow-sm">
-                  {/* Group Header: Spec Selector */}
+                  {/* Group Header: Plain Bottle Selector */}
                   <div className="row g-2 align-items-center mb-3 pb-3 border-bottom">
                     <div className="col-md-5">
                       <label className="form-label small fw-bold text-muted mb-1">
-                        Bottle Specification #{grpIdx + 1}
+                        Plain Bottle #{grpIdx + 1}
                       </label>
                       <SearchableSelect
-                        options={specOptions}
-                        value={grp.bottleSpecId}
-                        onChange={(val) => handleGroupSpecChange(grpIdx, val)}
-                        placeholder="Select Bottle Specification..."
+                        options={plainBottleOptions}
+                        value={grp.plainBottle || grp.title}
+                        onChange={(val) => handleGroupBottleChange(grpIdx, val)}
+                        placeholder="Select Plain Bottle..."
                       />
                     </div>
 
@@ -1163,10 +1237,21 @@ export default function EditMcnoreChallan() {
                       </thead>
                       <tbody>
                         {grp.variantLines.map((vl, lineIdx) => {
-                          const variantOptions = variants.map((v) => ({
-                            value: v._id,
-                            label: v.variantName || v.name,
-                          }));
+                          const variantOptions = variants.map((v) => {
+                            const label = [
+                              v.coatingShade,
+                              v.variantName,
+                              v.detectedTextColor && v.detectedTextColor !== 'Not Detected'
+                                ? v.detectedTextColor
+                                : '',
+                            ]
+                              .filter(Boolean)
+                              .join(' - ');
+                            return {
+                              value: v._id,
+                              label: label || v.variantName || v.name,
+                            };
+                          });
 
                           return (
                             <tr key={vl.id}>

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate, useParams, Link } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
 import {
@@ -118,35 +118,95 @@ export default function EditShayonaChallan() {
       .catch((err) => console.error('Failed to load BottlePerBox master:', err));
   }, [dispatch, id]);
 
-  // Load variants for a specific bottle spec
-  const loadVariantsForSpec = async (specId) => {
-    if (!specId || specVariantsCache[specId]) return;
+  // Memoized Plain Bottle Options (Company Plain Bottles first, then remaining Master Bottles)
+  const plainBottleOptions = useMemo(() => {
+    const companyPlainNames = new Set();
+    (companyBottleSpecs || []).forEach((spec) => {
+      const raw = (spec.bottleName || spec.name || '').trim();
+      if (!raw) return;
+      const matchedBpb = (bottlePerBoxes || []).find((b) => {
+        const pName = (b.plainBottleName || b.bottleName || '').trim();
+        if (pName.toLowerCase() === raw.toLowerCase()) return true;
+        if (Array.isArray(b.bottleNames) && b.bottleNames.some((n) => n.toLowerCase() === raw.toLowerCase())) {
+          return true;
+        }
+        return false;
+      });
+      if (matchedBpb) {
+        companyPlainNames.add(matchedBpb.plainBottleName || matchedBpb.bottleName);
+      } else {
+        companyPlainNames.add(raw);
+      }
+    });
+
+    const companyList = Array.from(companyPlainNames).sort();
+    const masterList = (bottlePerBoxes || [])
+      .map((b) => (b.plainBottleName || b.bottleName || '').trim())
+      .filter(Boolean)
+      .filter((name) => !companyPlainNames.has(name))
+      .sort();
+
+    return [
+      ...companyList.map((name) => ({
+        value: name,
+        label: name,
+        sublabel: companyBottleSpecs.length > 0 ? 'Company Bottle' : '',
+      })),
+      ...masterList.map((name) => ({
+        value: name,
+        label: name,
+        sublabel: 'Master Bottle',
+      })),
+    ];
+  }, [companyBottleSpecs, bottlePerBoxes]);
+
+  // Helper to fetch variants for a plain bottle
+  const loadVariantsForBottle = async (bottleName) => {
+    if (!bottleName || specVariantsCache[bottleName]) return;
     try {
       const res = await API.get('/variant', {
-        params: { bottleSpecId: specId, pagination: 'false' },
+        params: {
+          plainBottleName: bottleName,
+          companyId: companyId || undefined,
+          pagination: 'false',
+        },
       });
       const vars = res.data?.data || [];
-      setSpecVariantsCache((prev) => ({ ...prev, [specId]: vars }));
+      setSpecVariantsCache((prev) => ({ ...prev, [bottleName]: vars }));
     } catch (err) {
-      console.error('Failed to load variants for spec:', err);
+      console.error('Failed to load variants for bottle:', err);
     }
   };
 
   // Helper to find unit (bottlePerBox) for a bottleName
   const findUnitPerBox = (bottleName) => {
-    if (!bottleName) return '';
+    if (!bottleName || !bottlePerBoxes || !bottlePerBoxes.length) return '';
     const cleanName = bottleName.trim().toLowerCase().replace(/\s+/g, ' ');
 
-    // 1. Exact match
-    const exact = bottlePerBoxes.find(
-      (b) => b.bottleName && b.bottleName.trim().toLowerCase().replace(/\s+/g, ' ') === cleanName
-    );
+    // 1. Exact match on plainBottleName or bottleName
+    const exact = bottlePerBoxes.find((b) => {
+      const p = (b.plainBottleName || '').trim().toLowerCase().replace(/\s+/g, ' ');
+      const n = (b.bottleName || '').trim().toLowerCase().replace(/\s+/g, ' ');
+      return p === cleanName || n === cleanName;
+    });
     if (exact && exact.bottlePerBox) return exact.bottlePerBox;
 
-    // 2. Partial / startsWith match
-    const partial = bottlePerBoxes.find(
-      (b) => b.bottleName && (cleanName.includes(b.bottleName.trim().toLowerCase()) || b.bottleName.trim().toLowerCase().includes(cleanName))
-    );
+    // 2. Match in bottleNames alias array
+    const inArray = bottlePerBoxes.find((b) => {
+      if (Array.isArray(b.bottleNames)) {
+        return b.bottleNames.some(
+          (alias) => alias.trim().toLowerCase().replace(/\s+/g, ' ') === cleanName
+        );
+      }
+      return false;
+    });
+    if (inArray && inArray.bottlePerBox) return inArray.bottlePerBox;
+
+    // 3. Partial match
+    const partial = bottlePerBoxes.find((b) => {
+      const p = (b.plainBottleName || b.bottleName || '').trim().toLowerCase();
+      return p && (cleanName.includes(p) || p.includes(cleanName));
+    });
     if (partial && partial.bottlePerBox) return partial.bottlePerBox;
 
     return '';
@@ -213,7 +273,7 @@ export default function EditShayonaChallan() {
         };
 
         const titleKey = (it.title || '').trim();
-        if (lastGroup && lastGroup.title === titleKey) {
+        if (lastGroup && (lastGroup.plainBottle === titleKey || lastGroup.title === titleKey)) {
           lastGroup.variantLines.push(vLine);
           if (it.variantId && !lastGroup.selectedVariantIds.includes(it.variantId)) {
             lastGroup.selectedVariantIds.push(it.variantId);
@@ -221,6 +281,7 @@ export default function EditShayonaChallan() {
         } else {
           lastGroup = {
             id: 'grp_' + Math.random().toString(36).substr(2, 9),
+            plainBottle: titleKey,
             bottleSpecId: it.bottleSpecId || '',
             title: titleKey,
             selectedVariantIds: it.variantId ? [it.variantId] : [],
@@ -230,12 +291,21 @@ export default function EditShayonaChallan() {
         }
       });
 
+      // Pre-load variants for existing plain bottles in challan
+      loadedGroups.forEach((g) => {
+        const bName = g.plainBottle || g.title;
+        if (bName) {
+          loadVariantsForBottle(bName);
+        }
+      });
+
       setSpecGroups(
         loadedGroups.length > 0
           ? loadedGroups
           : [
               {
                 id: 'grp_1',
+                plainBottle: '',
                 bottleSpecId: '',
                 title: '',
                 selectedVariantIds: [],
@@ -278,6 +348,10 @@ export default function EditShayonaChallan() {
             setSpecGroups((prevGroups) => {
               const updatedGroups = [...prevGroups];
               updatedGroups.forEach((grp) => {
+                const bName = grp.plainBottle || grp.title;
+                if (bName) {
+                  loadVariantsForBottle(bName);
+                }
                 const matchedSpec = specs.find(
                   (s) =>
                     s._id === grp.bottleSpecId ||
@@ -286,7 +360,6 @@ export default function EditShayonaChallan() {
                 );
                 if (matchedSpec) {
                   grp.bottleSpecId = matchedSpec._id;
-                  loadVariantsForSpec(matchedSpec._id);
                 }
               });
               return updatedGroups;
@@ -413,18 +486,23 @@ export default function EditShayonaChallan() {
     return { total: 0, box: item.box || '', boxCount: 0 };
   };
 
-  // When a bottle spec is selected for a spec group
-  const handleSpecSelect = async (gIdx, specId) => {
+  // When a Plain Bottle is selected for a group
+  const handleBottleSelect = async (gIdx, selectedBottleName) => {
     const updated = [...specGroups];
-    const spec = companyBottleSpecs.find((s) => s._id === specId);
+    const cleanName = (selectedBottleName || '').trim();
 
-    if (spec) {
-      const titleName = (spec.bottleName || spec.name || '').trim();
-      updated[gIdx].bottleSpecId = spec._id;
-      updated[gIdx].title = titleName;
+    if (cleanName) {
+      updated[gIdx].plainBottle = cleanName;
+      updated[gIdx].title = cleanName;
+
+      // Match an underlying spec ID if one exists for this bottle
+      const spec = companyBottleSpecs.find(
+        (s) => (s.bottleName || s.name || '').trim().toLowerCase() === cleanName.toLowerCase()
+      );
+      updated[gIdx].bottleSpecId = spec ? spec._id : '';
 
       // Auto-fetch Unit from BottlePerBox master
-      const autoUnit = findUnitPerBox(titleName);
+      const autoUnit = findUnitPerBox(cleanName);
       if (autoUnit) {
         updated[gIdx].variantLines = updated[gIdx].variantLines.map((vl) => {
           const newLine = { ...vl, unit: vl.unit || autoUnit };
@@ -433,9 +511,11 @@ export default function EditShayonaChallan() {
         });
       }
 
-      // Load variants for this spec
-      await loadVariantsForSpec(spec._id);
+      // Load variants for this plain bottle
+      await loadVariantsForBottle(cleanName);
     } else {
+      updated[gIdx].plainBottle = '';
+      updated[gIdx].title = '';
       updated[gIdx].bottleSpecId = '';
     }
 
@@ -446,9 +526,9 @@ export default function EditShayonaChallan() {
   const handleVariantMultiSelect = (gIdx, newVariantIds) => {
     const updated = [...specGroups];
     const group = updated[gIdx];
-    const specId = group.bottleSpecId;
-    const variantsForSpec = specVariantsCache[specId] || [];
-    const autoUnit = findUnitPerBox(group.title) || '';
+    const bottleKey = group.plainBottle || group.title || group.bottleSpecId;
+    const variantsForSpec = specVariantsCache[bottleKey] || [];
+    const autoUnit = findUnitPerBox(group.plainBottle || group.title) || '';
 
     group.selectedVariantIds = newVariantIds;
 
@@ -1111,7 +1191,7 @@ export default function EditShayonaChallan() {
                 <h5 className="mb-0 fw-bold">3. Challan Items</h5>
               </div>
               <small className="text-muted">
-                Search Bottle Spec & multi-select Variants. Each variant has its own Box Details and Unit.
+                Search Plain Bottle & multi-select Variants. Each variant has its own Box Details and Unit.
               </small>
             </div>
             <button
@@ -1119,7 +1199,7 @@ export default function EditShayonaChallan() {
               className="btn btn-sm btn-accent"
               onClick={addSpecGroup}
             >
-              <i className="bi bi-plus-circle me-1" /> Add Bottle Spec
+              <i className="bi bi-plus-circle me-1" /> Add Plain Bottle
             </button>
           </div>
 
@@ -1129,7 +1209,7 @@ export default function EditShayonaChallan() {
                 <thead className="table-light text-center small text-uppercase">
                   <tr>
                     <th style={{ width: 45 }}>#</th>
-                    <th style={{ width: 220 }}>Bottle Spec</th>
+                    <th style={{ width: 220 }}>Plain Bottle</th>
                     <th style={{ width: 230 }}>Select Variant(s)</th>
                     <th style={{ width: 135 }}>Material Code</th>
                     <th style={{ minWidth: 260 }}>Description (Coating-Variant-Color)</th>
@@ -1141,8 +1221,9 @@ export default function EditShayonaChallan() {
                 </thead>
                 <tbody>
                   {specGroups.map((group, gIdx) => {
-                    const variantsForThisSpec = group.bottleSpecId
-                      ? specVariantsCache[group.bottleSpecId] || []
+                    const bottleKey = group.plainBottle || group.title || group.bottleSpecId;
+                    const variantsForThisSpec = bottleKey
+                      ? specVariantsCache[bottleKey] || []
                       : [];
 
                     const variantOptions = variantsForThisSpec.map((v) => {
@@ -1162,11 +1243,6 @@ export default function EditShayonaChallan() {
                       };
                     });
 
-                    const specOptions = companyBottleSpecs.map((s) => ({
-                      value: s._id,
-                      label: s.bottleName || s.name || 'Unnamed Spec',
-                    }));
-
                     const numLines = group.variantLines.length;
 
                     return group.variantLines.map((line, lIdx) => (
@@ -1182,19 +1258,19 @@ export default function EditShayonaChallan() {
                           </td>
                         )}
 
-                        {/* Bottle Spec Selection (Spanning all variant lines) */}
+                        {/* Plain Bottle Selection (Spanning all variant lines) */}
                         {lIdx === 0 && (
                           <td
                             rowSpan={numLines}
                             className="align-top"
                             style={{ background: '#fdfdfe' }}
                           >
-                            {companyBottleSpecs.length > 0 ? (
+                            {plainBottleOptions.length > 0 ? (
                               <SearchableSelect
-                                options={specOptions}
-                                value={group.bottleSpecId}
-                                onChange={(val) => handleSpecSelect(gIdx, val)}
-                                placeholder="-- Search Spec --"
+                                options={plainBottleOptions}
+                                value={group.plainBottle || group.title}
+                                onChange={(val) => handleBottleSelect(gIdx, val)}
+                                placeholder="-- Select Plain Bottle --"
                                 style={{
                                   borderRadius: 8,
                                   minHeight: 38,
@@ -1207,10 +1283,11 @@ export default function EditShayonaChallan() {
                               <input
                                 type="text"
                                 className="form-control fw-bold text-uppercase"
-                                placeholder={companyId ? 'Type Bottle Spec' : 'Select Company first'}
-                                value={group.title}
+                                placeholder={companyId ? 'Type Plain Bottle' : 'Select Company first'}
+                                value={group.plainBottle || group.title}
                                 onChange={(e) => {
                                   const updated = [...specGroups];
+                                  updated[gIdx].plainBottle = e.target.value;
                                   updated[gIdx].title = e.target.value;
                                   setSpecGroups(updated);
                                 }}
@@ -1236,9 +1313,9 @@ export default function EditShayonaChallan() {
                                 className="btn btn-xs btn-outline-danger mt-2 w-100 py-1"
                                 style={{ fontSize: 11, borderRadius: 6 }}
                                 onClick={() => removeSpecGroup(gIdx)}
-                                title="Delete this entire Bottle Spec block"
+                                title="Delete this entire Plain Bottle block"
                               >
-                                <i className="bi bi-trash me-1" /> Remove Spec
+                                <i className="bi bi-trash me-1" /> Remove Bottle
                               </button>
                             )}
                           </td>
@@ -1251,7 +1328,7 @@ export default function EditShayonaChallan() {
                             className="align-top"
                             style={{ background: '#fdfdfe' }}
                           >
-                            {group.bottleSpecId ? (
+                            {bottleKey ? (
                               <SearchableMultiSelect
                                 options={variantOptions}
                                 selectedValues={group.selectedVariantIds}
@@ -1266,7 +1343,7 @@ export default function EditShayonaChallan() {
                               />
                             ) : (
                               <div className="text-muted small fst-italic text-center py-2">
-                                Search Bottle Spec first
+                                Select Plain Bottle first
                               </div>
                             )}
                           </td>

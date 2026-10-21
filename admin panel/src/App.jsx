@@ -137,6 +137,10 @@ import EditDispatch from './pages/Dispatch/EditDispatch';
 import ViewDispatch from './pages/Dispatch/ViewDispatch';
 import SummaryCompanies from './pages/Summary/SummaryCompanies';
 import CompanySummary from './pages/Summary/CompanySummary';
+import ReadyToDispatchList from './pages/ReadyToDispatch/ReadyToDispatchList';
+import AddReadyToDispatch from './pages/ReadyToDispatch/AddReadyToDispatch';
+import EditReadyToDispatch from './pages/ReadyToDispatch/EditReadyToDispatch';
+import ViewReadyToDispatch from './pages/ReadyToDispatch/ViewReadyToDispatch';
 import './App.css';
 
 export default function App() {
@@ -256,6 +260,11 @@ export default function App() {
               <Route path="/dispatch/edit/:id" element={<EditDispatch />} />
               <Route path="/dispatch/view/:id" element={<ViewDispatch />} />
 
+              <Route path="/ready-to-dispatch" element={<ReadyToDispatchList />} />
+              <Route path="/ready-to-dispatch/add" element={<AddReadyToDispatch />} />
+              <Route path="/ready-to-dispatch/edit/:id" element={<EditReadyToDispatch />} />
+              <Route path="/ready-to-dispatch/view/:id" element={<ViewReadyToDispatch />} />
+
               <Route path="/delivery-challan/shayoona" element={<ShayonaChallanList />} />
               <Route path="/delivery-challan/shayoona/add" element={<AddShayonaChallan />} />
               <Route path="/delivery-challan/shayoona/edit/:id" element={<EditShayonaChallan />} />
@@ -271,9 +280,9 @@ export default function App() {
               <Route path="/delivery-challan/sherno/edit/:id" element={<EditShernoChallan />} />
               <Route path="/delivery-challan/sherno/view/:id" element={<ViewShernoChallan />} />
 
-              <Route path="/gst" element={<GstList />} />
+              {/* <Route path="/gst" element={<GstList />} />
               <Route path="/gst/add" element={<AddGst />} />
-              <Route path="/gst/edit/:id" element={<EditGst />} />
+              <Route path="/gst/edit/:id" element={<EditGst />} /> */}
 
               <Route path="/summary" element={<SummaryCompanies />} />
               <Route path="/summary/company/:companyId" element={<CompanySummary />} />

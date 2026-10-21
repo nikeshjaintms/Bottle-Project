@@ -72,6 +72,7 @@ const navItems = [
       { to: '/lacquer-plan', icon: 'bi-calendar-check-fill', label: 'Lacquer Plan', action: 'sidebar', subject: 'lacquerplan' },
       { to: '/printing-plan', icon: 'bi-printer-fill', label: 'Printing Plan', action: 'sidebar', subject: 'printingplan' },
       { to: '/dispatch', icon: 'bi-truck', label: 'Dispatch', action: 'sidebar', subject: 'dispatch' },
+      { to: '/ready-to-dispatch', icon: 'bi-box-seam', label: 'Ready to Dispatch', action: 'sidebar', subject: 'ready-to-dispatch' },
       {
         icon: 'bi-receipt-cutoff',
         label: 'Delivery Challan',

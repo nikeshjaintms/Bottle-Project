@@ -84,7 +84,7 @@ exports.createVariant = async (req, res) => {
 // ✅ GET ALL
 exports.getVariants = async (req, res) => {
   try {
-    let { page, limit, search, pagination } = req.query;
+    let { page, limit, search, pagination, bottleSpecId, bottleName, plainBottleName, companyId } = req.query;
 
     let parsedPage = 1;
     if (page && page !== '') {
@@ -98,6 +98,68 @@ exports.getVariants = async (req, res) => {
     const skip = (parsedPage - 1) * parsedLimit;
 
     let query = { isDeleted: { $ne: true } };
+
+    // 1. Direct bottleSpecId filter
+    if (bottleSpecId) {
+      if (Array.isArray(bottleSpecId)) {
+        query.bottleSpecId = { $in: bottleSpecId };
+      } else if (typeof bottleSpecId === 'string' && bottleSpecId.includes(',')) {
+        query.bottleSpecId = { $in: bottleSpecId.split(',').map((s) => s.trim()) };
+      } else {
+        query.bottleSpecId = bottleSpecId;
+      }
+    }
+
+    // 2. Plain Bottle / Bottle Name filter (with optional companyId scoping)
+    const targetBottle = (plainBottleName || bottleName || '').trim();
+    if (targetBottle) {
+      const escapeRegExp = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const BottlePerBox = require("../models/BottlePerBox");
+      const bpb = await BottlePerBox.findOne({
+        $or: [
+          { plainBottleName: new RegExp(`^${escapeRegExp(targetBottle)}$`, 'i') },
+          { bottleName: new RegExp(`^${escapeRegExp(targetBottle)}$`, 'i') },
+          { bottleNames: new RegExp(`^${escapeRegExp(targetBottle)}$`, 'i') }
+        ],
+        isDeleted: { $ne: true }
+      }).lean();
+
+      const nameAliases = new Set([targetBottle]);
+      if (bpb) {
+        if (bpb.plainBottleName) nameAliases.add(bpb.plainBottleName);
+        if (bpb.bottleName) nameAliases.add(bpb.bottleName);
+        if (Array.isArray(bpb.bottleNames)) bpb.bottleNames.forEach((n) => nameAliases.add(n));
+      }
+
+      const regexList = Array.from(nameAliases).map((n) => new RegExp(`^${escapeRegExp(n)}$`, 'i'));
+
+      const specQuery = {
+        bottleName: { $in: regexList },
+        isDeleted: { $ne: true }
+      };
+
+      if (companyId) {
+        const matchingBrands = await Brand.find({ companyId, isDeleted: { $ne: true } }).select('_id').lean();
+        const brandIds = matchingBrands.map((b) => b._id);
+        specQuery.brandId = { $in: brandIds };
+      }
+
+      let matchingSpecs = await BottleSpec.find(specQuery).select('_id').lean();
+
+      // Fallback: If no specs found under the specific company brand, find across all brands
+      if (matchingSpecs.length === 0 && companyId) {
+        matchingSpecs = await BottleSpec.find({ bottleName: { $in: regexList }, isDeleted: { $ne: true } }).select('_id').lean();
+      }
+
+      const specIds = matchingSpecs.map((s) => s._id);
+      query.bottleSpecId = { $in: specIds };
+    } else if (companyId && !bottleSpecId) {
+      // 3. CompanyId filter alone
+      const matchingBrands = await Brand.find({ companyId, isDeleted: { $ne: true } }).select('_id').lean();
+      const brandIds = matchingBrands.map((b) => b._id);
+      const matchingSpecs = await BottleSpec.find({ brandId: { $in: brandIds }, isDeleted: { $ne: true } }).select('_id').lean();
+      query.bottleSpecId = { $in: matchingSpecs.map((s) => s._id) };
+    }
 
     if (search && search.trim() !== "") {
       const searchWord = search.trim();

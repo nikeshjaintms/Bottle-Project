@@ -111,7 +111,10 @@ export default function ShernoChallanList() {
               className="search-input"
               placeholder="Search by Gate Pass No, P.O. No, Vehicle..."
               value={search}
-              onChange={(e) => dispatch(setSearchTerm(e.target.value))}
+              onChange={(e) => {
+                dispatch(setSearchTerm(e.target.value));
+                setSearchParams({ page: '1' });
+              }}
             />
           </div>
 
@@ -121,7 +124,10 @@ export default function ShernoChallanList() {
               className="form-select form-select-sm"
               style={{ width: 'auto' }}
               value={itemsPerPage}
-              onChange={(e) => setItemsPerPage(Number(e.target.value))}
+              onChange={(e) => {
+                setItemsPerPage(Number(e.target.value));
+                setSearchParams({ page: '1' });
+              }}
             >
               <option value={10}>10</option>
               <option value={25}>25</option>
@@ -255,32 +261,64 @@ export default function ShernoChallanList() {
           </div>
         </div>
 
-        {/* Pagination */}
-        {totalPages > 1 && (
-          <div className="dash-card-footer d-flex align-items-center justify-content-between p-3 border-top">
-            <span className="small text-muted">
-              Showing page {currentPage} of {totalPages} ({total} items total)
-            </span>
-            <div className="d-flex gap-1">
-              <button
-                type="button"
-                className="btn btn-sm btn-outline-secondary"
-                disabled={currentPage <= 1}
-                onClick={() => setSearchParams({ page: String(currentPage - 1) })}
-              >
-                Previous
-              </button>
-              <button
-                type="button"
-                className="btn btn-sm btn-outline-secondary"
-                disabled={currentPage >= totalPages}
-                onClick={() => setSearchParams({ page: String(currentPage + 1) })}
-              >
-                Next
-              </button>
-            </div>
+        {/* Footer / Pagination */}
+        <div className="dash-card-footer d-flex align-items-center justify-content-between p-3 border-top bg-white companies-dash-footer">
+          <div className="text-muted small fw-500">
+            Showing <b>{total === 0 ? 0 : (currentPage - 1) * itemsPerPage + 1}</b> to{' '}
+            <b>{Math.min(currentPage * itemsPerPage, total)}</b> of <b>{total}</b> entries
           </div>
-        )}
+
+          <div className="d-flex align-items-center gap-2 flex-wrap justify-content-center">
+            <button
+              className="btn btn-sm btn-light"
+              disabled={currentPage <= 1}
+              onClick={() => {
+                if (currentPage > 1) setSearchParams({ page: String(currentPage - 1) });
+              }}
+            >
+              Previous
+            </button>
+
+            {(() => {
+              const pages = [];
+              const delta = 2;
+              const left = currentPage - delta;
+              const right = currentPage + delta;
+              pages.push(1);
+              if (left > 2) pages.push('...');
+              for (let i = Math.max(2, left); i <= Math.min(totalPages - 1, right); i++) {
+                pages.push(i);
+              }
+              if (right < totalPages - 1) pages.push('...');
+              if (totalPages > 1) pages.push(totalPages);
+              return pages.map((p, idx) =>
+                p === '...' ? (
+                  <span key={`e-${idx}`} className="px-1 text-muted" style={{ fontSize: 13 }}>
+                    …
+                  </span>
+                ) : (
+                  <button
+                    key={p}
+                    className={`btn btn-sm ${currentPage === p ? 'btn-primary' : 'btn-light'}`}
+                    onClick={() => setSearchParams({ page: String(p) })}
+                  >
+                    {p}
+                  </button>
+                )
+              );
+            })()}
+
+            <button
+              className="btn btn-sm btn-light"
+              disabled={currentPage >= totalPages || totalPages === 0}
+              onClick={() => {
+                if (currentPage < totalPages) setSearchParams({ page: String(currentPage + 1) });
+              }}
+            >
+              Next
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );

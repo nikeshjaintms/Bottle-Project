@@ -277,39 +277,62 @@ export default function McnoreChallanList() {
         </div>
 
         {/* Footer / Pagination */}
-        <div className="dash-card-footer d-flex align-items-center justify-content-between p-3 border-top bg-white flex-wrap gap-2">
-          <div className="text-muted small">
-            Showing {challans.length > 0 ? (currentPage - 1) * itemsPerPage + 1 : 0} to{' '}
-            {Math.min(currentPage * itemsPerPage, total)} of {total} entries
+        <div className="dash-card-footer d-flex align-items-center justify-content-between p-3 border-top bg-white companies-dash-footer">
+          <div className="text-muted small fw-500">
+            Showing <b>{total === 0 ? 0 : (currentPage - 1) * itemsPerPage + 1}</b> to{' '}
+            <b>{Math.min(currentPage * itemsPerPage, total)}</b> of <b>{total}</b> entries
           </div>
 
-          {totalPages > 1 && (
-            <div className="d-flex align-items-center gap-1">
-              <button
-                className="btn btn-sm btn-light border"
-                disabled={currentPage <= 1}
-                onClick={() => setSearchParams({ page: currentPage - 1 })}
-              >
-                Previous
-              </button>
-              {[...Array(totalPages)].map((_, i) => (
-                <button
-                  key={i}
-                  className={`btn btn-sm ${currentPage === i + 1 ? 'btn-primary' : 'btn-light border'}`}
-                  onClick={() => setSearchParams({ page: i + 1 })}
-                >
-                  {i + 1}
-                </button>
-              ))}
-              <button
-                className="btn btn-sm btn-light border"
-                disabled={currentPage >= totalPages}
-                onClick={() => setSearchParams({ page: currentPage + 1 })}
-              >
-                Next
-              </button>
-            </div>
-          )}
+          <div className="d-flex align-items-center gap-2 flex-wrap justify-content-center">
+            <button
+              className="btn btn-sm btn-light"
+              disabled={currentPage <= 1}
+              onClick={() => {
+                if (currentPage > 1) setSearchParams({ page: currentPage - 1 });
+              }}
+            >
+              Previous
+            </button>
+
+            {(() => {
+              const pages = [];
+              const delta = 2;
+              const left = currentPage - delta;
+              const right = currentPage + delta;
+              pages.push(1);
+              if (left > 2) pages.push('...');
+              for (let i = Math.max(2, left); i <= Math.min(totalPages - 1, right); i++) {
+                pages.push(i);
+              }
+              if (right < totalPages - 1) pages.push('...');
+              if (totalPages > 1) pages.push(totalPages);
+              return pages.map((p, idx) =>
+                p === '...' ? (
+                  <span key={`e-${idx}`} className="px-1 text-muted" style={{ fontSize: 13 }}>
+                    …
+                  </span>
+                ) : (
+                  <button
+                    key={p}
+                    className={`btn btn-sm ${currentPage === p ? 'btn-primary' : 'btn-light'}`}
+                    onClick={() => setSearchParams({ page: p })}
+                  >
+                    {p}
+                  </button>
+                )
+              );
+            })()}
+
+            <button
+              className="btn btn-sm btn-light"
+              disabled={currentPage >= totalPages || totalPages === 0}
+              onClick={() => {
+                if (currentPage < totalPages) setSearchParams({ page: currentPage + 1 });
+              }}
+            >
+              Next
+            </button>
+          </div>
         </div>
       </div>
     </div>

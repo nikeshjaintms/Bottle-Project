@@ -21,6 +21,9 @@ export const defineAbilitiesFor = (user) => {
           can(action, "delivery-challan-sherno");
           can(action, "delivery-challan-shayoona");
         }
+        if (subject === "dispatch") {
+          can(action, "ready-to-dispatch");
+        }
       }
     });
   }

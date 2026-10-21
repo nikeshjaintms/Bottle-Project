@@ -21,6 +21,7 @@ export default function SearchableSelect({
   isInvalid = false,
   style = {},
   displayValue = '',
+  onAddOption = null,
 }) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
@@ -50,7 +51,7 @@ export default function SearchableSelect({
   const selectedLabel = selectedOption?.label || displayValue || '';
 
   const filtered = options.filter((o) =>
-    o.label.toLowerCase().includes(search.toLowerCase())
+    (o?.label != null ? String(o.label) : '').toLowerCase().includes(search.toLowerCase())
   );
 
   const handleSelect = (val) => {
