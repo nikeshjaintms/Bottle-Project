@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect, Fragment } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { Can } from '../../context/AbilityContext';
 import { useDispatch, useSelector } from 'react-redux';
@@ -60,7 +60,7 @@ export default function CompanyAddresses() {
       const nextExpanded = {};
       companyGroups.forEach((group) => {
         // Expand if it has addresses or if user is searching
-        nextExpanded[group._id] = group.addressCount > 0 || Boolean(search);
+        nextExpanded[group._id] = ((group.addressCount || 0) > 0 || (group.addresses && group.addresses.length > 0)) || Boolean(search);
       });
       setExpandedCompanies(nextExpanded);
     }
@@ -125,7 +125,7 @@ export default function CompanyAddresses() {
     label: c.name,
   }));
 
-  const totalAddressCount = companyGroups.reduce((acc, c) => acc + (c.addressCount || 0), 0);
+  const totalAddressCount = companyGroups.reduce((acc, c) => acc + (c.addressCount || (c.addresses ? c.addresses.length : 0) || 0), 0);
 
   return (
     <div className="page-content">
@@ -295,7 +295,7 @@ export default function CompanyAddresses() {
 
                 {isExpanded && (
                   <div className="card-body bg-light p-3 border-top">
-                    {group.addresses.length === 0 ? (
+                    {(group.addresses || []).length === 0 ? (
                       <div className="text-center py-3 text-muted small">
                         No addresses recorded yet.{' '}
                         <Link to={`/company-addresses/add?companyId=${group._id}`} className="fw-bold">
@@ -303,7 +303,7 @@ export default function CompanyAddresses() {
                         </Link>
                       </div>
                     ) : (
-                      group.addresses.map((addr) => (
+                      (group.addresses || []).map((addr) => (
                         <div key={addr._id} className="bg-white rounded-3 p-3 mb-2 border shadow-none">
                           <div className="d-flex justify-content-between align-items-start mb-2">
                             <span
@@ -396,10 +396,10 @@ export default function CompanyAddresses() {
             <tbody>
               {companyGroups.map((group, index) => {
                 const isExpanded = Boolean(expandedCompanies[group._id]);
-                const hasAddresses = group.addressCount > 0;
+                const hasAddresses = ((group.addressCount || 0) > 0 || (group.addresses && group.addresses.length > 0));
 
                 return (
-                  <React.Fragment key={group._id}>
+                  <Fragment key={group._id}>
                     {/* Primary Company Header Row */}
                     <tr
                       className={`border-bottom transition-all ${
@@ -506,7 +506,7 @@ export default function CompanyAddresses() {
                               <div className="d-flex align-items-center gap-2">
                                 <i className="bi bi-diagram-3-fill text-primary" />
                                 <span className="fw-bold small text-uppercase text-secondary">
-                                  All Addresses for "{group.name}" ({group.addressCount})
+                                  All Addresses for "{group.name}" ({group.addressCount ?? (group.addresses || []).length})
                                 </span>
                               </div>
                               <Can I="create" a="company-address">
@@ -520,7 +520,7 @@ export default function CompanyAddresses() {
                               </Can>
                             </div>
 
-                            {group.addresses.length === 0 ? (
+                            {(group.addresses || []).length === 0 ? (
                               <div className="text-center py-4 bg-white rounded-3 border">
                                 <i className="bi bi-geo-alt text-muted fs-4 d-block mb-1" />
                                 <span className="text-muted small">No address recorded yet for this company.</span>
@@ -566,7 +566,7 @@ export default function CompanyAddresses() {
                                     </tr>
                                   </thead>
                                   <tbody>
-                                    {group.addresses.map((addr, addrIdx) => (
+                                    {(group.addresses || []).map((addr, addrIdx) => (
                                       <tr key={addr._id} className="border-bottom hover-bg-light">
                                         {/* Sub-table Sr No */}
                                         <td className="ps-3 py-2 text-muted small fw-semibold">
@@ -695,7 +695,7 @@ export default function CompanyAddresses() {
                         </td>
                       </tr>
                     )}
-                  </React.Fragment>
+                  </Fragment>
                 );
               })}
 

@@ -26,6 +26,7 @@ export default function EditShayonaChallan() {
   const [challanDate, setChallanDate] = useState('');
   const [challanTime, setChallanTime] = useState('');
   const [buyersOrderNo, setBuyersOrderNo] = useState('');
+  const [poDate, setPoDate] = useState('');
   const [dispatchThrough, setDispatchThrough] = useState('');
   const [lrNo, setLrNo] = useState('');
   const [vehicleNo, setVehicleNo] = useState('');
@@ -162,6 +163,11 @@ export default function EditShayonaChallan() {
       );
       setChallanTime(currentChallan.challanTime || '');
       setBuyersOrderNo(currentChallan.buyersOrderNo || '');
+      setPoDate(
+        currentChallan.poDate
+          ? new Date(currentChallan.poDate).toISOString().split('T')[0]
+          : ''
+      );
       setDispatchThrough(currentChallan.dispatchThrough || '');
       setLrNo(currentChallan.lrNo || '');
       setVehicleNo(currentChallan.vehicleNo || '');
@@ -194,6 +200,7 @@ export default function EditShayonaChallan() {
         const vLine = {
           id: 'line_' + Math.random().toString(36).substr(2, 9),
           variantId: it.variantId || '',
+          materialCode: it.materialCode || '',
           description: it.description || '',
           box: it.box || '',
           fullBox: fBox,
@@ -476,6 +483,7 @@ export default function EditShayonaChallan() {
         newLines.push({
           id: 'line_' + Math.random().toString(36).substr(2, 9),
           variantId: vId,
+          materialCode: existingByVar[vId]?.materialCode || '',
           description: formattedDesc,
           box: '',
           fullBox: '',
@@ -495,6 +503,7 @@ export default function EditShayonaChallan() {
       newLines.push({
         id: 'line_' + Math.random().toString(36).substr(2, 9),
         variantId: '',
+        materialCode: '',
         description: '',
         box: '',
         fullBox: '',
@@ -539,6 +548,7 @@ export default function EditShayonaChallan() {
     group.variantLines.push({
       id: 'line_' + Math.random().toString(36).substr(2, 9),
       variantId: '',
+      materialCode: '',
       description: '',
       box: '',
       fullBox: '',
@@ -562,6 +572,7 @@ export default function EditShayonaChallan() {
       group.variantLines[0] = {
         id: 'line_' + Math.random().toString(36).substr(2, 9),
         variantId: '',
+        materialCode: '',
         description: '',
         box: '',
         fullBox: '',
@@ -587,6 +598,7 @@ export default function EditShayonaChallan() {
       group.variantLines.push({
         id: 'line_' + Math.random().toString(36).substr(2, 9),
         variantId: '',
+        materialCode: '',
         description: '',
         box: '',
         fullBox: '',
@@ -615,6 +627,7 @@ export default function EditShayonaChallan() {
           {
             id: 'line_' + Math.random().toString(36).substr(2, 9),
             variantId: '',
+            materialCode: '',
             description: '',
             box: '',
             fullBox: '',
@@ -662,6 +675,7 @@ export default function EditShayonaChallan() {
             bottleSpecId: g.bottleSpecId || undefined,
             variantId: vl.variantId || undefined,
             title: g.title,
+            materialCode: vl.materialCode ? vl.materialCode.trim() : '',
             description: vl.description,
             box: vl.box || (vl.fullBox ? String(vl.fullBox) : '0'),
             boxCount: Number(vl.boxCount) || 0,
@@ -682,6 +696,8 @@ export default function EditShayonaChallan() {
       challanDate,
       challanTime,
       buyersOrderNo,
+      poNo: buyersOrderNo,
+      poDate: poDate || undefined,
       dispatchThrough,
       lrNo,
       vehicleNo,
@@ -812,12 +828,24 @@ export default function EditShayonaChallan() {
               </div>
 
               <div className="col-md-3 col-sm-6">
-                <label className="form-label fw-600 small text-uppercase text-muted">Buyer's Order No</label>
+                <label className="form-label fw-600 small text-uppercase text-muted">Buyer's Order / P.O. No</label>
                 <input
                   type="text"
                   className="form-control custom-input-field"
                   value={buyersOrderNo}
                   onChange={(e) => setBuyersOrderNo(e.target.value)}
+                  placeholder="e.g. 7300302293"
+                  style={{ borderRadius: 12 }}
+                />
+              </div>
+
+              <div className="col-md-3 col-sm-6">
+                <label className="form-label fw-600 small text-uppercase text-muted">P.O. Date</label>
+                <input
+                  type="date"
+                  className="form-control custom-input-field"
+                  value={poDate}
+                  onChange={(e) => setPoDate(e.target.value)}
                   style={{ borderRadius: 12 }}
                 />
               </div>
@@ -1101,13 +1129,14 @@ export default function EditShayonaChallan() {
                 <thead className="table-light text-center small text-uppercase">
                   <tr>
                     <th style={{ width: 45 }}>#</th>
-                    <th style={{ width: 230 }}>Bottle Spec</th>
-                    <th style={{ width: 250 }}>Select Variant(s)</th>
-                    <th style={{ minWidth: 280 }}>Description (Coating-Variant-Color)</th>
-                    <th style={{ width: 200 }}>Box Details</th>
-                    <th style={{ width: 95 }}>Unit (Pcs/Box)</th>
-                    <th style={{ width: 115 }}>Total Qty</th>
-                    <th style={{ width: 65 }}>Action</th>
+                    <th style={{ width: 220 }}>Bottle Spec</th>
+                    <th style={{ width: 230 }}>Select Variant(s)</th>
+                    <th style={{ width: 135 }}>Material Code</th>
+                    <th style={{ minWidth: 260 }}>Description (Coating-Variant-Color)</th>
+                    <th style={{ width: 190 }}>Box Details</th>
+                    <th style={{ width: 90 }}>Unit</th>
+                    <th style={{ width: 110 }}>Total Qty</th>
+                    <th style={{ width: 55 }}>Action</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1243,6 +1272,21 @@ export default function EditShayonaChallan() {
                           </td>
                         )}
 
+                        {/* Material Code */}
+                        <td>
+                          <input
+                            type="text"
+                            className="form-control font-monospace fw-bold"
+                            placeholder="e.g. 82003708"
+                            value={line.materialCode || ''}
+                            onChange={(e) =>
+                              handleVariantLineChange(gIdx, lIdx, 'materialCode', e.target.value)
+                            }
+                            title="Material Code (e.g. 82003708 for Shreno)"
+                            style={{ height: 38, fontSize: 13, borderRadius: 8 }}
+                          />
+                        </td>
+
                         {/* Description (Coating shade-Variant name-Text color) */}
                         <td>
                           <input
@@ -1342,7 +1386,7 @@ export default function EditShayonaChallan() {
                 </tbody>
                 <tfoot className="table-light fw-bold">
                   <tr>
-                    <td colSpan={4} className="text-end pe-3 text-uppercase">
+                    <td colSpan={5} className="text-end pe-3 text-uppercase">
                       TOTAL
                     </td>
                     <td className="text-center font-monospace fs-6 text-primary">{totalBoxes}</td>

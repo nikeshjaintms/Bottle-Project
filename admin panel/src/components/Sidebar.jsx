@@ -80,9 +80,9 @@ const navItems = [
         action: 'sidebar',
         subject: 'delivery-challan',
         subLinks: [
-          { to: '/delivery-challan/mcnore', label: 'Mcnore', icon: 'bi-file-earmark-text', action: 'read', subject: 'delivery-challan-mcnore' },
-          { to: '/delivery-challan/sherno', label: 'Sherno', icon: 'bi-file-earmark-text', action: 'read', subject: 'delivery-challan-sherno' },
-          { to: '/delivery-challan/shayoona', label: 'Shayoona', icon: 'bi-file-earmark-text', action: 'read', subject: 'delivery-challan-shayoona' }
+          { to: '/delivery-challan/mcnore', label: 'Mcnore', icon: 'bi-file-earmark-text', action: 'read', subject: 'delivery-challan' },
+          { to: '/delivery-challan/sherno', label: 'Sherno', icon: 'bi-file-earmark-text', action: 'read', subject: 'delivery-challan' },
+          { to: '/delivery-challan/shayoona', label: 'Shayoona', icon: 'bi-file-earmark-text', action: 'read', subject: 'delivery-challan' }
         ]
       },
     ],

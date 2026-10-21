@@ -22,6 +22,14 @@ import ShayonaChallanList from './pages/DeliveryChallan/Shayona/ShayonaChallanLi
 import AddShayonaChallan from './pages/DeliveryChallan/Shayona/AddShayonaChallan';
 import EditShayonaChallan from './pages/DeliveryChallan/Shayona/EditShayonaChallan';
 import ViewShayonaChallan from './pages/DeliveryChallan/Shayona/ViewShayonaChallan';
+import McnoreChallanList from './pages/DeliveryChallan/Mcnore/McnoreChallanList';
+import AddMcnoreChallan from './pages/DeliveryChallan/Mcnore/AddMcnoreChallan';
+import EditMcnoreChallan from './pages/DeliveryChallan/Mcnore/EditMcnoreChallan';
+import ViewMcnoreChallan from './pages/DeliveryChallan/Mcnore/ViewMcnoreChallan';
+import ShernoChallanList from './pages/DeliveryChallan/Sherno/ShernoChallanList';
+import AddShernoChallan from './pages/DeliveryChallan/Sherno/AddShernoChallan';
+import EditShernoChallan from './pages/DeliveryChallan/Sherno/EditShernoChallan';
+import ViewShernoChallan from './pages/DeliveryChallan/Sherno/ViewShernoChallan';
 import Brands from './pages/Brands/Brands';
 import AddBrand from './pages/Brands/AddBrand';
 import EditBrand from './pages/Brands/EditBrand';
@@ -251,6 +259,16 @@ export default function App() {
               <Route path="/delivery-challan/shayoona/add" element={<AddShayonaChallan />} />
               <Route path="/delivery-challan/shayoona/edit/:id" element={<EditShayonaChallan />} />
               <Route path="/delivery-challan/shayoona/view/:id" element={<ViewShayonaChallan />} />
+
+              <Route path="/delivery-challan/mcnore" element={<McnoreChallanList />} />
+              <Route path="/delivery-challan/mcnore/add" element={<AddMcnoreChallan />} />
+              <Route path="/delivery-challan/mcnore/edit/:id" element={<EditMcnoreChallan />} />
+              <Route path="/delivery-challan/mcnore/view/:id" element={<ViewMcnoreChallan />} />
+
+              <Route path="/delivery-challan/sherno" element={<ShernoChallanList />} />
+              <Route path="/delivery-challan/sherno/add" element={<AddShernoChallan />} />
+              <Route path="/delivery-challan/sherno/edit/:id" element={<EditShernoChallan />} />
+              <Route path="/delivery-challan/sherno/view/:id" element={<ViewShernoChallan />} />
 
               <Route path="/gst" element={<GstList />} />
               <Route path="/gst/add" element={<AddGst />} />

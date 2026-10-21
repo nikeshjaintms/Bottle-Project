@@ -106,7 +106,7 @@ exports.createSpec = async (req, res) => {
 // GET
 exports.getSpecs = async (req, res) => {
   try {
-    let { page, limit, search, pagination = "true", type } = req.query;
+    let { page, limit, search, pagination = "true", type, companyId } = req.query;
 
     let parsedPage = 1;
     if (page && page !== '') {
@@ -120,6 +120,15 @@ exports.getSpecs = async (req, res) => {
     const skip = (parsedPage - 1) * parsedLimit;
 
     let query = { isDeleted: { $ne: true } };
+
+    if (companyId) {
+      const matchingBrands = await Brand.find({
+        companyId,
+        isDeleted: { $ne: true }
+      }).select('_id');
+      const brandIds = matchingBrands.map(b => b._id);
+      query.brandId = { $in: brandIds };
+    }
 
     if (type === 'coating') {
       // Coating specs: explicitly marked isCoating=true

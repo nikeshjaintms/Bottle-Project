@@ -34,6 +34,32 @@ const deliveryChallanItemSchema = new mongoose.Schema({
     default: "",
     trim: true,
   },
+  hsn: {
+    type: String,
+    default: "",
+    trim: true,
+  },
+  materialCode: {
+    type: String,
+    default: "",
+    trim: true,
+  },
+  rate: {
+    type: Number,
+    default: 0,
+  },
+  taxableValue: {
+    type: Number,
+    default: 0,
+  },
+  jobWorkRate: {
+    type: Number,
+    default: 0,
+  },
+  jobWorkTaxableValue: {
+    type: Number,
+    default: 0,
+  },
 });
 
 const addressSnapshotSchema = new mongoose.Schema(
@@ -60,6 +86,31 @@ const deliveryChallanSchema = new mongoose.Schema(
       default: "shayoona",
       index: true,
     },
+    poMode: {
+      type: String,
+      enum: ["without_po", "with_po"],
+      default: "without_po",
+    },
+    taxInvoiceNo: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+    taxInvoiceDate: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+    poNo: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+    poDate: {
+      type: String,
+      default: "",
+      trim: true,
+    },
     challanNo: {
       type: String,
       required: true,
@@ -82,6 +133,11 @@ const deliveryChallanSchema = new mongoose.Schema(
       trim: true,
     },
     dispatchThrough: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+    transporter: {
       type: String,
       default: "",
       trim: true,
@@ -132,6 +188,31 @@ const deliveryChallanSchema = new mongoose.Schema(
       default: 0,
     },
     totalQuantity: {
+      type: Number,
+      default: 0,
+    },
+    // Values and Tax totals
+    glassBottleValue: {
+      type: Number,
+      default: 0,
+    },
+    jobWorkChargesValue: {
+      type: Number,
+      default: 0,
+    },
+    sgst: {
+      type: Number,
+      default: 0,
+    },
+    cgst: {
+      type: Number,
+      default: 0,
+    },
+    igst: {
+      type: Number,
+      default: 0,
+    },
+    grandTotalValue: {
       type: Number,
       default: 0,
     },

@@ -6,6 +6,8 @@ const {
   getNextChallanNo,
   updateChallan,
   deleteChallan,
+  renderChallanHtml,
+  downloadChallanPdf,
 } = require("../controllers/deliveryChallan.controller");
 
 const { auth } = require("../middleware/auth.middleware");
@@ -18,6 +20,7 @@ const checkChallanAbility = (action) => {
     if (
       ability.can(action, "delivery-challan") ||
       ability.can(action, "delivery-challan-shayoona") ||
+      ability.can(action, "delivery-challan-mcnore") ||
       ability.can(action, "dispatch") ||
       ability.can("manage", "all")
     ) {
@@ -33,6 +36,8 @@ const checkChallanAbility = (action) => {
 router.get("/next-no", auth, checkChallanAbility("read"), getNextChallanNo);
 router.post("/", auth, checkChallanAbility("create"), createChallan);
 router.get("/", auth, checkChallanAbility("read"), getChallans);
+router.get("/:id/html", auth, checkChallanAbility("read"), renderChallanHtml);
+router.get("/:id/pdf", auth, checkChallanAbility("read"), downloadChallanPdf);
 router.get("/:id", auth, checkChallanAbility("read"), getChallanById);
 router.put("/:id", auth, checkChallanAbility("edit"), updateChallan);
 router.delete("/:id", auth, checkChallanAbility("delete"), deleteChallan);

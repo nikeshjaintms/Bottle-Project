@@ -142,8 +142,19 @@ const companyAddressSlice = createSlice({
       })
       .addCase(deleteCompanyAddress.fulfilled, (state, action) => {
         state.loading = false;
-        state.addresses = state.addresses.filter((a) => a._id !== action.payload.id);
-        state.total = Math.max(0, state.total - 1);
+        if (state.addresses.length > 0 && Array.isArray(state.addresses[0]?.addresses)) {
+          state.addresses = state.addresses.map((comp) => {
+            const nextAddresses = (comp.addresses || []).filter((a) => a._id !== action.payload.id);
+            return {
+              ...comp,
+              addresses: nextAddresses,
+              addressCount: nextAddresses.length,
+            };
+          });
+        } else {
+          state.addresses = state.addresses.filter((a) => a._id !== action.payload.id);
+          state.total = Math.max(0, state.total - 1);
+        }
       })
       .addCase(deleteCompanyAddress.rejected, (state, action) => {
         state.loading = false;

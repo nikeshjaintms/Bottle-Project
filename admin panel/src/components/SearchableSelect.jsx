@@ -20,7 +20,7 @@ export default function SearchableSelect({
   disabled = false,
   isInvalid = false,
   style = {},
-  onAddOption = null,
+  displayValue = '',
 }) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
@@ -46,7 +46,8 @@ export default function SearchableSelect({
     }
   }, [open]);
 
-  const selectedLabel = options.find((o) => o.value === value)?.label || '';
+  const selectedOption = options.find((o) => String(o?.value) === String(value));
+  const selectedLabel = selectedOption?.label || displayValue || '';
 
   const filtered = options.filter((o) =>
     o.label.toLowerCase().includes(search.toLowerCase())
@@ -71,9 +72,12 @@ export default function SearchableSelect({
         className={`form-select custom-input-field text-start d-flex align-items-center justify-content-between ${isInvalid ? 'is-invalid' : ''}`}
         style={{
           borderRadius: 12,
-          background: disabled ? '#f8f9fa' : '#fff',
+          backgroundColor: disabled ? '#e9ecef' : '#fff',
+          borderColor: disabled ? '#ced4da' : undefined,
           cursor: disabled ? 'not-allowed' : 'pointer',
-          color: value ? '#212529' : '#6c757d',
+          color: disabled ? '#495057' : (selectedLabel ? '#212529' : '#6c757d'),
+          fontWeight: disabled ? 600 : 'normal',
+          opacity: disabled ? 0.95 : 1,
           ...style,
         }}
       >
@@ -85,12 +89,20 @@ export default function SearchableSelect({
             flex: 1,
           }}
         >
-          {value ? selectedLabel : placeholder}
+          {selectedLabel || placeholder}
         </span>
-        <i
-          className={`bi bi-chevron-${open ? 'up' : 'down'} ms-2`}
-          style={{ fontSize: 12, flexShrink: 0 }}
-        />
+        {disabled ? (
+          <i
+            className="bi bi-lock-fill text-muted ms-2"
+            style={{ fontSize: 13, flexShrink: 0 }}
+            title="Locked / Disabled"
+          />
+        ) : (
+          <i
+            className={`bi bi-chevron-${open ? 'up' : 'down'} ms-2`}
+            style={{ fontSize: 12, flexShrink: 0 }}
+          />
+        )}
       </button>
 
       {/* Dropdown panel */}
