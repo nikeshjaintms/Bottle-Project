@@ -55,6 +55,68 @@ export default function IncomingList() {
     return false;
   }, [companyId, companies]);
 
+  const selectedCompany = React.useMemo(() => {
+    if (!companyId || !companies) return null;
+    return companies.find(c => c._id === companyId);
+  }, [companyId, companies]);
+
+  // Calculate which bottles have actual incoming records for this company
+  // Fetch all incoming data (no pagination) for bottle list calculation
+  const { data: allIncomings } = useSelector(state => state.incoming);
+  const [allIncomingsForBottles, setAllIncomingsForBottles] = useState([]);
+
+  useEffect(() => {
+    if (companyId) {
+      // Fetch all incoming records for this company without pagination
+      dispatch(fetchIncoming({ pagination: "false", companyId, search: '', status: '' })).then(res => {
+        if (res.payload && res.payload.data) {
+          setAllIncomingsForBottles(res.payload.data);
+        }
+      });
+    }
+  }, [companyId, dispatch]);
+
+  const availableBottlesWithRecords = React.useMemo(() => {
+    const dataToUse = allIncomingsForBottles.length > 0 ? allIncomingsForBottles : incomings;
+    if (!dataToUse || !Array.isArray(dataToUse) || dataToUse.length === 0) return [];
+    
+    const bottleIds = new Set();
+    dataToUse.forEach(inc => {
+      if (inc.items && Array.isArray(inc.items)) {
+        inc.items.forEach(item => {
+          if (item.bottleId) {
+            // Handle both object IDs and string IDs
+            const id = typeof item.bottleId === 'object' ? (item.bottleId._id || item.bottleId.id) : item.bottleId;
+            if (id) {
+              bottleIds.add(String(id));
+            }
+          }
+        });
+      }
+    });
+    
+    // Return only bottlePerBoxes that have incoming records
+    return (bottlePerBoxes || []).filter(b => bottleIds.has(String(b._id)));
+  }, [allIncomingsForBottles, incomings, bottlePerBoxes]);
+
+  // Auto-select first bottle when company changes (only once per company)
+  const [autoSelectDone, setAutoSelectDone] = useState(false);
+  useEffect(() => {
+    if (companyId) {
+      setAutoSelectDone(false);
+      setBottleFilter('');
+    }
+  }, [companyId]);
+
+  useEffect(() => {
+    if (companyId && !autoSelectDone && bottleFilter === '' && availableBottlesWithRecords.length > 0) {
+      const firstBottleId = availableBottlesWithRecords[0]._id;
+      setBottleFilter(firstBottleId);
+      setAutoSelectDone(true);
+      setSearchParams({ page: 1 });
+    }
+  }, [availableBottlesWithRecords, autoSelectDone, companyId, bottleFilter]);
+
   useEffect(() => {
     if (isShreno) {
       dispatch(fetchIncoming({ pagination: "false", search: searchTerm, status: statusFilter, companyId, fromDate, toDate, bottleName: bottleFilter }));
@@ -222,21 +284,25 @@ export default function IncomingList() {
     <div className="page-content">
       <div className="page-header d-flex align-items-center justify-content-between companies-page-header">
         <div className="d-flex align-items-center gap-3">
-          <button onClick={() => navigate('/incoming')} className="btn-ghost border-0" style={{ width: 40, height: 40, borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <i className="bi bi-arrow-left" style={{ fontSize: 20 }} />
-          </button>
+          {companyId && (
+            <button onClick={() => navigate('/incoming')} className="btn-ghost border-0" style={{ width: 40, height: 40, borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <i className="bi bi-arrow-left" style={{ fontSize: 20 }} />
+            </button>
+          )}
           <div>
-            <h1 className="page-title mb-0">Incoming Register</h1>
+            <h1 className="page-title mb-0">Incoming Register{selectedCompany ? ` - ${selectedCompany.name}` : ''}</h1>
             <p className="page-subtitle mb-0">Record plain bottle stock against delivery</p>
           </div>
         </div>
         <div className="d-flex gap-2">
-          <button onClick={handleExport} className="btn btn-outline-accent shadow-sm px-4 py-2 rounded-3" style={{ fontWeight: 600 }}>
-            <i className="bi bi-file-earmark-excel-fill me-2" /> Export Excel
-          </button>
+          {companyId && (
+            <button onClick={handleExport} className="btn btn-outline-accent shadow-sm px-4 py-2 rounded-3" style={{ fontWeight: 600 }}>
+              <i className="bi bi-file-earmark-excel-fill me-2" /> Export Excel
+            </button>
+          )}
           <Can I="create" a="incoming">
             <button 
-              className="btn btn-accent shadow-sm px-4 py-2 rounded-3"
+              className="btn btn-outline-success shadow-sm px-4 py-2 rounded-3"
               onClick={() => setShowImportModal(true)}
               title="Import from Excel"
               style={{ fontWeight: 600 }}
@@ -253,10 +319,14 @@ export default function IncomingList() {
       </div>
 
       {companyId && (
-        <div className="dash-card mb-4">
+        <div className="dash-card mb-4 border-top-accent" style={{ borderTop: '3px solid var(--accent)' }}>
           <div className="dash-card-body p-3">
+            <div className="d-flex align-items-center gap-2 mb-3">
+              <i className="bi bi-funnel text-accent fw-bold" style={{ fontSize: 18 }}></i>
+              <h6 className="mb-0 fw-bold text-dark">Filter by Bottle Name & Date</h6>
+            </div>
             <div className="row g-3 align-items-end">
-              <div className="col-12 col-sm-6 col-md-4 col-lg-3">
+              <div className="col-12 col-sm-6 col-md-3 col-lg-2">
                 <label className="small text-muted fw-bold mb-1 d-block">From</label>
                 <input
                   type="date"
@@ -269,7 +339,7 @@ export default function IncomingList() {
                   }}
                 />
               </div>
-              <div className="col-12 col-sm-6 col-md-4 col-lg-3">
+              <div className="col-12 col-sm-6 col-md-3 col-lg-2">
                 <label className="small text-muted fw-bold mb-1 d-block">To</label>
                 <input
                   type="date"
@@ -282,24 +352,37 @@ export default function IncomingList() {
                   }}
                 />
               </div>
-              <div className="col-12 col-sm-6 col-md-4 col-lg-3">
-                <label className="small text-muted fw-bold mb-1 d-block">Bottle Name</label>
+              <div className="col-12 col-sm-12 col-md-6 col-lg-3">
+                <label className="small text-muted fw-bold mb-1 d-block">🔍 Plain Bottle Name</label>
                 <Select
-                  options={[{ value: '', label: 'All Bottles' }, ...(bottlePerBoxes?.filter(box => {
-                    if (!companyId) return true;
-                    const isAssociatedWithCompany = bottleSpecs?.some(spec => 
-                      spec.bottleName === box.bottleName && 
-                      (spec.brandId?.companyId?._id === companyId || spec.brandId?.companyId === companyId)
-                    );
-                    const hasNoSpecs = !bottleSpecs?.some(spec => spec.bottleName === box.bottleName);
-                    return isAssociatedWithCompany || hasNoSpecs;
-                  }).map(b => ({ value: b._id, label: b.bottleName })) || [])]}
-                  value={bottleFilter ? { value: bottleFilter, label: bottlePerBoxes?.find(b => b._id === bottleFilter)?.bottleName || 'Unknown' } : { value: '', label: 'All Bottles' }}
+                  isClearable={true}
+                  isSearchable
+                  options={
+                    (availableBottlesWithRecords || [])
+                      .sort((a, b) => {
+                        const nameA = (a.bottleName || a.plainBottleName).toLowerCase();
+                        const nameB = (b.bottleName || b.plainBottleName).toLowerCase();
+                        
+                        // Natural sort: handle numbers numerically
+                        return nameA.localeCompare(nameB, undefined, { numeric: true, sensitivity: 'base' });
+                      })
+                      .map(b => ({ value: b._id, label: b.bottleName || b.plainBottleName }))
+                  }
+                  value={
+                    bottleFilter && bottleFilter !== '' 
+                      ? { value: bottleFilter, label: availableBottlesWithRecords?.find(b => String(b._id) === String(bottleFilter))?.bottleName || availableBottlesWithRecords?.find(b => String(b._id) === String(bottleFilter))?.plainBottleName || 'Unknown' } 
+                      : null
+                  }
                   onChange={(selected) => {
                     setSearchParams({ page: 1 });
-                    setBottleFilter(selected?.value || '');
+                    if (selected && selected.value !== undefined && selected.value !== null) {
+                      setBottleFilter(selected.value);
+                    } else {
+                      setBottleFilter('');
+                    }
                   }}
                   classNamePrefix="react-select"
+                  placeholder="Select bottle name..."
                   styles={{
                     control: (base) => ({
                       ...base,
@@ -312,14 +395,14 @@ export default function IncomingList() {
                   }}
                 />
               </div>
-              <div className="col-12 col-sm-6 col-md-4 col-lg-3">
-                <label className="small text-muted fw-bold mb-1 d-block">Search</label>
+              <div className="col-12 col-sm-6 col-md-6 col-lg-3">
+                <label className="small text-muted fw-bold mb-1 d-block">Search Challan No</label>
                 <div className="search-input-wrapper position-relative">
                   <i className="bi bi-search text-muted position-absolute top-50 start-0 translate-middle-y ms-3" style={{ pointerEvents: 'none' }} />
                   <input
                     type="text"
                     className="form-control form-control-sm border-light-subtle bg-light ps-5 shadow-none w-100"
-                    placeholder="Search Challan No..."
+                    placeholder="Search..."
                     value={searchTerm}
                     onChange={(e) => {
                       setSearchTerm(e.target.value);
@@ -329,7 +412,7 @@ export default function IncomingList() {
                   />
                 </div>
               </div>
-              <div className="col-12 col-sm-6 col-md-4 col-lg-3">
+              <div className="col-12 col-sm-6 col-md-6 col-lg-2">
                 <button
                   type="button"
                   onClick={() => {
@@ -337,12 +420,13 @@ export default function IncomingList() {
                     setFromDate('');
                     setToDate('');
                     setBottleFilter('');
+                    setAutoSelectDone(false);
                     setSearchParams({ page: 1 });
                   }}
                   className="btn btn-sm btn-light border-light-subtle w-100"
                   style={{ borderRadius: 10, fontWeight: 600, height: 38 }}
                 >
-                  Reset Filters
+                  ✕ Reset All
                 </button>
               </div>
             </div>
@@ -410,6 +494,13 @@ export default function IncomingList() {
                     <th className="py-3 text-uppercase small fw-bold text-muted">Date</th>
                     <th className="py-3 text-uppercase small fw-bold text-muted">Challan / Delivery No</th>
                     {!companyId && <th className="py-3 text-uppercase small fw-bold text-muted">Bill To</th>}
+                    {isShreno && (
+                      <>
+                        <th className="py-3 text-uppercase small fw-bold text-muted">PO Date</th>
+                        <th className="py-3 text-uppercase small fw-bold text-muted">PO No</th>
+                        <th className="py-3 text-uppercase small fw-bold text-muted">PO Qty</th>
+                      </>
+                    )}
                     <th className="py-3 text-uppercase small fw-bold text-muted">Bottle Name</th>
                     <th className="py-3 text-uppercase small fw-bold text-muted text-center">No of boxes</th>
                     <th className="py-3 text-uppercase small fw-bold text-muted text-center">Qty</th>
@@ -451,9 +542,20 @@ export default function IncomingList() {
                               </div>
                             )}
                           </td>
-                          <td className="fw-500">{new Date(inc.documentDate || inc.date || inc.createdAt).toLocaleDateString()}</td>
+                          <td className="fw-500">
+                            {inc.deliveryNumber === 'OLD STOCK' 
+                              ? '-' 
+                              : new Date(inc.documentDate || inc.date || inc.createdAt).toLocaleDateString()}
+                          </td>
                           <td className="fw-bold text-primary">{inc.deliveryNumber}</td>
                           {!companyId && <td>{inc.billToId?.name || '-'}</td>}
+                          {isShreno && (
+                            <>
+                              <td className="py-3 text-center">{inc.poDate ? new Date(inc.poDate).toLocaleDateString() : '-'}</td>
+                              <td className="py-3 text-center fw-bold text-primary">{inc.poNo || '-'}</td>
+                              <td className="py-3 text-center">{inc.poOrderQty ? inc.poOrderQty.toLocaleString() : '-'}</td>
+                            </>
+                          )}
                           <td colSpan={4} className="text-center text-muted small py-3">No items</td>
                           <td className="py-3 text-center">
                             <div className="d-flex justify-content-center gap-2">
@@ -505,7 +607,9 @@ export default function IncomingList() {
                                     )}
                                   </td>
                                   <td rowSpan={itemsToRender.length} className="fw-500 border-bottom">
-                                    {new Date(inc.documentDate || inc.date || inc.createdAt).toLocaleDateString()}
+                                    {inc.deliveryNumber === 'OLD STOCK'
+                                      ? '-'
+                                      : new Date(inc.documentDate || inc.date || inc.createdAt).toLocaleDateString()}
                                   </td>
                                   <td rowSpan={itemsToRender.length} className="fw-bold text-primary border-bottom">
                                     {inc.deliveryNumber}
@@ -514,6 +618,19 @@ export default function IncomingList() {
                                     <td rowSpan={itemsToRender.length} className="border-bottom">
                                       {inc.billToId?.name || '-'}
                                     </td>
+                                  )}
+                                  {isShreno && (
+                                    <>
+                                      <td rowSpan={itemsToRender.length} className="py-3 text-center border-bottom">
+                                        {inc.poDate ? new Date(inc.poDate).toLocaleDateString() : '-'}
+                                      </td>
+                                      <td rowSpan={itemsToRender.length} className="py-3 text-center fw-bold text-primary border-bottom">
+                                        {inc.poNo || '-'}
+                                      </td>
+                                      <td rowSpan={itemsToRender.length} className="py-3 text-center border-bottom">
+                                        {inc.poOrderQty ? inc.poOrderQty.toLocaleString() : '-'}
+                                      </td>
+                                    </>
                                   )}
                                 </>
                               )}

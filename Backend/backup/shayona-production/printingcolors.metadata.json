@@ -1,1 +1,0 @@
-{"indexes":[{"v":{"$numberInt":"2"},"key":{"_id":{"$numberInt":"1"}},"name":"_id_"},{"v":{"$numberInt":"2"},"key":{"printingTypeId":{"$numberInt":"1"},"name":{"$numberInt":"1"}},"name":"printingTypeId_1_name_1","unique":true}],"uuid":"0e1fa1ccb763479d9294a9e51d8b8023","collectionName":"printingcolors","type":"collection"}

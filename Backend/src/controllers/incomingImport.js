@@ -208,20 +208,35 @@ const parseTppIncoming = (rowData, rowIndex, allBottles, sheetName = null, sheet
         recordType: 'INCOMING'
     };
 
-    // Check if this is an "OLD STOCK" opening balance row (special marker in bottle column)
-    const isOldStock = bottleNameText.toUpperCase() === 'OLD STOCK';
-    record.isOpeningBalance = isOldStock;
+    record.isOpeningBalance = false;
 
     // Bottle identity comes from sheet name (outer) or row text (inner fallback)
     // sheetBottleId is pre-resolved and passed in; use it directly
     record.bottleNameRaw = sheetBottleId;
 
     if (!sheetBottleId || sheetBottleId === 'MISSING') {
-        record.errors.push(`Bottle name not found in master (sheet: "${sheetName}", row text: "${bottleNameText}")`);
+        record.errors.push("MISSING BOTTLE");
     }
+
+    // CRITICAL: PO fields (poDate, poNo, poOrderQty) are NOT supported in DEFAULT/TPP format
+    // They are only for SHRENO imports. Set them explicitly to null.
+    record.poDate = null;
+    record.poNo = null;
+    record.poOrderQty = null;
+
+    // Validate SR.NO (serial number)
+    if (!srNo) {
+        record.errors.push("MISSING SR.NO");
+    } else if (isNaN(parseInt(srNo))) {
+        record.errors.push("INVALID SR.NO");
+    }
+
+    // Check if this is an "OLD STOCK" opening balance row (special marker in bottle column)
+    const isOldStock = bottleNameText.toUpperCase() === 'OLD STOCK';
 
     if (isOldStock) {
         // OLD STOCK rows: no date/challan required
+        record.isOpeningBalance = true;
         record.incomingDate = null;
         record.challanNo = 'OLD STOCK';
         record.noOfBox = 0;
@@ -229,7 +244,7 @@ const parseTppIncoming = (rowData, rowIndex, allBottles, sheetName = null, sheet
         record.totalQty = !isNaN(parseFloat(totalQty)) ? parseFloat(totalQty) : 0;
 
         if (record.totalQty <= 0) {
-            record.errors.push("Opening balance quantity must be greater than 0");
+            record.errors.push("OPENING BALANCE QUANTITY MUST BE > 0");
         }
     } else {
         // Normal challan-based incoming row
@@ -240,11 +255,50 @@ const parseTppIncoming = (rowData, rowIndex, allBottles, sheetName = null, sheet
         record.qty = !isNaN(parseFloat(qty)) ? parseFloat(qty) : 0;
         record.totalQty = !isNaN(parseFloat(totalQty)) ? parseFloat(totalQty) : 0;
 
-        if (!record.incomingDate) record.errors.push("Incoming date is missing");
-        // RELAXED: Challan number is optional - removed this check: if (!record.challanNo) record.errors.push("Challan number is missing");
-        // RELAXED: Quantity is now optional - rows with blank Box/Qty/Total are valid if they have bottle/challan/date info
-        // Removed: if (record.totalQty <= 0) record.errors.push("Total quantity must be greater than 0");
+        // Validation checks for incoming date
+        if (!record.incomingDate) {
+            record.errors.push("MISSING DATE");
+        } else if (isNaN(record.incomingDate.getTime())) {
+            record.errors.push("INVALID DATE");
+        }
+
+        // Validation check for challan number - CHALLAN IS OPTIONAL (not required)
+        // Removed error checking for missing challan number
+
+        // Validation checks for quantities - distinguish between missing and invalid
+        // If the raw value is empty/null, it's missing; if it's not a valid number, it's invalid
+        const boxRaw = rowData[4];
+        const qtyRaw = rowData[5];
+        const totalQtyRaw = rowData[6];
+
+        if (boxRaw === null || boxRaw === undefined || String(boxRaw).trim() === '') {
+            record.errors.push("MISSING BOX");
+        } else if (isNaN(parseFloat(boxRaw))) {
+            record.errors.push("INVALID BOX");
+        }
+
+        if (qtyRaw === null || qtyRaw === undefined || String(qtyRaw).trim() === '') {
+            record.errors.push("MISSING QTY");
+        } else if (isNaN(parseFloat(qtyRaw))) {
+            record.errors.push("INVALID QTY");
+        }
+
+        if (totalQtyRaw === null || totalQtyRaw === undefined || String(totalQtyRaw).trim() === '') {
+            record.errors.push("MISSING TOTAL QTY");
+        } else if (isNaN(parseFloat(totalQtyRaw))) {
+            record.errors.push("INVALID TOTAL QTY");
+        }
+
+        // Check if at least one quantity field is present and valid
+        const hasAnyQuantity = !isNaN(parseFloat(boxRaw)) || !isNaN(parseFloat(qtyRaw)) || !isNaN(parseFloat(totalQtyRaw));
+        if (!hasAnyQuantity) {
+            record.errors.push("MISSING QUANTITY");
+        }
     }
+
+    // RELAXED: Challan number is optional - removed this check: if (!record.challanNo) record.errors.push("Challan number is missing");
+    // RELAXED: Quantity is now optional - rows with blank Box/Qty/Total are valid if they have bottle/challan/date info
+    // Removed: if (record.totalQty <= 0) record.errors.push("Total quantity must be greater than 0");
 
     record.isValid = record.errors.length === 0;
     return record;
@@ -304,7 +358,14 @@ const parseShrenoIncoming = (rowData, rowIndex, allBottles, sheetName = null, sh
     record.bottleNameRaw = sheetBottleId;
 
     if (!sheetBottleId || sheetBottleId === 'MISSING') {
-        record.errors.push(`Bottle name not found in master (sheet: "${sheetName}", row text: "${description}")`);
+        record.errors.push("MISSING BOTTLE");
+    }
+
+    // Validate SR.NO (serial number)
+    if (!srNo) {
+        record.errors.push("MISSING SR.NO");
+    } else if (isNaN(parseInt(srNo))) {
+        record.errors.push("INVALID SR.NO");
     }
 
     if (isOldStock) {
@@ -319,7 +380,7 @@ const parseShrenoIncoming = (rowData, rowIndex, allBottles, sheetName = null, sh
         record.totalQty = !isNaN(parseFloat(incomingQty)) ? parseFloat(incomingQty) : 0;
 
         if (record.totalQty <= 0) {
-            record.errors.push("Opening balance quantity must be greater than 0");
+            record.errors.push("OPENING BALANCE QUANTITY MUST BE > 0");
         }
     } else {
         // Normal challan-based incoming row
@@ -334,11 +395,66 @@ const parseShrenoIncoming = (rowData, rowIndex, allBottles, sheetName = null, sh
         record.qty = !isNaN(parseFloat(qty)) ? parseFloat(qty) : 0;
         record.totalQty = !isNaN(parseFloat(incomingQty)) ? parseFloat(incomingQty) : 0;
 
-        // RELAXED: Date is now optional - do not block validity if date is missing
-        // RELAXED: Challan number is optional - removed this check: if (!record.challanNo) record.errors.push("Challan number is missing");
-        // RELAXED: Quantity is now optional - rows with blank Box/Qty/Total are valid if they have bottle/challan/date info
-        // Removed: if (!record.incomingDate) record.errors.push("Incoming date is missing");
-        // Removed: if (record.totalQty <= 0) record.errors.push("Total quantity must be greater than 0");
+        // Validation checks for PO fields
+        const poDatRaw = rowData[1];
+        const poNoRaw = rowData[2];
+        const poOrderQtyRaw = rowData[3];
+
+        if (poDatRaw === null || poDatRaw === undefined || String(poDatRaw).trim() === '') {
+            record.errors.push("MISSING PO DATE");
+        } else if (!record.poDate || isNaN(record.poDate.getTime())) {
+            record.errors.push("INVALID PO DATE");
+        }
+
+        if (!record.poNo) {
+            record.errors.push("MISSING PO NUMBER");
+        }
+
+        if (poOrderQtyRaw === null || poOrderQtyRaw === undefined || String(poOrderQtyRaw).trim() === '') {
+            record.errors.push("MISSING PO QUANTITY");
+        } else if (record.poOrderQty !== null && record.poOrderQty < 0) {
+            record.errors.push("INVALID PO QUANTITY");
+        }
+
+        // Validation checks for incoming date
+        const incomingDateRaw = rowData[5];
+        if (incomingDateRaw === null || incomingDateRaw === undefined || String(incomingDateRaw).trim() === '') {
+            record.errors.push("MISSING DATE");
+        } else if (!record.incomingDate || isNaN(record.incomingDate.getTime())) {
+            record.errors.push("INVALID DATE");
+        }
+
+        // Validation check for challan number - CHALLAN IS OPTIONAL (not required)
+        // Removed error checking for missing challan number
+
+        // Validation checks for quantities - distinguish between missing and invalid
+        const boxRaw = rowData[7];
+        const qtyRaw = rowData[8];
+        const incomingQtyRaw = rowData[9];
+
+        if (boxRaw === null || boxRaw === undefined || String(boxRaw).trim() === '') {
+            record.errors.push("MISSING BOX");
+        } else if (isNaN(parseFloat(boxRaw))) {
+            record.errors.push("INVALID BOX");
+        }
+
+        if (qtyRaw === null || qtyRaw === undefined || String(qtyRaw).trim() === '') {
+            record.errors.push("MISSING QTY");
+        } else if (isNaN(parseFloat(qtyRaw))) {
+            record.errors.push("INVALID QTY");
+        }
+
+        if (incomingQtyRaw === null || incomingQtyRaw === undefined || String(incomingQtyRaw).trim() === '') {
+            record.errors.push("MISSING INCOMING QTY");
+        } else if (isNaN(parseFloat(incomingQtyRaw))) {
+            record.errors.push("INVALID INCOMING QTY");
+        }
+
+        // Check if at least one quantity field is present and valid
+        const hasAnyQuantity = !isNaN(parseFloat(boxRaw)) || !isNaN(parseFloat(qtyRaw)) || !isNaN(parseFloat(incomingQtyRaw));
+        if (!hasAnyQuantity) {
+            record.errors.push("MISSING QUANTITY");
+        }
     }
 
     record.isValid = record.errors.length === 0;
@@ -611,17 +727,89 @@ exports.importPreview = async (req, res) => {
             }
 
             if (incomingRecords.length > 0) {
+                console.log(`[EXISTING PLANS CHECK START] Sheet "${sheetName}": ${incomingRecords.length} records to check`);
+                
+                // CHECK EXISTING PLANS: For each record, count how many matching records exist in database
+                // This helps users see what duplicates already exist
+                const allBottles = await BottlePerBox.find({ isDeleted: false }).lean();
+                const bottleNameToId = new Map();
+                for (const bottle of allBottles) {
+                    bottleNameToId.set(bottle.bottleName, bottle._id);
+                }
+
+                let checkedCount = 0;
+                let foundCount = 0;
+                
+                for (const record of incomingRecords) {
+                    // Default: no existing plans
+                    record.existingPlans = '-';
+
+                    // Only check for valid records and non-OLD-STOCK records
+                    if (!record.isValid || record.isOpeningBalance) {
+                        record.existingPlans = '-';
+                        continue;
+                    }
+
+                    // Get bottle ID
+                    const bottleId = bottleNameToId.get(record.bottleNameRaw);
+                    if (!bottleId) {
+                        record.existingPlans = '-';
+                        continue;
+                    }
+
+                    // Build the duplicate query - same logic as commit function
+                    const docDate = record.incomingDate;
+                    const itemQty = record.qty;
+
+                    const duplicateQuery = {
+                        billToId: new mongoose.Types.ObjectId(record.companyId),
+                        documentDate: docDate,
+                        deliveryNumber: record.challanNo || null,
+                        'items.bottleId': bottleId,
+                        'items.box': record.noOfBox,
+                        'items.qty': itemQty,
+                        'items.totalQty': record.totalQty,
+                        isDeleted: false
+                    };
+
+                    // Count matching records
+                    const existingCount = await Incoming.countDocuments(duplicateQuery);
+                    // Only set a value if existing count > 0, otherwise keep as '-'
+                    if (existingCount > 0) {
+                        record.existingPlans = existingCount.toString();
+                    }
+                    checkedCount++;
+                    if (existingCount > 0) foundCount++;
+                    console.log(`[EXISTING PLANS] Row ${record.excelRowNumber}: bottle=${record.bottleNameRaw}, date=${docDate}, challan=${record.challanNo}, existingCount=${existingCount}, existingPlans="${record.existingPlans}"`);
+                }
+                
+                console.log(`[EXISTING PLANS CHECK END] Sheet "${sheetName}": Checked ${checkedCount} records, Found ${foundCount} with existing plans`);
+
                 const sheetSummary = {
                     sheetName,
                     incomingRecords,
                     totalRows: incomingRecords.length,
                     validRows: incomingRecords.filter(r => r.isValid).length,
                     invalidRows: incomingRecords.filter(r => !r.isValid).length,
+                    existingPlansCount: incomingRecords.reduce((sum, r) => {
+                        // Count records with existing plans (not "-")
+                        // Only sum up numeric values (actual counts)
+                        if (r.existingPlans && r.existingPlans !== '-') {
+                            const count = parseInt(r.existingPlans);
+                            if (!isNaN(count)) {
+                                console.log(`[REDUCE] Row ${r.excelRowNumber}: existingPlans="${r.existingPlans}", adding ${count}, sum now = ${sum + count}`);
+                                return sum + count;
+                            }
+                        }
+                        return sum;
+                    }, 0),
                     detectedFormat: sheetFormat,  // ADD: Format detected from row 1 marker
                     invalidReasons: {},
                     bottleMatchDetails: null,
                     bottleResolutionMethod: sheetBottleId !== 'MISSING' ? 'OUTER' : 'INNER_FALLBACK'
                 };
+                
+                console.log(`[SHEET SUMMARY] Sheet "${sheetName}": totalRows=${sheetSummary.totalRows}, validRows=${sheetSummary.validRows}, invalidRows=${sheetSummary.invalidRows}, existingPlansCount=${sheetSummary.existingPlansCount}`);
 
                 // If outer bottle matching failed, add suggestions from inner fallback
                 if (sheetBottleId === 'MISSING') {
@@ -687,6 +875,17 @@ exports.importPreview = async (req, res) => {
         }
         const detectedFormatsList = Array.from(detectedFormats).sort();
 
+        console.log('[PREVIEW RESPONSE - BEFORE SEND]', {
+            totalSheets: allRecords.length,
+            sheetsWithExistingPlans: allRecords.map(s => ({
+                sheetName: s.sheetName,
+                existingPlansCount: s.existingPlansCount,
+                totalRows: s.totalRows,
+                validRows: s.validRows,
+                invalidRows: s.invalidRows
+            }))
+        });
+
         return res.status(200).json({
             success: true,
             data: {
@@ -708,7 +907,7 @@ exports.importPreview = async (req, res) => {
 
 /**
  * Import Commit - creates Incoming records and updates PlainBottleStock
- * Only allows SHRENO format imports (rejects DEFAULT/TPP)
+ * Supports both SHRENO and DEFAULT format imports
  */
 exports.commitImport = async (req, res) => {
     try {
@@ -718,65 +917,118 @@ exports.commitImport = async (req, res) => {
             return res.status(400).json({ success: false, message: 'Invalid payload' });
         }
 
-        // Validate: Only SHRENO format imports are allowed
-        for (const sheetData of sheetsToImport) {
-            const { incomingRecords } = sheetData;
-            const validRecords = incomingRecords.filter(r => r.isValid);
-            
-            if (validRecords.length > 0) {
-                const hasNonShreno = validRecords.some(r => r.sourceFormat !== 'SHRENO');
-                if (hasNonShreno) {
-                    return res.status(400).json({ 
-                        success: false, 
-                        message: 'Only SHRENO format imports are supported. Please use a SHRENO-formatted file.' 
-                    });
-                }
-            }
+        console.log(`[INCOMING IMPORT COMMIT] Starting commit with ${sheetsToImport.length} sheets`);
+        
+        // CRITICAL: Log the incoming payload structure
+        let totalRecordsInPayload = 0;
+        let totalValidRecordsInPayload = 0;
+        for (const sheet of sheetsToImport) {
+            const sheetValid = sheet.incomingRecords ? sheet.incomingRecords.filter(r => r.isValid).length : 0;
+            totalRecordsInPayload += sheet.incomingRecords ? sheet.incomingRecords.length : 0;
+            totalValidRecordsInPayload += sheetValid;
+            console.log(`[INCOMING IMPORT COMMIT PAYLOAD] Sheet "${sheet.sheetName}": ${sheet.incomingRecords ? sheet.incomingRecords.length : 0} total records, ${sheetValid} valid`);
         }
+        console.log(`[INCOMING IMPORT COMMIT PAYLOAD] TOTAL: ${totalRecordsInPayload} records, ${totalValidRecordsInPayload} valid`);
 
         let totalIncomingImported = 0;
         let totalBottlesUpdated = 0;
+        let totalSkipped = 0;
+        const skippedRecords = []; // Track skipped records with reasons
 
         for (const sheetData of sheetsToImport) {
             const { sheetName, incomingRecords } = sheetData;
+            console.log(`[INCOMING IMPORT COMMIT] Processing sheet "${sheetName}" with ${incomingRecords.length} records`);
+            
             const validRecords = incomingRecords.filter(r => r.isValid);
+            console.log(`[INCOMING IMPORT COMMIT] Sheet "${sheetName}": ${validRecords.length} valid records out of ${incomingRecords.length}`);
 
-            if (validRecords.length === 0) continue;
+            if (validRecords.length === 0) {
+                console.log(`[INCOMING IMPORT COMMIT] Sheet "${sheetName}": No valid records, skipping`);
+                continue;
+            }
 
             // Resolve bottle IDs from names
             const bottleNameToId = new Map();
             const allBottles = await BottlePerBox.find({ isDeleted: false }).lean();
+            console.log(`[INCOMING IMPORT COMMIT] Found ${allBottles.length} bottles in master`);
             
             for (const record of validRecords) {
                 if (!bottleNameToId.has(record.bottleNameRaw)) {
                     const bottle = allBottles.find(b => b.bottleName === record.bottleNameRaw);
+                    if (!bottle) {
+                        console.warn(`[INCOMING IMPORT COMMIT] Bottle name "${record.bottleNameRaw}" not found in master. Available bottles:`, allBottles.map(b => b.bottleName));
+                    }
                     bottleNameToId.set(record.bottleNameRaw, bottle ? bottle._id : null);
                 }
             }
 
-            // Create Incoming records
+            // Create Incoming records with duplicate detection
             const incomingDocs = [];
+            const docSourceRecordMap = []; // Map: docIndex -> sourceRecord
             const stockBulkOps = [];
-
+            
+            // CRITICAL FIX: Don't check for duplicates against rows we just inserted in the same batch!
+            // First pass: collect all rows that should be inserted
+            const rowsToInsert = [];
+            
             for (const record of validRecords) {
                 const bottleId = bottleNameToId.get(record.bottleNameRaw);
                 if (!bottleId) {
-                    console.warn(`[INCOMING IMPORT] Bottle "${record.bottleNameRaw}" ID not found`);
+                    console.warn(`[INCOMING IMPORT COMMIT] Row ${record.excelRowNumber}: Bottle "${record.bottleNameRaw}" ID not found`);
+                    totalSkipped++;
+                    skippedRecords.push({
+                        excelRowNumber: record.excelRowNumber,
+                        reason: `Bottle "${record.bottleNameRaw}" ID not found`
+                    });
                     continue;
+                }
+                
+                rowsToInsert.push({ record, bottleId });
+            }
+            
+            console.log(`[INCOMING IMPORT COMMIT] Sheet "${sheetName}": ${rowsToInsert.length} rows after bottle ID filtering`);
+            
+            // Second pass: check only against EXISTING database records (not against rows in this batch)
+            for (const { record, bottleId } of rowsToInsert) {
+                // For OLD STOCK (opening balance), don't set a date - it's historical stock without a specific incoming date
+                const docDate = record.isOpeningBalance ? null : record.incomingDate;
+                const itemQty = record.qty;
+                
+                console.log(`[INCOMING IMPORT COMMIT] Row ${record.excelRowNumber}: Checking for duplicate in DB (company=${record.companyId}, bottle=${record.bottleNameRaw}, date=${docDate}, challan=${record.challanNo || 'BLANK'}, qty=${record.totalQty})`);
+                
+                // Query for exact duplicate - CRITICAL: Only check against existing DB records with isDeleted: false
+                const duplicateQuery = {
+                    billToId: new mongoose.Types.ObjectId(record.companyId),
+                    documentDate: docDate,
+                    deliveryNumber: record.challanNo || null,
+                    'items.bottleId': bottleId,
+                    'items.box': record.noOfBox,
+                    'items.qty': itemQty,
+                    'items.totalQty': record.totalQty,
+                    isDeleted: false  // CRITICAL: Only non-deleted records count as existing
+                };
+                
+                const existingDuplicate = await Incoming.findOne(duplicateQuery);
+
+                if (existingDuplicate) {
+                    console.log(`[INCOMING IMPORT DUPLICATE] Row ${record.excelRowNumber}: MATCHED existing DB record ID ${existingDuplicate._id} (isDeleted: ${existingDuplicate.isDeleted})`);
+                    totalSkipped++;
+                    skippedRecords.push({
+                        excelRowNumber: record.excelRowNumber,
+                        reason: `Duplicate of existing entry (ID: ${existingDuplicate._id})`
+                    });
+                    continue;
+                } else {
+                    console.log(`[INCOMING IMPORT COMMIT] Row ${record.excelRowNumber}: No existing duplicate in DB, will insert`);
                 }
 
                 // For OLD STOCK records, use today's date as documentDate since no actual date is provided
-                const docDate = record.isOpeningBalance ? new Date() : record.incomingDate;
-
-                // For OLD STOCK records, qty may be 0 (unknown), so set to 1 for validation
-                const itemQty = record.isOpeningBalance ? Math.max(1, record.qty) : record.qty;
-                
                 const incomingRecord = new Incoming({
                     date: docDate,
                     documentDate: docDate,
-                    deliveryNumber: record.challanNo,
+                    deliveryNumber: record.challanNo || null,
                     billToId: new mongoose.Types.ObjectId(record.companyId),
-                    createdBy: req.user._id, // From auth middleware
+                    createdBy: req.user._id,
                     items: [
                         {
                             bottleId,
@@ -787,11 +1039,16 @@ exports.commitImport = async (req, res) => {
                     ]
                 });
 
-                if (record.poDate) incomingRecord.poDate = record.poDate;
-                if (record.poNo) incomingRecord.poNo = record.poNo;
-                if (record.poOrderQty) incomingRecord.poOrderQty = record.poOrderQty;
+                // Only add PO fields for SHRENO format (where they come from the parser)
+                // For DEFAULT format, PO fields are never populated, so they won't be added
+                if (record.sourceFormat === 'SHRENO') {
+                    if (record.poDate) incomingRecord.poDate = record.poDate;
+                    if (record.poNo) incomingRecord.poNo = record.poNo;
+                    if (record.poOrderQty) incomingRecord.poOrderQty = record.poOrderQty;
+                }
 
                 incomingDocs.push(incomingRecord);
+                docSourceRecordMap.push(record); // ADD: Map the record to this doc
 
                 // Add stock update operation
                 stockBulkOps.push({
@@ -805,15 +1062,29 @@ exports.commitImport = async (req, res) => {
                 });
             }
 
+            console.log(`[INCOMING IMPORT COMMIT] Sheet "${sheetName}": Ready to save ${incomingDocs.length} documents (from ${validRecords.length} valid records after duplicate/bottle ID filtering)`);
+
             // Insert Incoming records
             if (incomingDocs.length > 0) {
                 try {
-                    for (const doc of incomingDocs) {
-                        await doc.save();
-                        totalIncomingImported++;
+                    for (let i = 0; i < incomingDocs.length; i++) {
+                        const doc = incomingDocs[i];
+                        const sourceRecord = docSourceRecordMap[i]; // Use the mapping
+                        try {
+                            const saved = await doc.save();
+                            console.log(`[INCOMING IMPORT COMMIT] Row ${sourceRecord.excelRowNumber} saved successfully: ${saved._id}`);
+                            totalIncomingImported++;
+                        } catch (docErr) {
+                            console.error(`[INCOMING IMPORT COMMIT] FAILED to save Row ${sourceRecord.excelRowNumber}: ${docErr.message}`, docErr);
+                            totalSkipped++;
+                            skippedRecords.push({
+                                excelRowNumber: sourceRecord.excelRowNumber,
+                                reason: `Save error: ${docErr.message}`
+                            });
+                        }
                     }
                 } catch (err) {
-                    console.warn(`[INCOMING IMPORT] Error creating Incoming record: ${err.message}`);
+                    console.error(`[INCOMING IMPORT COMMIT] Error in save loop: ${err.message}`, err);
                 }
             }
 
@@ -822,18 +1093,31 @@ exports.commitImport = async (req, res) => {
                 try {
                     await PlainBottleStock.bulkWrite(stockBulkOps);
                     totalBottlesUpdated += stockBulkOps.length;
+                    console.log(`[INCOMING IMPORT COMMIT] Stock updated for ${stockBulkOps.length} bottles`);
                 } catch (err) {
-                    console.warn(`[INCOMING IMPORT] Error updating stock: ${err.message}`);
+                    console.warn(`[INCOMING IMPORT COMMIT] Error updating stock: ${err.message}`);
                 }
             }
         }
 
+        // Build response message with skip details
+        let message = `Imported ${totalIncomingImported} of ${totalValidRecordsInPayload} valid incoming records`;
+        if (totalSkipped > 0) {
+            message += `, Skipped ${totalSkipped} duplicate(s)`;
+        }
+
+        console.log(`[INCOMING IMPORT COMMIT] Complete: ${message}`);
+        console.log(`[INCOMING IMPORT COMMIT] RECONCILIATION: Payload had ${totalValidRecordsInPayload} valid rows → Imported ${totalIncomingImported} + Skipped ${totalSkipped} = ${totalIncomingImported + totalSkipped} accounted for, LOST: ${totalValidRecordsInPayload - (totalIncomingImported + totalSkipped)}`);
+
         return res.status(200).json({
             success: true,
-            message: `Imported ${totalIncomingImported} incoming records`,
+            message: message,
             data: {
                 incomingImported: totalIncomingImported,
-                bottlesUpdated: totalBottlesUpdated
+                bottlesUpdated: totalBottlesUpdated,
+                skipped: totalSkipped,
+                validRowsReceived: totalValidRecordsInPayload,
+                skippedRecords: totalSkipped > 0 ? skippedRecords : undefined
             }
         });
     } catch (error) {

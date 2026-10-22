@@ -16,6 +16,52 @@ const findPlainBottleStockDoc = async (bottleName, companyId = null) => {
   return result?.stockDoc || null;
 };
 
+// Helper to calculate coated stock for a non-PLAIN coating shade
+// Formula: stock(coatingShade, company, date D) = 
+//   Σ Lacquer Coating Completed (date ≤ D) 
+//   - Σ Printing Ready qty of non-PLAIN rows with same coatingShade (date ≤ D)
+const calculateCoatedStock = async (coatingShade, companyId, planDate = null) => {
+  if (!coatingShade || coatingShade.trim().toUpperCase() === 'PLAIN') return 0;
+  
+  // 1. Sum Lacquer Coating Completed for this shade
+  const lacquerQuery = {
+    companyId: companyId,
+    isDeleted: false,
+    coatingShade: { $regex: new RegExp("^" + coatingShade.trim() + "$", "i") }
+  };
+  if (planDate) {
+    const endOfDay = new Date(planDate);
+    endOfDay.setUTCHours(23, 59, 59, 999);
+    lacquerQuery.planDate = { $lte: endOfDay };
+  }
+  
+  const lacquerRecords = await LacquerPlan.find(lacquerQuery).lean();
+  let totalLacquerCoated = 0;
+  for (const lp of lacquerRecords) {
+    totalLacquerCoated += (lp.coatingCompletedQty !== undefined ? lp.coatingCompletedQty : (lp.coatedQty || 0));
+  }
+  
+  // 2. Sum Printing Ready for this shade (non-deleted)
+  const printingQuery = {
+    companyId: companyId,
+    isDeleted: false,
+    coatingShade: { $regex: new RegExp("^" + coatingShade.trim() + "$", "i") }
+  };
+  if (planDate) {
+    const endOfDay = new Date(planDate);
+    endOfDay.setUTCHours(23, 59, 59, 999);
+    printingQuery.planDate = { $lte: endOfDay };
+  }
+  
+  const printingRecords = await PrintingPlan.find(printingQuery).lean();
+  let totalPrintingReady = 0;
+  for (const pp of printingRecords) {
+    totalPrintingReady += (pp.producedQty || 0);
+  }
+  
+  return Math.max(0, totalLacquerCoated - totalPrintingReady);
+};
+
 // Stock sync helper for PLAIN shade Printing Plans
 const syncPrintingPlanStockDeduction = async (planDocOrId, newProducedQty, userId = null) => {
   let plan = typeof planDocOrId === 'object' && planDocOrId._id ? planDocOrId : await PrintingPlan.findById(planDocOrId);
@@ -98,19 +144,26 @@ exports.createPlan = async (req, res) => {
         const prod = Number(item.producedQty) || 0;
         item.balanceToMake = Math.max(0, oQty - prod);
       } else {
+        // For non-PLAIN shades: balanceToMake = orderQty - producedQty (stock does not enter formula)
+        const oQty = Number(item.orderQty) || 0;
         const prod = Number(item.producedQty) || 0;
-        const stock = Number(item.plainBottleStock || 0);
-        item.balanceToMake = prod > 0 ? (stock - prod) : stock;
+        item.balanceToMake = Math.max(0, oQty - prod);
       }
     }
 
     if (Array.isArray(req.body)) {
-      const plans = await PrintingPlan.insertMany(req.body);
+      const plans = await PrintingPlan.insertMany(plansToInsert);
       for (const p of plans) {
         await syncPrintingPlanStockDeduction(p, p.producedQty, req.user?._id);
       }
       return res.status(201).json({ success: true, data: plans });
     } else {
+      // Single item: compute balanceToMake before saving
+      const isPlainShade = (req.body.coatingShade || "").trim().toUpperCase() === "PLAIN";
+      const orderQty = Number(req.body.orderQty) || 0;
+      const producedQty = Number(req.body.producedQty) || 0;
+      req.body.balanceToMake = Math.max(0, orderQty - producedQty);
+      
       const plan = new PrintingPlan(req.body);
       await plan.save();
       await syncPrintingPlanStockDeduction(plan, plan.producedQty, req.user?._id);
@@ -243,44 +296,25 @@ exports.getPlans = async (req, res) => {
         if (spec) specId = spec._id;
       }
 
-      // 1. Fetch coatedStockAvailable or PlainBottleStock if PLAIN
+      // 1. Fetch coatedStockAvailable for display
       const isPlainShade = (plan.coatingShade || "").trim().toUpperCase() === "PLAIN";
       if (isPlainShade) {
         const stockDoc = await findPlainBottleStockDoc(plan.bottleName, plan.companyId?._id || plan.companyId);
         if (stockDoc) {
           coatedStockAvailable = stockDoc.availableQuantity || 0;
         }
-      } else if (specId && plan.brandId) {
-        // We match CoatingProduction using coatingSpecId, brandId, and coatingShade
-        const coatingRecords = await CoatingProduction.find({
-          coatingSpecId: specId,
-          brandId: plan.brandId._id || plan.brandId,
-          coatingShade: plan.coatingShade || "",
-          isDeleted: false
-        });
-        
-        coatedStockAvailable = coatingRecords.reduce((sum, rec) => sum + (rec.actualQuantity || 0), 0);
+      } else {
+        // For non-PLAIN: calculate live coated stock from Lacquer - Printing
+        coatedStockAvailable = await calculateCoatedStock(plan.coatingShade, plan.companyId?._id || plan.companyId, plan.planDate);
       }
       
       // Use user-provided producedQty
       producedQty = plan.producedQty || 0;
       
-      // For PLAIN shade: ALWAYS use live PlainBottleStock computation (Incoming - Coating - Ready)
-      // Never use stored plan.plainBottleStock as it's a stale snapshot
-      // For coated shade: use stored value if available, otherwise 0
-      const effectiveStock = isPlainShade
-        ? coatedStockAvailable  // ALWAYS live for PLAIN
-        : (plan.plainBottleStock !== null && plan.plainBottleStock !== undefined ? plan.plainBottleStock : 0);
-      
       // For PLAIN shade: balanceToMake = orderQty - producedQty
-      // For coated shade: balanceToMake = stock - producedQty (but this is for colored coating balance, not plain)
+      // For non-PLAIN shade: balanceToMake = orderQty - producedQty (stock never enters formula)
       const orderQty = plan.orderQty || 0;
-      let balanceToMake;
-      if (isPlainShade) {
-        balanceToMake = Math.max(0, orderQty - producedQty);
-      } else {
-        balanceToMake = Math.max(0, effectiveStock - producedQty);
-      }
+      const balanceToMake = Math.max(0, orderQty - producedQty);
       
       let companyName = null;
       if (plan.brandId && plan.brandId.companyId) {
@@ -337,7 +371,10 @@ exports.getPlanById = async (req, res) => {
     
     let producedQty = plan.producedQty || 0;
     
-    const balanceToMake = (plan.plainBottleStock || 0) - producedQty;
+    // For non-PLAIN: balanceToMake = orderQty - producedQty (stock never enters formula)
+    // For PLAIN: balanceToMake = orderQty - producedQty
+    const orderQty = plan.orderQty || 0;
+    const balanceToMake = Math.max(0, orderQty - producedQty);
     
     res.status(200).json({ success: true, data: { ...plan, balanceToMake, producedQty } });
   } catch (error) {
@@ -489,9 +526,10 @@ exports.updatePlan = async (req, res) => {
       const finalProd = updateData.producedQty !== undefined ? Number(updateData.producedQty) : Number(existingPlan.producedQty || 0);
       updateData.balanceToMake = Math.max(0, finalOrder - finalProd);
     } else {
-      const finalStock = updateData.plainBottleStock !== undefined ? Number(updateData.plainBottleStock) : (existingPlan.plainBottleStock || 0);
-      const finalProd = updateData.producedQty !== undefined ? Number(updateData.producedQty) : (existingPlan.producedQty || 0);
-      updateData.balanceToMake = finalProd > 0 ? (finalStock - finalProd) : finalStock;
+      // For non-PLAIN: balanceToMake = orderQty - producedQty (stock never enters formula)
+      const finalOrder = updateData.orderQty !== undefined ? Number(updateData.orderQty) : Number(existingPlan.orderQty || 0);
+      const finalProd = updateData.producedQty !== undefined ? Number(updateData.producedQty) : Number(existingPlan.producedQty || 0);
+      updateData.balanceToMake = Math.max(0, finalOrder - finalProd);
     }
 
     const plan = await PrintingPlan.findByIdAndUpdate(
@@ -583,47 +621,8 @@ exports.getComputedStats = async (req, res) => {
         }
       }
     } else {
-      // 2. Coloured shades (anything other than PLAIN): stock comes from CoatingProduction completed
-      if (bottleName && brandId) {
-        let spec = await BottleSpec.findOne({ bottleName, isDeleted: false });
-        if (!spec) {
-          const selectedPlainBottle = await BottlePerBox.findOne({
-            $or: [
-              { plainBottleName: bottleName.trim() },
-              { bottleName: bottleName.trim() },
-              { bottleNames: bottleName.trim() }
-            ],
-            isDeleted: false
-          });
-          if (selectedPlainBottle && Array.isArray(selectedPlainBottle.bottleNames) && selectedPlainBottle.bottleNames.length > 0) {
-            spec = await BottleSpec.findOne({
-              bottleName: { $in: selectedPlainBottle.bottleNames },
-              brandId: brandId,
-              isDeleted: false
-            });
-          }
-        }
-        if (spec) {
-          // Fetch coatedStockAvailable
-          const coatingRecords = await CoatingProduction.find({
-            coatingSpecId: spec._id,
-            brandId,
-            coatingShade: coatingShade || "",
-            isDeleted: false
-          });
-          
-          coatedStockAvailable = coatingRecords.reduce((sum, rec) => sum + (rec.actualQuantity || 0), 0);
-          
-          // Fetch producedQty
-          const printRecords = await Production.find({
-            bottleSpecId: spec._id,
-            brandId,
-            isDeleted: false
-          });
-          
-          producedQty = printRecords.reduce((sum, rec) => sum + (rec.totalPrinted || 0), 0);
-        }
-      }
+      // 2. Coloured shades (anything other than PLAIN): stock = Lacquer Coating Completed - Printing Ready of same shade
+      coatedStockAvailable = await calculateCoatedStock(coatingShade, effectiveCompanyId);
     }
     
     res.status(200).json({

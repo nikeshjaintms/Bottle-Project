@@ -11,7 +11,8 @@ const incomingSchema = new mongoose.Schema(
       type: String,
       required: false,
       sparse: true,
-      unique: true,
+      // REMOVED unique: true to allow multiple records with null/blank deliveryNumber
+      // Duplicate detection is now done via application logic in import handlers
     },
     billToId: {
       type: mongoose.Schema.Types.ObjectId,

@@ -1,1 +1,0 @@
-{"indexes":[{"v":{"$numberInt":"2"},"key":{"_id":{"$numberInt":"1"}},"name":"_id_"},{"v":{"$numberInt":"2"},"key":{"coatingTypeId":{"$numberInt":"1"},"name":{"$numberInt":"1"}},"name":"coatingTypeId_1_name_1","unique":true}],"uuid":"c83396f6f82f46cc9268ff0b02b88a85","collectionName":"coatingcolors","type":"collection"}

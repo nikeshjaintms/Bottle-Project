@@ -9,6 +9,7 @@ const multer = require("multer");
 const memoryUpload = multer({ storage: multer.memoryStorage() });
 
 router.get("/", auth, dispatchController.getAllDispatch);
+router.get("/bottles/:companyId", auth, dispatchController.getDispatchBottles);
 router.get("/:id", auth, dispatchController.getDispatchById);
 router.post("/", auth, dispatchController.createDispatch);
 router.put("/:id", auth, dispatchController.updateDispatch);

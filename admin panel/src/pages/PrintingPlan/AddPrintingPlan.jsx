@@ -15,6 +15,7 @@ import CreatableSelect from 'react-select/creatable';
 import API from '../../services/api';
 import Swal from 'sweetalert2';
 import { usePrintingPlanLanguage } from '../../hooks/usePrintingPlanLanguage';
+import { calculateBalanceAndStock, recalculateBalanceForBlock, calculateBalance } from '../../utils/printingPlanCalcs';
 
 export const sortTypesList = (types = []) => {
   const getRank = (name) => {
@@ -83,7 +84,7 @@ export default function AddPrintingPlan() {
 
   const [showMissingSpecModal, setShowMissingSpecModal] = useState(false);
   const [missingSpecData, setMissingSpecData] = useState({
-     bottleName: '', brandId: '', companyName: '', brandName: '', bottlePerBox: '', code: '', printingTypeId: '', printingColorId: '', blockIndex: null, itemIndex: null
+    bottleName: '', brandId: '', companyName: '', brandName: '', bottlePerBox: '', code: '', printingTypeId: '', printingColorId: '', blockIndex: null, itemIndex: null
   });
   const [creatingSpec, setCreatingSpec] = useState(false);
   const [directCompanies, setDirectCompanies] = useState([]);
@@ -129,7 +130,7 @@ export default function AddPrintingPlan() {
             if (shade === 'PLAIN') {
               const bottle = (item.plainBottle || item.bottleName || '').trim().toUpperCase();
               const key = `${compId}::${bottle}`;
-              
+
               if (!summary.has(key)) {
                 summary.set(key, {
                   plainBottleStock: parseFloat(item.plainBottleStock || item.coatedStockAvailable) || 0,
@@ -163,7 +164,7 @@ export default function AddPrintingPlan() {
         const list = res.data?.data || (Array.isArray(res.data) ? res.data : []);
         if (Array.isArray(list) && list.length > 0) setDirectCompanies(list);
       })
-      .catch(() => {});
+      .catch(() => { });
   }, [dispatch]);
 
   useEffect(() => {
@@ -171,12 +172,12 @@ export default function AddPrintingPlan() {
       setBlocks(location.state.savedBlocks);
       const { blockIndex, itemIndex, newVariantName, newCoatingShade, sPlanDate } = location.state;
       if (blockIndex !== undefined && itemIndex !== undefined && newVariantName) {
-         const updatedBlocks = [...location.state.savedBlocks];
-         updatedBlocks[blockIndex].items[itemIndex].printingToBeDone = newVariantName;
-         if (newCoatingShade) {
-            updatedBlocks[blockIndex].items[itemIndex].coatingShade = newCoatingShade;
-         }
-         setBlocks(updatedBlocks);
+        const updatedBlocks = [...location.state.savedBlocks];
+        updatedBlocks[blockIndex].items[itemIndex].printingToBeDone = newVariantName;
+        if (newCoatingShade) {
+          updatedBlocks[blockIndex].items[itemIndex].coatingShade = newCoatingShade;
+        }
+        setBlocks(updatedBlocks);
       }
       if (sPlanDate) setPlanDate(sPlanDate);
       window.history.replaceState({}, document.title);
@@ -184,45 +185,45 @@ export default function AddPrintingPlan() {
   }, [location.state]);
 
   const handleAddVariantClick = (bottleName, brandId, blockIndex, itemIndex, colour, variantName = '') => {
-      let existingSpec = (bottleSpecs || []).find(bs => bs.bottleName === bottleName && (bs.brandId?._id || bs.brandId)?.toString() === brandId?.toString());
-      
-      if (!existingSpec && bottleName) {
-        const selectedBottle = (bottlePerBoxes || []).find(b => 
-          (b.plainBottleName || b.bottleName || '').trim().toLowerCase() === bottleName.toLowerCase()
-        );
-        const groupedNames = new Set([bottleName.toUpperCase()]);
-        if (selectedBottle) {
-          const names = (Array.isArray(selectedBottle.bottleNames) && selectedBottle.bottleNames.length > 0)
-            ? selectedBottle.bottleNames
-            : [selectedBottle.bottleName || selectedBottle.plainBottleName].filter(Boolean);
-          names.forEach(n => groupedNames.add(n.trim().toUpperCase()));
-        }
-        existingSpec = (bottleSpecs || []).find(bs => 
-          (bs.brandId?._id || bs.brandId)?.toString() === brandId?.toString() && 
-          groupedNames.has((bs.bottleName || '').trim().toUpperCase())
-        );
-      }
+    let existingSpec = (bottleSpecs || []).find(bs => bs.bottleName === bottleName && (bs.brandId?._id || bs.brandId)?.toString() === brandId?.toString());
 
-      let specId = existingSpec ? existingSpec._id : null;
-      
-      if (!existingSpec) {
-          return Swal.fire('Error', 'Please save the bottle spec first.', 'error');
+    if (!existingSpec && bottleName) {
+      const selectedBottle = (bottlePerBoxes || []).find(b =>
+        (b.plainBottleName || b.bottleName || '').trim().toLowerCase() === bottleName.toLowerCase()
+      );
+      const groupedNames = new Set([bottleName.toUpperCase()]);
+      if (selectedBottle) {
+        const names = (Array.isArray(selectedBottle.bottleNames) && selectedBottle.bottleNames.length > 0)
+          ? selectedBottle.bottleNames
+          : [selectedBottle.bottleName || selectedBottle.plainBottleName].filter(Boolean);
+        names.forEach(n => groupedNames.add(n.trim().toUpperCase()));
       }
+      existingSpec = (bottleSpecs || []).find(bs =>
+        (bs.brandId?._id || bs.brandId)?.toString() === brandId?.toString() &&
+        groupedNames.has((bs.bottleName || '').trim().toUpperCase())
+      );
+    }
 
-      navigate('/variants/add', {
-        state: {
-          autoSelectSpecId: specId,
-          autoSelectCoatingShade: colour || '',
-          autoSelectVariantName: variantName || '',
-          returnTo: `/printing-plan/add`,
-          savedBlocks: blocks,
-          blockIndex: blockIndex,
-          itemIndex: itemIndex,
-          companyId: blocks[blockIndex]?.companyId,
-          brandId: brandId,
-          sPlanDate: planDate
-        }
-      });
+    let specId = existingSpec ? existingSpec._id : null;
+
+    if (!existingSpec) {
+      return Swal.fire('Error', 'Please save the bottle spec first.', 'error');
+    }
+
+    navigate('/variants/add', {
+      state: {
+        autoSelectSpecId: specId,
+        autoSelectCoatingShade: colour || '',
+        autoSelectVariantName: variantName || '',
+        returnTo: `/printing-plan/add`,
+        savedBlocks: blocks,
+        blockIndex: blockIndex,
+        itemIndex: itemIndex,
+        companyId: blocks[blockIndex]?.companyId,
+        brandId: brandId,
+        sPlanDate: planDate
+      }
+    });
   };
 
   const handleBlockChange = async (blockIndex, field, value) => {
@@ -251,21 +252,17 @@ export default function AddPrintingPlan() {
                   const bArray = [...currentBlocks];
                   const targetIt = bArray[blockIndex]?.items.find(item => item === it || item.bottleName === it.bottleName);
                   if (targetIt) {
-                    const isPlain = (targetIt.coatingShade || '').trim().toUpperCase() === 'PLAIN';
                     targetIt.coatedStockAvailable = sVal;
                     targetIt.plainBottleStock = sVal;
                     const p = parseFloat(targetIt.producedQty) || 0;
-                    if (isPlain) {
-                      const o = parseFloat(targetIt.orderQty) || 0;
-                      targetIt.balanceToMake = Math.max(0, o - p);
-                    } else {
-                      targetIt.balanceToMake = p > 0 ? (sVal - p) : sVal;
-                    }
+                    const o = parseFloat(targetIt.orderQty) || 0;
+                    // RULE: Balance = orderQty - producedQty for ALL shades (never uses stock)
+                    targetIt.balanceToMake = Math.max(0, o - p);
                   }
                   return bArray;
                 });
               }
-            } catch (e) {}
+            } catch (e) { }
           }
         });
       } else {
@@ -400,115 +397,115 @@ export default function AddPrintingPlan() {
 
 
     if (field === 'bottleName' && value) {
-         const newBottleName = value.trim();
-         
-         if (newBottleName) {
-            const isMissingFromMaster = !bottleSpecs || !bottleSpecs.some(bs => bs.bottleName?.trim().toUpperCase() === newBottleName.toUpperCase());
-            const isNotAssigned = !isMissingFromMaster && (!bottleSpecs || !bottleSpecs.some(bs => 
-               bs.bottleName?.trim().toUpperCase() === newBottleName.toUpperCase() && 
-               (bs.brandId?._id || bs.brandId)?.toString() === newBlocks[blockIndex].brandId?.toString()
-            ));
-            
-            if (isMissingFromMaster || isNotAssigned) {
-                const bCompanyId = newBlocks[blockIndex].companyId;
-                const bCompanyName = companies.find(c => c._id === bCompanyId)?.name || '';
-                const bBrandId = newBlocks[blockIndex].brandId;
-                const bBrandName = brands.find(b => b._id === bBrandId)?.name || '';
+      const newBottleName = value.trim();
 
-                let masterBottlePerBox = '';
-                try {
-                    const bpbRes = await API.get('/bottle-per-box', { params: { search: newBottleName } });
-                    if (bpbRes.data?.success && bpbRes.data.data?.length > 0) {
-                        const exactMatch = bpbRes.data.data.find(b => b.bottleName?.trim().toLowerCase() === newBottleName.toLowerCase());
-                        if (exactMatch && exactMatch.bottlePerBox) {
-                            masterBottlePerBox = exactMatch.bottlePerBox;
-                        }
-                    }
-                } catch (e) {}
+      if (newBottleName) {
+        const isMissingFromMaster = !bottleSpecs || !bottleSpecs.some(bs => bs.bottleName?.trim().toUpperCase() === newBottleName.toUpperCase());
+        const isNotAssigned = !isMissingFromMaster && (!bottleSpecs || !bottleSpecs.some(bs =>
+          bs.bottleName?.trim().toUpperCase() === newBottleName.toUpperCase() &&
+          (bs.brandId?._id || bs.brandId)?.toString() === newBlocks[blockIndex].brandId?.toString()
+        ));
 
-                if (!masterBottlePerBox) {
-                    const existingBPB = (bottlePerBoxes || []).find(b => b.bottleName?.trim().toLowerCase() === newBottleName.toLowerCase());
-                    masterBottlePerBox = existingBPB?.bottlePerBox || '';
-                }
+        if (isMissingFromMaster || isNotAssigned) {
+          const bCompanyId = newBlocks[blockIndex].companyId;
+          const bCompanyName = companies.find(c => c._id === bCompanyId)?.name || '';
+          const bBrandId = newBlocks[blockIndex].brandId;
+          const bBrandName = brands.find(b => b._id === bBrandId)?.name || '';
 
-                setMissingSpecData({
-                  bottleName: newBottleName.toUpperCase(),
-                  brandId: bBrandId,
-                  companyName: bCompanyName,
-                  brandName: bBrandName,
-                  bottlePerBox: masterBottlePerBox,
-                  code: '',
-                  printingTypeId: '',
-                  printingColorId: '',
-                  blockIndex: blockIndex,
-                  itemIndex: itemIndex
-                });
-                setShowMissingSpecModal(true);
+          let masterBottlePerBox = '';
+          try {
+            const bpbRes = await API.get('/bottle-per-box', { params: { search: newBottleName } });
+            if (bpbRes.data?.success && bpbRes.data.data?.length > 0) {
+              const exactMatch = bpbRes.data.data.find(b => b.bottleName?.trim().toLowerCase() === newBottleName.toLowerCase());
+              if (exactMatch && exactMatch.bottlePerBox) {
+                masterBottlePerBox = exactMatch.bottlePerBox;
+              }
             }
-            
-            // Auto-populate plainBottle if not set
-            if (!currentRow.plainBottle) {
-              const foundBox = (bottlePerBoxes || []).find(b => {
-                const names = (Array.isArray(b.bottleNames) && b.bottleNames.length > 0)
-                  ? b.bottleNames
-                  : [b.bottleName || b.plainBottleName].filter(Boolean);
-                return names.map(n => n.trim().toUpperCase()).includes(newBottleName.toUpperCase());
+          } catch (e) { }
+
+          if (!masterBottlePerBox) {
+            const existingBPB = (bottlePerBoxes || []).find(b => b.bottleName?.trim().toLowerCase() === newBottleName.toLowerCase());
+            masterBottlePerBox = existingBPB?.bottlePerBox || '';
+          }
+
+          setMissingSpecData({
+            bottleName: newBottleName.toUpperCase(),
+            brandId: bBrandId,
+            companyName: bCompanyName,
+            brandName: bBrandName,
+            bottlePerBox: masterBottlePerBox,
+            code: '',
+            printingTypeId: '',
+            printingColorId: '',
+            blockIndex: blockIndex,
+            itemIndex: itemIndex
+          });
+          setShowMissingSpecModal(true);
+        }
+
+        // Auto-populate plainBottle if not set
+        if (!currentRow.plainBottle) {
+          const foundBox = (bottlePerBoxes || []).find(b => {
+            const names = (Array.isArray(b.bottleNames) && b.bottleNames.length > 0)
+              ? b.bottleNames
+              : [b.bottleName || b.plainBottleName].filter(Boolean);
+            return names.map(n => n.trim().toUpperCase()).includes(newBottleName.toUpperCase());
+          });
+          if (foundBox) {
+            const derivedPlain = foundBox.plainBottleName || foundBox.bottleName;
+            currentRow.plainBottle = derivedPlain;
+            if (currentRow.sharedGroupId) {
+              newBlocks[blockIndex].items.forEach(r => {
+                if (r.sharedGroupId === currentRow.sharedGroupId) {
+                  r.plainBottle = derivedPlain;
+                }
               });
-              if (foundBox) {
-                const derivedPlain = foundBox.plainBottleName || foundBox.bottleName;
-                currentRow.plainBottle = derivedPlain;
-                if (currentRow.sharedGroupId) {
-                  newBlocks[blockIndex].items.forEach(r => {
-                    if (r.sharedGroupId === currentRow.sharedGroupId) {
-                      r.plainBottle = derivedPlain;
-                    }
-                  });
-                }
-              }
             }
+          }
+        }
 
-            // MERGE LOGIC: If another row in the SAME BLOCK has this bottle name, merge their sharedGroupIds
-            const existingRow = newBlocks[blockIndex].items.find((r, i) => i !== itemIndex && r.bottleName === newBottleName.toUpperCase());
-            if (existingRow && existingRow.sharedGroupId) {
-              const oldGroupId = currentRow.sharedGroupId;
-              currentRow.sharedGroupId = existingRow.sharedGroupId;
-              currentRow.boxQty = existingRow.boxQty;
-              
-              if (oldGroupId) {
-                newBlocks[blockIndex].items.forEach(r => {
-                  if (r.sharedGroupId === oldGroupId) {
-                    r.sharedGroupId = existingRow.sharedGroupId;
-                    r.boxQty = existingRow.boxQty;
-                    r.bottleName = newBottleName.toUpperCase();
-                  }
-                });
-              }
-            } else if (!currentRow.sharedGroupId) {
-              currentRow.sharedGroupId = 'grp_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5);
-            }
+        // MERGE LOGIC: If another row in the SAME BLOCK has this bottle name, merge their sharedGroupIds
+        const existingRow = newBlocks[blockIndex].items.find((r, i) => i !== itemIndex && r.bottleName === newBottleName.toUpperCase());
+        if (existingRow && existingRow.sharedGroupId) {
+          const oldGroupId = currentRow.sharedGroupId;
+          currentRow.sharedGroupId = existingRow.sharedGroupId;
+          currentRow.boxQty = existingRow.boxQty;
 
-            currentRow.bottleName = newBottleName.toUpperCase();
-            
-            let variantStillValid = false;
-            if (currentRow.printingToBeDone) {
-               const matchingVariant = (variants || []).find(v => 
-                  v.variantName === currentRow.printingToBeDone && 
-                  v.bottleSpecId?.bottleName === currentRow.bottleName
-               );
-               if (matchingVariant) {
-                  variantStillValid = true;
-                  currentRow.coatingShade = matchingVariant.coatingShade || '';
-                  currentRow.textColor = matchingVariant.detectedTextColor || '';
-               }
-            }
-            
-            if (!variantStillValid) {
-                currentRow.printingToBeDone = '';
-                currentRow.coatingShade = '';
-                currentRow.textColor = '';
-                currentRow.variantId = [];
-            }
-         }
+          if (oldGroupId) {
+            newBlocks[blockIndex].items.forEach(r => {
+              if (r.sharedGroupId === oldGroupId) {
+                r.sharedGroupId = existingRow.sharedGroupId;
+                r.boxQty = existingRow.boxQty;
+                r.bottleName = newBottleName.toUpperCase();
+              }
+            });
+          }
+        } else if (!currentRow.sharedGroupId) {
+          currentRow.sharedGroupId = 'grp_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5);
+        }
+
+        currentRow.bottleName = newBottleName.toUpperCase();
+
+        let variantStillValid = false;
+        if (currentRow.printingToBeDone) {
+          const matchingVariant = (variants || []).find(v =>
+            v.variantName === currentRow.printingToBeDone &&
+            v.bottleSpecId?.bottleName === currentRow.bottleName
+          );
+          if (matchingVariant) {
+            variantStillValid = true;
+            currentRow.coatingShade = matchingVariant.coatingShade || '';
+            currentRow.textColor = matchingVariant.detectedTextColor || '';
+          }
+        }
+
+        if (!variantStillValid) {
+          currentRow.printingToBeDone = '';
+          currentRow.coatingShade = '';
+          currentRow.textColor = '';
+          currentRow.variantId = [];
+        }
+      }
     }
 
     if (field === 'printingToBeDone' && Array.isArray(value) && value.length > 0) {
@@ -518,37 +515,37 @@ export default function AddPrintingPlan() {
         const matchingSpecIds = matchingSpecs.map(bs => bs._id);
         const matchingVariant = (variants || []).find(v => v.variantName === value[0] && matchingSpecIds.includes(v.bottleSpecId?._id || v.bottleSpecId));
         if (matchingVariant) {
-           const spec = (bottleSpecs || []).find(bs => bs._id === (matchingVariant.bottleSpecId?._id || matchingVariant.bottleSpecId));
-           if (spec && spec.bottleName) {
-               currentRow.bottleName = spec.bottleName.toUpperCase();
-               const selectedBottle = (bottlePerBoxes || []).find(b => b.bottleName === currentRow.bottleName);
-               if (selectedBottle && selectedBottle.bottlePerBox) {
-                 currentRow.boxQty = selectedBottle.bottlePerBox;
-               }
-               if (!currentRow.plainBottle) {
-                 const foundBox = (bottlePerBoxes || []).find(b => {
-                   const names = (Array.isArray(b.bottleNames) && b.bottleNames.length > 0)
-                     ? b.bottleNames
-                     : [b.bottleName || b.plainBottleName].filter(Boolean);
-                   return names.map(n => n.trim().toUpperCase()).includes(currentRow.bottleName.toUpperCase());
-                 });
-                 if (foundBox) {
-                   currentRow.plainBottle = foundBox.plainBottleName || foundBox.bottleName;
-                 }
-               }
-           }
+          const spec = (bottleSpecs || []).find(bs => bs._id === (matchingVariant.bottleSpecId?._id || matchingVariant.bottleSpecId));
+          if (spec && spec.bottleName) {
+            currentRow.bottleName = spec.bottleName.toUpperCase();
+            const selectedBottle = (bottlePerBoxes || []).find(b => b.bottleName === currentRow.bottleName);
+            if (selectedBottle && selectedBottle.bottlePerBox) {
+              currentRow.boxQty = selectedBottle.bottlePerBox;
+            }
+            if (!currentRow.plainBottle) {
+              const foundBox = (bottlePerBoxes || []).find(b => {
+                const names = (Array.isArray(b.bottleNames) && b.bottleNames.length > 0)
+                  ? b.bottleNames
+                  : [b.bottleName || b.plainBottleName].filter(Boolean);
+                return names.map(n => n.trim().toUpperCase()).includes(currentRow.bottleName.toUpperCase());
+              });
+              if (foundBox) {
+                currentRow.plainBottle = foundBox.plainBottleName || foundBox.bottleName;
+              }
+            }
+          }
         }
       }
 
       if (value.length > 1) {
         currentRow.printingToBeDone = value[0];
-        
+
         if (!currentRow.sharedGroupId) {
           currentRow.sharedGroupId = 'grp_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5);
         }
-        
+
         const pBottle = (currentRow.plainBottle || currentRow.bottleName || '').trim().toUpperCase();
-        const matchedBox = (bottlePerBoxes || []).find(b => 
+        const matchedBox = (bottlePerBoxes || []).find(b =>
           (b.plainBottleName || b.bottleName || '').trim().toLowerCase() === pBottle.toLowerCase()
         );
         const groupedNames = new Set([pBottle]);
@@ -570,61 +567,62 @@ export default function AddPrintingPlan() {
 
         const rowsToAdd = [];
         for (let i = 1; i < value.length; i++) {
-            const varName = value[i];
-            const selVar = (variants || []).find(v =>
-              v.variantName === varName &&
-              groupedNames.has((v.bottleSpecId?.bottleName || '').trim().toUpperCase())
-            );
-            
-            const clonedRow = {
-                ...currentRow,
-                sharedGroupId: currentRow.sharedGroupId,
-                printingToBeDone: varName,
-                coatingShade: selVar?.coatingShade || '',
-                textColor: selVar?.detectedTextColor || '',
-                orderQty: '',
-                producedQty: 0,
-                balanceToMake: 0,
-                dispatchBalance: 0,
-                soldQty: 0,
-                noOfBoxes: '',
-                readyBoxes: '',
-                remarks: ''
-            };
-            
-            if (clonedRow.bottleName && (newBlocks[blockIndex].brandId || newBlocks[blockIndex].companyId)) {
-                API.get('/printing-plan/stats/computed', {
-                    params: {
-                        bottleName: clonedRow.bottleName,
-                        brandId: newBlocks[blockIndex].brandId,
-                        coatingShade: clonedRow.coatingShade || "",
-                        companyId: newBlocks[blockIndex].companyId
+          const varName = value[i];
+          const selVar = (variants || []).find(v =>
+            v.variantName === varName &&
+            groupedNames.has((v.bottleSpecId?.bottleName || '').trim().toUpperCase())
+          );
+
+          const clonedRow = {
+            ...currentRow,
+            sharedGroupId: currentRow.sharedGroupId,
+            printingToBeDone: varName,
+            coatingShade: selVar?.coatingShade || '',
+            textColor: selVar?.detectedTextColor || '',
+            orderQty: '',
+            producedQty: 0,
+            balanceToMake: 0,
+            dispatchBalance: 0,
+            soldQty: 0,
+            noOfBoxes: '',
+            readyBoxes: '',
+            remarks: ''
+          };
+
+          if (clonedRow.bottleName && (newBlocks[blockIndex].brandId || newBlocks[blockIndex].companyId)) {
+            API.get('/printing-plan/stats/computed', {
+              params: {
+                bottleName: clonedRow.bottleName,
+                brandId: newBlocks[blockIndex].brandId,
+                coatingShade: clonedRow.coatingShade || "",
+                companyId: newBlocks[blockIndex].companyId
+              }
+            }).then(res => {
+              if (res.data?.success) {
+                setBlocks(currentBlocks => {
+                  const bArray = [...currentBlocks];
+                  const targetItem = bArray[blockIndex].items.find(i => i.printingToBeDone === varName && i.bottleName === clonedRow.bottleName);
+                  if (targetItem) {
+                    const isPlain = (targetItem.coatingShade || clonedRow.coatingShade || '').trim().toUpperCase() === 'PLAIN';
+                    const stockVal = res.data.data.coatedStockAvailable;
+                    targetItem.coatedStockAvailable = stockVal;
+                    targetItem.plainBottleStock = stockVal;
+                    targetItem.producedQty = res.data.data.producedQty || 0;
+                    const p = parseFloat(targetItem.producedQty) || 0;
+                    if (isPlain) {
+                      const o = parseFloat(targetItem.orderQty) || 0;
+                      targetItem.balanceToMake = Math.max(0, o - p);
+                    } else {
+                      const o = parseFloat(targetItem.orderQty) || 0;
+                      targetItem.balanceToMake = Math.max(0, o - p);
                     }
-                }).then(res => {
-                    if (res.data?.success) {
-                        setBlocks(currentBlocks => {
-                            const bArray = [...currentBlocks];
-                            const targetItem = bArray[blockIndex].items.find(i => i.printingToBeDone === varName && i.bottleName === clonedRow.bottleName);
-                            if (targetItem) {
-                                const isPlain = (targetItem.coatingShade || clonedRow.coatingShade || '').trim().toUpperCase() === 'PLAIN';
-                                const stockVal = res.data.data.coatedStockAvailable;
-                                targetItem.coatedStockAvailable = stockVal;
-                                targetItem.plainBottleStock = stockVal;
-                                targetItem.producedQty = res.data.data.producedQty || 0;
-                                const p = parseFloat(targetItem.producedQty) || 0;
-                                if (isPlain) {
-                                  const o = parseFloat(targetItem.orderQty) || 0;
-                                  targetItem.balanceToMake = Math.max(0, o - p);
-                                } else {
-                                  targetItem.balanceToMake = p > 0 ? (stockVal - p) : stockVal;
-                                }
-                            }
-                            return bArray;
-                        });
-                    }
-                }).catch(console.error);
-            }
-            rowsToAdd.push(clonedRow);
+                  }
+                  return bArray;
+                });
+              }
+            }).catch(console.error);
+          }
+          rowsToAdd.push(clonedRow);
         }
         newBlocks[blockIndex].items.splice(itemIndex + 1, 0, ...rowsToAdd);
         value = [value[0]]; // Set to array with single value to process below
@@ -633,7 +631,7 @@ export default function AddPrintingPlan() {
       const firstVal = value[0];
       const selectedPlainName = (currentRow.plainBottle || currentRow.bottleName || '').trim().toUpperCase();
       const groupedNamesSet = new Set([selectedPlainName]);
-      const matchedBox = (bottlePerBoxes || []).find(b => 
+      const matchedBox = (bottlePerBoxes || []).find(b =>
         (b.plainBottleName || b.bottleName || '').trim().toLowerCase() === selectedPlainName.toLowerCase()
       );
       if (matchedBox) {
@@ -658,7 +656,7 @@ export default function AddPrintingPlan() {
       }
       currentRow.printingToBeDone = firstVal;
     } else if (field === 'printingToBeDone') {
-        currentRow.printingToBeDone = '';
+      currentRow.printingToBeDone = '';
     }
 
     if (field === 'plainBottle' || field === 'bottleName') {
@@ -666,7 +664,7 @@ export default function AddPrintingPlan() {
       currentRow.plainBottle = valStr;
       currentRow.bottleName = valStr;
 
-      const selectedBottle = (bottlePerBoxes || []).find(b => 
+      const selectedBottle = (bottlePerBoxes || []).find(b =>
         (b.plainBottleName || b.bottleName || '').trim().toLowerCase() === valStr.toLowerCase()
       );
       if (selectedBottle && selectedBottle.bottlePerBox) {
@@ -680,7 +678,7 @@ export default function AddPrintingPlan() {
           }
         }
       }
-      
+
       let variantStillValid = false;
       if (currentRow.printingToBeDone && valStr) {
         const groupedNames = new Set([valStr.toUpperCase()]);
@@ -690,8 +688,8 @@ export default function AddPrintingPlan() {
             : [selectedBottle.bottleName || selectedBottle.plainBottleName].filter(Boolean);
           names.forEach(n => groupedNames.add(n.trim().toUpperCase()));
         }
-        const matchingVariant = (variants || []).find(v => 
-          v.variantName === currentRow.printingToBeDone && 
+        const matchingVariant = (variants || []).find(v =>
+          v.variantName === currentRow.printingToBeDone &&
           groupedNames.has((v.bottleSpecId?.bottleName || '').trim().toUpperCase())
         );
         if (matchingVariant) {
@@ -773,7 +771,8 @@ export default function AddPrintingPlan() {
                 const rOrder = parseFloat(r.orderQty) || 0;
                 r.balanceToMake = Math.max(0, rOrder - rProd);
               } else {
-                r.balanceToMake = rProd > 0 ? (parseFloat(currentRow.plainBottleStock) || 0) - rProd : (parseFloat(currentRow.plainBottleStock) || 0);
+                const rOrder = parseFloat(r.orderQty) || 0;
+                r.balanceToMake = Math.max(0, rOrder - rProd);
               }
             }
           }
@@ -856,7 +855,9 @@ export default function AddPrintingPlan() {
             r.plainBottleStock = newStock;
             r.coatedStockAvailable = newStock;
             const rProd = parseFloat(r === currentRow ? newProduced : r.producedQty) || 0;
-            r.balanceToMake = rProd > 0 ? (newStock - rProd) : newStock;
+            const rOrder = parseFloat(r.orderQty) || 0;
+            // Balance = orderQty - producedQty (not stock-based)
+            r.balanceToMake = Math.max(0, rOrder - rProd);
           }
         });
       } else {
@@ -864,7 +865,9 @@ export default function AddPrintingPlan() {
         const newStock = Math.max(0, currentStock - delta);
         currentRow.plainBottleStock = newStock;
         currentRow.coatedStockAvailable = newStock;
-        currentRow.balanceToMake = newProduced > 0 ? (newStock - newProduced) : newStock;
+        const curOrder = parseFloat(currentRow.orderQty) || 0;
+        // Balance = orderQty - producedQty (not stock-based)
+        currentRow.balanceToMake = Math.max(0, curOrder - newProduced);
       }
     }
 
@@ -874,17 +877,17 @@ export default function AddPrintingPlan() {
         const orderQty = parseFloat(currentRow.orderQty) || 0;
         const producedQty = parseFloat(currentRow.producedQty) || 0;
         currentRow.balanceToMake = Math.max(0, orderQty - producedQty);
-        
+
         // Check for plain stock warning on orderQty/noOfBoxes change
         if (field === 'orderQty' || field === 'noOfBoxes') {
           const curBottle = (currentRow.plainBottle || currentRow.bottleName || '').trim().toUpperCase();
           const curComp = (newBlocks[blockIndex].companyId?._id || newBlocks[blockIndex].companyId || '').toString();
           const key = `${curComp}::${curBottle}`;
-          
+
           // Recalculate pool totals for current state
           let plainBottleStock = parseFloat(currentRow.plainBottleStock || currentRow.coatedStockAvailable) || 0;
           let totalOrderForBottle = 0;
-          
+
           newBlocks.forEach(b => {
             const bComp = (b.companyId?._id || b.companyId || '').toString();
             if (bComp === curComp) {
@@ -901,7 +904,7 @@ export default function AddPrintingPlan() {
               });
             }
           });
-          
+
           if (plainBottleStock > 0 && totalOrderForBottle > plainBottleStock) {
             Swal.fire({
               toast: true,
@@ -919,7 +922,9 @@ export default function AddPrintingPlan() {
       } else {
         const stock = parseFloat(currentRow.plainBottleStock || currentRow.coatedStockAvailable);
         const producedQty = parseFloat(currentRow.producedQty);
-        currentRow.balanceToMake = producedQty > 0 ? ((stock || 0) - producedQty) : (stock || 0);
+        const orderQty = parseFloat(currentRow.orderQty) || 0;
+        // Balance = orderQty - producedQty (never uses stock)
+        currentRow.balanceToMake = Math.max(0, orderQty - (producedQty || 0));
         currentRow.isExceedingStock = false;
       }
     }
@@ -990,7 +995,8 @@ export default function AddPrintingPlan() {
                   it.coatedStockAvailable = stockVal;
                   it.plainBottleStock = stockVal;
                   const itProd = parseFloat(it.producedQty) || 0;
-                  it.balanceToMake = itProd > 0 ? (stockVal - itProd) : stockVal;
+                  const itOrder = parseFloat(it.orderQty) || 0;
+                  it.balanceToMake = Math.max(0, itOrder - itProd);
                 }
               });
             }
@@ -1182,7 +1188,7 @@ export default function AddPrintingPlan() {
                   blockPlainBottleOptions = plainBottleOptions.filter(opt => {
                     const optName = opt.value.trim().toUpperCase();
                     if (matchingBottleNames.has(optName)) return true;
-                    const matchedBox = (bottlePerBoxes || []).find(b => 
+                    const matchedBox = (bottlePerBoxes || []).find(b =>
                       (b.plainBottleName || b.bottleName || '').trim().toUpperCase() === optName
                     );
                     if (matchedBox) {
@@ -1276,10 +1282,10 @@ export default function AddPrintingPlan() {
                             <th className="small text-muted text-center align-middle" style={{ width: '8%', minWidth: '150px' }}>Text Color</th>
                             <th className="small text-muted text-center align-middle" style={{ width: '8%', minWidth: '150px' }}>{labels.plainColouredBottleStock}</th>
                             <th className="small text-muted text-center align-middle" style={{ width: '7%' }}>{labels.orderQty} <span className="text-danger">*</span></th>
+                            <th className="small text-muted text-center align-middle" style={{ width: '9%' }}>{labels.readyPrintedQty}</th>
                             <th className="small text-muted text-center align-middle" style={{ width: '9%' }}>{labels.balanceToMake}</th>
                             <th className="small text-muted text-center align-middle" style={{ width: '6%' }}>{labels.bottlePerBox}</th>
                             <th className="small text-muted text-center align-middle" style={{ width: '6%' }}>{labels.noOfOrderBoxes}</th>
-                            <th className="small text-muted text-center align-middle" style={{ width: '9%' }}>{labels.readyPrintedQty}</th>
                             <th className="small text-muted text-center align-middle" style={{ width: '9%' }}>{labels.balanceToBeDispatched}</th>
                             <th className="small text-muted text-center align-middle" style={{ width: '5%' }}>{labels.soldQty}</th>
                             <th className="small text-muted text-center align-middle" style={{ width: '6%' }}>{labels.readyBoxes}</th>
@@ -1301,7 +1307,7 @@ export default function AddPrintingPlan() {
                               }
                             });
                             const renderedGroups = new Set();
-                            
+
                             return block.items.map((item, itemIndex) => {
                               const isGrouped = !!item.sharedGroupId;
                               const isFirstInGroup = isGrouped && !renderedGroups.has(item.sharedGroupId);
@@ -1338,7 +1344,7 @@ export default function AddPrintingPlan() {
                               let groupedBottleNames = new Set();
                               if (selectedPlain) {
                                 groupedBottleNames.add(selectedPlain.toUpperCase());
-                                const matchedBox = (bottlePerBoxes || []).find(b => 
+                                const matchedBox = (bottlePerBoxes || []).find(b =>
                                   (b.plainBottleName || b.bottleName || '').trim().toLowerCase() === selectedPlain.toLowerCase()
                                 );
                                 if (matchedBox) {
@@ -1371,54 +1377,54 @@ export default function AddPrintingPlan() {
                                 <tr key={itemIndex}>
                                   <td className="text-center text-muted">{itemIndex + 1}</td>
                                   {renderGroupCell && (
-                                  <td rowSpan={rowSpan} className="align-middle" style={{ backgroundColor: isGrouped ? '#f8f9fa' : 'inherit' }}>
-                                    {(() => {
-                                      const currentPlainVal = item.plainBottle || item.bottleName;
-                                      let availablePlainBottleOptions = blockPlainBottleOptions;
-                                      
-                                      // If printing variant is selected, show ALL plain bottles for that variant NAME
-                                      if (item.printingToBeDone) {
-                                        const selectedVariantName = item.printingToBeDone;
-                                        
-                                        // Find ALL variants with this same variantName (there may be multiple for different sizes/bottles)
-                                        const allVariantsWithSameName = (variants || []).filter(v => 
-                                          v.variantName && v.variantName.trim().toUpperCase() === selectedVariantName.trim().toUpperCase()
+                                    <td rowSpan={rowSpan} className="align-middle" style={{ backgroundColor: isGrouped ? '#f8f9fa' : 'inherit' }}>
+                                      {(() => {
+                                        const currentPlainVal = item.plainBottle || item.bottleName;
+                                        let availablePlainBottleOptions = blockPlainBottleOptions;
+
+                                        // If printing variant is selected, show ALL plain bottles for that variant NAME
+                                        if (item.printingToBeDone) {
+                                          const selectedVariantName = item.printingToBeDone;
+
+                                          // Find ALL variants with this same variantName (there may be multiple for different sizes/bottles)
+                                          const allVariantsWithSameName = (variants || []).filter(v =>
+                                            v.variantName && v.variantName.trim().toUpperCase() === selectedVariantName.trim().toUpperCase()
+                                          );
+
+                                          // Get all unique bottle spec IDs from all these variants
+                                          const bottleSpecIds = new Set(allVariantsWithSameName.map(v => (v.bottleSpecId?._id || v.bottleSpecId)?.toString()).filter(Boolean));
+
+                                          // Get all bottle names from these specs
+                                          const bottleNamesForVariants = new Set((bottleSpecs || [])
+                                            .filter(bs => bottleSpecIds.has(bs._id?.toString()))
+                                            .map(bs => bs.bottleName?.trim().toUpperCase())
+                                            .filter(Boolean)
+                                          );
+
+                                          // Get all plain bottles that match any of these bottle names
+                                          availablePlainBottleOptions = plainBottleOptions.filter(opt => {
+                                            const optUpper = opt.label.trim().toUpperCase();
+                                            return bottleNamesForVariants.has(optUpper);
+                                          });
+                                        }
+
+                                        if (currentPlainVal && !availablePlainBottleOptions.some(o => o.value === currentPlainVal)) {
+                                          availablePlainBottleOptions = [{ value: currentPlainVal, label: currentPlainVal }, ...availablePlainBottleOptions];
+                                        }
+                                        return (
+                                          <Select
+                                            options={availablePlainBottleOptions}
+                                            value={availablePlainBottleOptions.find(opt => opt.value === currentPlainVal) || (currentPlainVal ? { value: currentPlainVal, label: currentPlainVal } : null)}
+                                            onChange={(selected) => handleItemChange(blockIndex, itemIndex, 'plainBottle', selected?.value || '')}
+                                            placeholder={block.brandId ? "Select Plain Bottle..." : "Select brand first..."}
+                                            isDisabled={!block.brandId}
+                                            isClearable
+                                            menuPortalTarget={document.body}
+                                            styles={{ menuPortal: base => ({ ...base, zIndex: 9999 }) }}
+                                          />
                                         );
-                                        
-                                        // Get all unique bottle spec IDs from all these variants
-                                        const bottleSpecIds = new Set(allVariantsWithSameName.map(v => (v.bottleSpecId?._id || v.bottleSpecId)?.toString()).filter(Boolean));
-                                        
-                                        // Get all bottle names from these specs
-                                        const bottleNamesForVariants = new Set((bottleSpecs || [])
-                                          .filter(bs => bottleSpecIds.has(bs._id?.toString()))
-                                          .map(bs => bs.bottleName?.trim().toUpperCase())
-                                          .filter(Boolean)
-                                        );
-                                        
-                                        // Get all plain bottles that match any of these bottle names
-                                        availablePlainBottleOptions = plainBottleOptions.filter(opt => {
-                                          const optUpper = opt.label.trim().toUpperCase();
-                                          return bottleNamesForVariants.has(optUpper);
-                                        });
-                                      }
-                                      
-                                      if (currentPlainVal && !availablePlainBottleOptions.some(o => o.value === currentPlainVal)) {
-                                        availablePlainBottleOptions = [{ value: currentPlainVal, label: currentPlainVal }, ...availablePlainBottleOptions];
-                                      }
-                                      return (
-                                        <Select
-                                          options={availablePlainBottleOptions}
-                                          value={availablePlainBottleOptions.find(opt => opt.value === currentPlainVal) || (currentPlainVal ? { value: currentPlainVal, label: currentPlainVal } : null)}
-                                          onChange={(selected) => handleItemChange(blockIndex, itemIndex, 'plainBottle', selected?.value || '')}
-                                          placeholder={block.brandId ? "Select Plain Bottle..." : "Select brand first..."}
-                                          isDisabled={!block.brandId}
-                                          isClearable
-                                          menuPortalTarget={document.body}
-                                          styles={{ menuPortal: base => ({ ...base, zIndex: 9999 }) }}
-                                        />
-                                      );
-                                    })()}
-                                  </td>
+                                      })()}
+                                    </td>
                                   )}
                                   <td>
                                     <div className="d-flex align-items-start gap-1">
@@ -1447,10 +1453,10 @@ export default function AddPrintingPlan() {
                                         />
                                       </div>
                                       {!item.printingToBeDone && (
-                                        <button 
-                                          type="button" 
-                                          onClick={() => handleAddVariantClick(item.bottleName, block.brandId, blockIndex, itemIndex, item.coatingShade, item.printingToBeDone)} 
-                                          className="btn btn-outline-primary px-2 shadow-none d-flex align-items-center justify-content-center gap-1" 
+                                        <button
+                                          type="button"
+                                          onClick={() => handleAddVariantClick(item.bottleName, block.brandId, blockIndex, itemIndex, item.coatingShade, item.printingToBeDone)}
+                                          className="btn btn-outline-primary px-2 shadow-none d-flex align-items-center justify-content-center gap-1"
                                           style={{ height: '38px', fontSize: '0.875rem' }}
                                           title="Add New Variant"
                                           disabled={!item.bottleName || !block.brandId}
@@ -1467,33 +1473,33 @@ export default function AddPrintingPlan() {
                                     )}
                                   </td>
                                   {renderShadeGroupCell && (
-                                  <td rowSpan={shadeRowSpan} className="align-middle" style={{ backgroundColor: (isGrouped && shadeRowSpan > 1) ? '#f8f9fa' : 'inherit' }}>
-                                    <CreatableSelect
-                                      options={uniqueCoatingShades}
-                                      value={item.coatingShade ? { value: item.coatingShade, label: item.coatingShade } : null}
-                                      onChange={(selected) => {
-                                        if (isGrouped && shadeRowSpan > 1) {
-                                          const updatedBlocks = [...blocks];
-                                          for (let i = itemIndex; i < itemIndex + shadeRowSpan; i++) {
-                                            updatedBlocks[blockIndex].items[i].coatingShade = selected ? selected.value : '';
+                                    <td rowSpan={shadeRowSpan} className="align-middle" style={{ backgroundColor: (isGrouped && shadeRowSpan > 1) ? '#f8f9fa' : 'inherit' }}>
+                                      <CreatableSelect
+                                        options={uniqueCoatingShades}
+                                        value={item.coatingShade ? { value: item.coatingShade, label: item.coatingShade } : null}
+                                        onChange={(selected) => {
+                                          if (isGrouped && shadeRowSpan > 1) {
+                                            const updatedBlocks = [...blocks];
+                                            for (let i = itemIndex; i < itemIndex + shadeRowSpan; i++) {
+                                              updatedBlocks[blockIndex].items[i].coatingShade = selected ? selected.value : '';
+                                            }
+                                            setBlocks(updatedBlocks);
                                           }
-                                          setBlocks(updatedBlocks);
-                                        }
-                                        handleItemChange(blockIndex, itemIndex, 'coatingShade', selected?.value || '');
-                                      }}
-                                      placeholder="Shade..."
-                                      isClearable
-                                      required
-                                      menuPortalTarget={document.body}
-                                      styles={{ menuPortal: base => ({ ...base, zIndex: 9999 }) }}
-                                      isValidNewOption={(inputValue, selectValue, selectOptions) => {
-                                        if (!inputValue) return false;
-                                        const lowerInput = inputValue.trim().toLowerCase();
-                                        return !selectOptions.some(opt => opt.label.toLowerCase().includes(lowerInput));
-                                      }}
-                                      formatCreateLabel={(inputValue) => `Create "${inputValue.toUpperCase()}"`}
-                                    />
-                                  </td>
+                                          handleItemChange(blockIndex, itemIndex, 'coatingShade', selected?.value || '');
+                                        }}
+                                        placeholder="Shade..."
+                                        isClearable
+                                        required
+                                        menuPortalTarget={document.body}
+                                        styles={{ menuPortal: base => ({ ...base, zIndex: 9999 }) }}
+                                        isValidNewOption={(inputValue, selectValue, selectOptions) => {
+                                          if (!inputValue) return false;
+                                          const lowerInput = inputValue.trim().toLowerCase();
+                                          return !selectOptions.some(opt => opt.label.toLowerCase().includes(lowerInput));
+                                        }}
+                                        formatCreateLabel={(inputValue) => `Create "${inputValue.toUpperCase()}"`}
+                                      />
+                                    </td>
                                   )}
 
                                   <td className="align-middle">
@@ -1507,105 +1513,106 @@ export default function AddPrintingPlan() {
                                   </td>
 
                                   {renderStockGroupCell && (
-                                  <td rowSpan={stockRowSpan} className="align-middle" style={{ backgroundColor: stockRowSpan > 1 ? '#f8f9fa' : 'inherit' }}>
-                                    <input type="number" className="form-control form-control-sm shadow-none text-center" value={item.plainBottleStock} onChange={(e) => {
-                                      const val = e.target.value;
-                                      const parsed = parseFloat(val) || 0;
-                                      if (stockRowSpan > 1) {
-                                        const updatedBlocks = [...blocks];
-                                        for (let i = itemIndex; i < itemIndex + stockRowSpan; i++) {
-                                          updatedBlocks[blockIndex].items[i].plainBottleStock = val;
-                                          const prod = parseFloat(updatedBlocks[blockIndex].items[i].producedQty) || 0;
-                                          const isP = (updatedBlocks[blockIndex].items[i].coatingShade || '').trim().toUpperCase() === 'PLAIN';
-                                          if (isP) {
-                                            const o = parseFloat(updatedBlocks[blockIndex].items[i].orderQty) || 0;
-                                            updatedBlocks[blockIndex].items[i].balanceToMake = Math.max(0, o - prod);
-                                          } else {
-                                            updatedBlocks[blockIndex].items[i].balanceToMake = prod > 0 ? (parsed - prod) : parsed;
+                                    <td rowSpan={stockRowSpan} className="align-middle" style={{ backgroundColor: stockRowSpan > 1 ? '#f8f9fa' : 'inherit' }}>
+                                      <input type="number" className="form-control form-control-sm shadow-none text-center" value={item.plainBottleStock} onChange={(e) => {
+                                        const val = e.target.value;
+                                        const parsed = parseFloat(val) || 0;
+                                        if (stockRowSpan > 1) {
+                                          const updatedBlocks = [...blocks];
+                                          for (let i = itemIndex; i < itemIndex + stockRowSpan; i++) {
+                                            updatedBlocks[blockIndex].items[i].plainBottleStock = val;
+                                            const prod = parseFloat(updatedBlocks[blockIndex].items[i].producedQty) || 0;
+                                            const isP = (updatedBlocks[blockIndex].items[i].coatingShade || '').trim().toUpperCase() === 'PLAIN';
+                                            if (isP) {
+                                              const o = parseFloat(updatedBlocks[blockIndex].items[i].orderQty) || 0;
+                                              updatedBlocks[blockIndex].items[i].balanceToMake = Math.max(0, o - prod);
+                                            } else {
+                                              const o = parseFloat(updatedBlocks[blockIndex].items[i].orderQty) || 0;
+                                              updatedBlocks[blockIndex].items[i].balanceToMake = Math.max(0, o - prod);
+                                            }
                                           }
+                                          setBlocks(updatedBlocks);
+                                        } else {
+                                          handleItemChange(blockIndex, itemIndex, 'plainBottleStock', val);
                                         }
-                                        setBlocks(updatedBlocks);
-                                      } else {
-                                        handleItemChange(blockIndex, itemIndex, 'plainBottleStock', val);
-                                      }
-                                    }} min="0" />
-                                  </td>
+                                      }} min="0" />
+                                    </td>
                                   )}
-                              <td>
-                                <input type="number" className={`form-control form-control-sm shadow-none text-center ${item.isExceedingStock && (item.coatingShade || '').trim().toUpperCase() === 'PLAIN' ? 'bg-warning' : ''}`} value={item.orderQty} onChange={(e) => handleItemChange(blockIndex, itemIndex, 'orderQty', e.target.value)} min="1" required />
-                              </td>
-                              <td>
-                                <input type="number" className="form-control form-control-sm shadow-none text-center" value={item.balanceToMake} onChange={(e) => handleItemChange(blockIndex, itemIndex, 'balanceToMake', e.target.value)} />
-                              </td>
+                                  <td>
+                                    <input type="number" className={`form-control form-control-sm shadow-none text-center ${item.isExceedingStock && (item.coatingShade || '').trim().toUpperCase() === 'PLAIN' ? 'bg-warning' : ''}`} value={item.orderQty} onChange={(e) => handleItemChange(blockIndex, itemIndex, 'orderQty', e.target.value)} min="1" required />
+                                  </td>
+                                  <td>
+                                    <input
+                                      type="number"
+                                      className={`form-control form-control-sm shadow-none text-center ${item.isExceedingStock ? 'bg-warning bg-opacity-25 border-warning text-dark fw-bold' : ''}`}
+                                      value={item.producedQty}
+                                      onChange={(e) => handleItemChange(blockIndex, itemIndex, 'producedQty', e.target.value)}
+                                      min="0"
+                                      title={item.isExceedingStock ? 'Total Ready (Printed) Qty exceeds Plain Stock' : ''}
+                                    />
+                                    {item.isExceedingStock && (
+                                      <div className="text-warning fw-bold text-center" style={{ fontSize: '0.65rem' }}>
+                                        <i className="bi bi-exclamation-triangle-fill me-1"></i>Exceeds Stock
+                                      </div>
+                                    )}
+                                  </td>
+                                  <td>
+                                    <input type="number" className="form-control form-control-sm shadow-none text-center" value={item.balanceToMake} onChange={(e) => handleItemChange(blockIndex, itemIndex, 'balanceToMake', e.target.value)} />
+                                  </td>
                                   {renderGroupCell && (
-                                  <td rowSpan={rowSpan} className="align-middle" style={{ backgroundColor: isGrouped ? '#f8f9fa' : 'inherit' }}>
-                                    <input type="number" className="form-control form-control-sm shadow-none text-center" value={item.boxQty} onChange={(e) => handleItemChange(blockIndex, itemIndex, 'boxQty', e.target.value)} min="1" />
-                                  </td>
+                                    <td rowSpan={rowSpan} className="align-middle" style={{ backgroundColor: isGrouped ? '#f8f9fa' : 'inherit' }}>
+                                      <input type="number" className="form-control form-control-sm shadow-none text-center" value={item.boxQty} onChange={(e) => handleItemChange(blockIndex, itemIndex, 'boxQty', e.target.value)} min="1" />
+                                    </td>
                                   )}
-                              <td>
-                                <input type="number" className="form-control form-control-sm shadow-none text-center" value={item.noOfBoxes} onChange={(e) => handleItemChange(blockIndex, itemIndex, 'noOfBoxes', e.target.value)} min="0" />
-                              </td>
-                              <td>
-                                <input
-                                  type="number"
-                                  className={`form-control form-control-sm shadow-none text-center ${item.isExceedingStock ? 'bg-warning bg-opacity-25 border-warning text-dark fw-bold' : ''}`}
-                                  value={item.producedQty}
-                                  onChange={(e) => handleItemChange(blockIndex, itemIndex, 'producedQty', e.target.value)}
-                                  min="0"
-                                  title={item.isExceedingStock ? 'Total Ready (Printed) Qty exceeds Plain Stock' : ''}
-                                />
-                                {item.isExceedingStock && (
-                                  <div className="text-warning fw-bold text-center" style={{ fontSize: '0.65rem' }}>
-                                    <i className="bi bi-exclamation-triangle-fill me-1"></i>Exceeds Stock
-                                  </div>
-                                )}
-                              </td>
-                              <td>
-                                <input type="number" className="form-control form-control-sm shadow-none text-center" value={item.dispatchBalance} onChange={(e) => handleItemChange(blockIndex, itemIndex, 'dispatchBalance', e.target.value)} min="0" />
-                              </td>
-                              <td>
-                                <input type="number" className="form-control form-control-sm shadow-none text-center" value={item.soldQty} onChange={(e) => handleItemChange(blockIndex, itemIndex, 'soldQty', e.target.value)} min="0" />
-                              </td>
-                              <td>
-                                <input type="number" className="form-control form-control-sm shadow-none text-center" value={item.readyBoxes} onChange={(e) => handleItemChange(blockIndex, itemIndex, 'readyBoxes', e.target.value)} min="0" />
-                              </td>
-                              {isShrenoCompany && getOrderedHeaders(block.selectedItemTypeOptions, sortedActiveItemTypes).map((headerName, hIdx) => (
-                                <td key={`comp_td_${hIdx}`} className="text-center align-middle">
-                                  <input
-                                    type="number"
-                                    className="form-control form-control-sm shadow-none text-center"
-                                    value={item.components?.[headerName] ?? ''}
-                                    onChange={(e) => {
-                                      const val = e.target.value;
-                                      const newBlocks = [...blocks];
-                                      const currentItem = newBlocks[blockIndex].items[itemIndex];
-                                      currentItem.components = {
-                                        ...(currentItem.components || {}),
-                                        [headerName]: val
-                                      };
-                                      setBlocks(newBlocks);
-                                    }}
-                                    min="0"
-                                    placeholder="0"
-                                  />
-                                </td>
-                              ))}
-                              <td>
-                                <input type="text" className="form-control form-control-sm shadow-none" value={item.remarks} onChange={(e) => handleItemChange(blockIndex, itemIndex, 'remarks', e.target.value)} />
-                              </td>
-                              <td className="text-center">
-                                <button
-                                  type="button"
-                                  className="btn btn-sm btn-light text-danger rounded-circle shadow-sm"
-                                  onClick={() => removeItemRow(blockIndex, itemIndex)}
-                                  disabled={block.items.length === 1}
-                                >
-                                  <i className="bi bi-trash"></i>
-                                </button>
-                              </td>
-                            </tr>
-                           );
-                          });
+                                  <td>
+                                    <input type="number" className="form-control form-control-sm shadow-none text-center" value={item.noOfBoxes} onChange={(e) => handleItemChange(blockIndex, itemIndex, 'noOfBoxes', e.target.value)} min="0" />
+                                  </td>
+                                  <td>
+                                    <input type="number" className="form-control form-control-sm shadow-none text-center" value={item.dispatchBalance} onChange={(e) => handleItemChange(blockIndex, itemIndex, 'dispatchBalance', e.target.value)} min="0" />
+                                  </td>
+                                  <td>
+                                    <input type="number" className="form-control form-control-sm shadow-none text-center" value={item.soldQty} onChange={(e) => handleItemChange(blockIndex, itemIndex, 'soldQty', e.target.value)} min="0" />
+                                  </td>
+                                  <td>
+                                    <input type="number" className="form-control form-control-sm shadow-none text-center" value={item.readyBoxes} onChange={(e) => handleItemChange(blockIndex, itemIndex, 'readyBoxes', e.target.value)} min="0" />
+                                  </td>
+                                  {isShrenoCompany && getOrderedHeaders(block.selectedItemTypeOptions, sortedActiveItemTypes).map((headerName, hIdx) => (
+                                    <td key={`comp_td_${hIdx}`} className="text-center align-middle">
+                                      <input
+                                        type="number"
+                                        className="form-control form-control-sm shadow-none text-center"
+                                        value={item.components?.[headerName] ?? ''}
+                                        onChange={(e) => {
+                                          const val = e.target.value;
+                                          const newBlocks = [...blocks];
+                                          const currentItem = newBlocks[blockIndex].items[itemIndex];
+                                          currentItem.components = {
+                                            ...(currentItem.components || {}),
+                                            [headerName]: val
+                                          };
+                                          setBlocks(newBlocks);
+                                        }}
+                                        min="0"
+                                        placeholder="0"
+                                      />
+                                    </td>
+                                  ))}
+                                  <td>
+                                    <input type="text" className="form-control form-control-sm shadow-none" value={item.remarks} onChange={(e) => handleItemChange(blockIndex, itemIndex, 'remarks', e.target.value)} />
+                                  </td>
+                                  <td className="text-center">
+                                    <button
+                                      type="button"
+                                      className="btn btn-sm btn-light text-danger rounded-circle shadow-sm"
+                                      onClick={() => removeItemRow(blockIndex, itemIndex)}
+                                      disabled={block.items.length === 1}
+                                    >
+                                      <i className="bi bi-trash"></i>
+                                    </button>
+                                  </td>
+                                </tr>
+                              );
+                            });
                           })()}
                         </tbody>
                         <tfoot className="table-light fw-bold">
@@ -1614,7 +1621,7 @@ export default function AddPrintingPlan() {
                             const totalStock = block.items.reduce((sum, item) => {
                               const isPlain = (item.coatingShade || '').trim().toUpperCase() === 'PLAIN';
                               const bName = (item.plainBottle || item.bottleName || '').trim().toUpperCase();
-                              const key = isPlain 
+                              const key = isPlain
                                 ? `PLAIN_${bName}`
                                 : (item.sharedGroupId ? `${item.sharedGroupId}_${(item.coatingShade || '').trim().toUpperCase()}` : null);
                               if (key) {
@@ -1637,8 +1644,8 @@ export default function AddPrintingPlan() {
                                 <td className="text-center">{totalOrderQty}</td>
                                 <td></td>
                                 <td></td>
-                                <td className="text-center">{totalNoOfBoxes}</td>
                                 <td></td>
+                                <td className="text-center">{totalNoOfBoxes}</td>
                                 <td></td>
                                 <td></td>
                                 <td></td>
@@ -1697,89 +1704,89 @@ export default function AddPrintingPlan() {
               </div>
               <div className="modal-body p-4 bg-light bg-opacity-50">
                 <div className="alert alert-info py-3 small mb-4 rounded-3 border-0 bg-info bg-opacity-10 text-info-emphasis d-flex gap-2 align-items-start">
-                   <i className="bi bi-info-circle-fill mt-1"></i>
-                   <div>
-                     Bottle <strong>{missingSpecData.bottleName}</strong> is missing specifications or not assigned to <strong>{missingSpecData.brandName}</strong>. Please add it to continue.
-                   </div>
+                  <i className="bi bi-info-circle-fill mt-1"></i>
+                  <div>
+                    Bottle <strong>{missingSpecData.bottleName}</strong> is missing specifications or not assigned to <strong>{missingSpecData.brandName}</strong>. Please add it to continue.
+                  </div>
                 </div>
 
                 <div className="mb-4">
                   <label className="form-label text-uppercase small fw-bold text-muted mb-1">Company</label>
-                  <input 
-                    type="text" 
-                    className="form-control shadow-none bg-white border-light-subtle rounded-3 py-2 fw-bold text-dark" 
-                    value={missingSpecData.companyName} 
+                  <input
+                    type="text"
+                    className="form-control shadow-none bg-white border-light-subtle rounded-3 py-2 fw-bold text-dark"
+                    value={missingSpecData.companyName}
                     disabled
                   />
                 </div>
 
                 <div className="mb-4">
                   <label className="form-label text-uppercase small fw-bold text-muted mb-1">Brand</label>
-                  <input 
-                    type="text" 
-                    className="form-control shadow-none bg-white border-light-subtle rounded-3 py-2 fw-bold text-dark" 
-                    value={missingSpecData.brandName} 
+                  <input
+                    type="text"
+                    className="form-control shadow-none bg-white border-light-subtle rounded-3 py-2 fw-bold text-dark"
+                    value={missingSpecData.brandName}
                     disabled
                   />
                 </div>
 
                 <div className="mb-4">
                   <label className="form-label text-uppercase small fw-bold text-muted mb-1">Bottle Name</label>
-                  <input 
-                    type="text" 
-                    className="form-control shadow-none bg-white border-light-subtle rounded-3 py-2 fw-bold text-dark" 
-                    value={missingSpecData.bottleName} 
+                  <input
+                    type="text"
+                    className="form-control shadow-none bg-white border-light-subtle rounded-3 py-2 fw-bold text-dark"
+                    value={missingSpecData.bottleName}
                     disabled
                   />
                 </div>
 
                 <div className="mb-4">
                   <label className="form-label text-uppercase small fw-bold text-muted mb-1">Bottle Code</label>
-                  <input 
-                    type="text" 
-                    className="form-control shadow-none bg-white border-light-subtle rounded-3 py-2" 
-                    value={missingSpecData.code} 
-                    onChange={(e) => setMissingSpecData({...missingSpecData, code: e.target.value})}
+                  <input
+                    type="text"
+                    className="form-control shadow-none bg-white border-light-subtle rounded-3 py-2"
+                    value={missingSpecData.code}
+                    onChange={(e) => setMissingSpecData({ ...missingSpecData, code: e.target.value })}
                     placeholder="Optional code"
                   />
                 </div>
 
                 <div className="row g-4 mb-4">
-                   <div className="col-md-6">
-                     <label className="form-label text-uppercase small fw-bold text-muted mb-1">Printing Type</label>
-                     <select 
-                        className="form-select shadow-none bg-white border-light-subtle rounded-3 py-2" 
-                        value={missingSpecData.printingTypeId}
-                        onChange={(e) => setMissingSpecData({...missingSpecData, printingTypeId: e.target.value})}
-                     >
-                        <option value="">None</option>
-                        {printingTypes.map(pt => (
-                           <option key={pt._id} value={pt._id}>{pt.name}</option>
-                        ))}
-                     </select>
-                   </div>
-                   <div className="col-md-6">
-                     <label className="form-label text-uppercase small fw-bold text-muted mb-1">Printing Color</label>
-                     <select 
-                        className="form-select shadow-none bg-white border-light-subtle rounded-3 py-2" 
-                        value={missingSpecData.printingColorId}
-                        onChange={(e) => setMissingSpecData({...missingSpecData, printingColorId: e.target.value})}
-                     >
-                        <option value="">None</option>
-                        {printingColors.map(pc => (
-                           <option key={pc._id} value={pc._id}>{pc.name}</option>
-                        ))}
-                     </select>
-                   </div>
+                  <div className="col-md-6">
+                    <label className="form-label text-uppercase small fw-bold text-muted mb-1">Printing Type</label>
+                    <select
+                      className="form-select shadow-none bg-white border-light-subtle rounded-3 py-2"
+                      value={missingSpecData.printingTypeId}
+                      onChange={(e) => setMissingSpecData({ ...missingSpecData, printingTypeId: e.target.value })}
+                    >
+                      <option value="">None</option>
+                      {printingTypes.map(pt => (
+                        <option key={pt._id} value={pt._id}>{pt.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="col-md-6">
+                    <label className="form-label text-uppercase small fw-bold text-muted mb-1">Printing Color</label>
+                    <select
+                      className="form-select shadow-none bg-white border-light-subtle rounded-3 py-2"
+                      value={missingSpecData.printingColorId}
+                      onChange={(e) => setMissingSpecData({ ...missingSpecData, printingColorId: e.target.value })}
+                    >
+                      <option value="">None</option>
+                      {printingColors.map(pc => (
+                        <option key={pc._id} value={pc._id}>{pc.name}</option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
 
                 <div>
                   <label className="form-label text-uppercase small fw-bold text-muted mb-1">Bottle Per Box <span className="text-danger">*</span></label>
-                  <input 
-                    type="number" 
-                    className="form-control shadow-none bg-white border-light-subtle rounded-3 py-2" 
-                    value={missingSpecData.bottlePerBox} 
-                    onChange={(e) => setMissingSpecData({...missingSpecData, bottlePerBox: e.target.value})}
+                  <input
+                    type="number"
+                    className="form-control shadow-none bg-white border-light-subtle rounded-3 py-2"
+                    value={missingSpecData.bottlePerBox}
+                    onChange={(e) => setMissingSpecData({ ...missingSpecData, bottlePerBox: e.target.value })}
                     min="1"
                     placeholder="Required"
                   />
@@ -1787,59 +1794,59 @@ export default function AddPrintingPlan() {
               </div>
               <div className="modal-footer bg-white border-top p-4 d-flex justify-content-end gap-2">
                 <button type="button" className="btn btn-light px-4 py-2 fw-500 rounded-3" onClick={() => setShowMissingSpecModal(false)}>Cancel</button>
-                <button type="button" className="btn btn-primary px-4 py-2 fw-500 rounded-3 d-flex align-items-center" 
-                        onClick={async () => {
-                           if (!missingSpecData.bottlePerBox || missingSpecData.bottlePerBox <= 0) {
-                               Swal.fire('Error', 'Please provide a valid bottle per box value.', 'error');
-                               return;
-                           }
-                           setCreatingSpec(true);
-                           try {
-                               // Also save to bottle-per-box
-                               await API.post('/bottle-per-box', {
-                                   bottleName: missingSpecData.bottleName,
-                                   bottlePerBox: Number(missingSpecData.bottlePerBox)
-                               });
-                               
-                               const payload = {
-                                   brandId: missingSpecData.brandId,
-                                   bottleName: missingSpecData.bottleName,
-                                   code: missingSpecData.code || '',
-                                   printingTypeId: missingSpecData.printingTypeId || null,
-                                   printingColorId: missingSpecData.printingColorId || null,
-                                   isPrinting: true,
-                                   isCoating: true,
-                                   status: true
-                               };
-                               await API.post('/bottle-spec', payload);
-                               
-                               await dispatch(fetchBottleSpecs({ limit: 1000, status: true, type: 'all' }));
-                               await dispatch(fetchBottlePerBoxes({ limit: 1000, status: true }));
-                               
-                               if (missingSpecData.blockIndex !== null && missingSpecData.itemIndex !== null) {
-                                   const newBlocks = [...blocks];
-                                   newBlocks[missingSpecData.blockIndex].items[missingSpecData.itemIndex].boxQty = missingSpecData.bottlePerBox;
-                                   setBlocks(newBlocks);
-                               }
-                               
-                               setShowMissingSpecModal(false);
-                               Swal.fire({
-                                   title: 'Success!',
-                                   text: 'Bottle specification added to master.',
-                                   icon: 'success',
-                                   toast: true,
-                                   position: 'top-end',
-                                   showConfirmButton: false,
-                                   timer: 3000
-                               });
-                           } catch (err) {
-                               console.error(err);
-                               Swal.fire('Error', err.response?.data?.message || 'Failed to create bottle spec', 'error');
-                           } finally {
-                               setCreatingSpec(false);
-                           }
-                        }}
-                        disabled={creatingSpec}>
+                <button type="button" className="btn btn-primary px-4 py-2 fw-500 rounded-3 d-flex align-items-center"
+                  onClick={async () => {
+                    if (!missingSpecData.bottlePerBox || missingSpecData.bottlePerBox <= 0) {
+                      Swal.fire('Error', 'Please provide a valid bottle per box value.', 'error');
+                      return;
+                    }
+                    setCreatingSpec(true);
+                    try {
+                      // Also save to bottle-per-box
+                      await API.post('/bottle-per-box', {
+                        bottleName: missingSpecData.bottleName,
+                        bottlePerBox: Number(missingSpecData.bottlePerBox)
+                      });
+
+                      const payload = {
+                        brandId: missingSpecData.brandId,
+                        bottleName: missingSpecData.bottleName,
+                        code: missingSpecData.code || '',
+                        printingTypeId: missingSpecData.printingTypeId || null,
+                        printingColorId: missingSpecData.printingColorId || null,
+                        isPrinting: true,
+                        isCoating: true,
+                        status: true
+                      };
+                      await API.post('/bottle-spec', payload);
+
+                      await dispatch(fetchBottleSpecs({ limit: 1000, status: true, type: 'all' }));
+                      await dispatch(fetchBottlePerBoxes({ limit: 1000, status: true }));
+
+                      if (missingSpecData.blockIndex !== null && missingSpecData.itemIndex !== null) {
+                        const newBlocks = [...blocks];
+                        newBlocks[missingSpecData.blockIndex].items[missingSpecData.itemIndex].boxQty = missingSpecData.bottlePerBox;
+                        setBlocks(newBlocks);
+                      }
+
+                      setShowMissingSpecModal(false);
+                      Swal.fire({
+                        title: 'Success!',
+                        text: 'Bottle specification added to master.',
+                        icon: 'success',
+                        toast: true,
+                        position: 'top-end',
+                        showConfirmButton: false,
+                        timer: 3000
+                      });
+                    } catch (err) {
+                      console.error(err);
+                      Swal.fire('Error', err.response?.data?.message || 'Failed to create bottle spec', 'error');
+                    } finally {
+                      setCreatingSpec(false);
+                    }
+                  }}
+                  disabled={creatingSpec}>
                   {creatingSpec ? (
                     <><span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span> Saving...</>
                   ) : (

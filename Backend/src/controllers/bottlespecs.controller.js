@@ -152,7 +152,7 @@ exports.getSpecs = async (req, res) => {
     if (page && page !== '') {
       parsedPage = parseInt(page) || 1;
       res.cookie('bottleSpecsPage', parsedPage, { maxAge: 86400000, httpOnly: true });
-    } else if (req.cookies && req.cookies.bottleSpecsPage) {
+    } else if (req.cookies && req.cookies.bottleSpecsPage && !limit && pagination !== "false") {
       parsedPage = parseInt(req.cookies.bottleSpecsPage) || 1;
     }
 

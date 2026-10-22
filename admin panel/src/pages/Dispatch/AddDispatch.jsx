@@ -31,6 +31,7 @@ export default function AddDispatch() {
     coatingShade: '',
     printingTypeId: '',
     variantId: '',
+    detectedTextColor: 'Not Detected',
     box: '',
     qty: '',
     totalQty: 0
@@ -199,7 +200,7 @@ export default function AddDispatch() {
   };
 
   const addItemRow = () => {
-    setItems([...items, { bottleId: '', coatingShade: '', printingTypeId: '', variantId: '', box: '', qty: '', totalQty: 0 }]);
+    setItems([...items, { bottleId: '', coatingShade: '', printingTypeId: '', detectedTextColor: 'Not Detected', variantId: '', box: '', qty: '', totalQty: 0 }]);
   };
 
   const removeItemRow = (index) => {
@@ -218,6 +219,7 @@ export default function AddDispatch() {
       newItems[index].variantId = '';
       newItems[index].coatingShade = '';
       newItems[index].printingTypeId = '';
+      newItems[index].detectedTextColor = 'Not Detected';
       
       // Auto-populate qty when bottleId changes
       const foundBox = bottlePerBoxes?.find(b => b._id === value);
@@ -234,6 +236,12 @@ export default function AddDispatch() {
       const bottlePerBox = bottlePerBoxes?.find(b => b._id === newItems[index].bottleId);
       if (bottlePerBox) {
         const plainBottleName = bottlePerBox.plainBottleName || bottlePerBox.bottleName;
+        
+        // Get the text color directly from the selected variant
+        const selectedVariant = variants?.find(v => v._id === value);
+        if (selectedVariant && selectedVariant.detectedTextColor) {
+          newItems[index].detectedTextColor = selectedVariant.detectedTextColor;
+        }
         
         // Try to find matching BottleSpec by bottle name and variant
         let matchingSpec = bottleSpecs?.find(spec => 
@@ -254,16 +262,6 @@ export default function AddDispatch() {
           // Auto-populate coating shade
           if (matchingSpec.coatingShade) {
             newItems[index].coatingShade = matchingSpec.coatingShade;
-          }
-          // Auto-populate printing type
-          if (matchingSpec.printingTypeId) {
-            // Handle both object and string formats
-            const printingTypeId = typeof matchingSpec.printingTypeId === 'object' 
-              ? matchingSpec.printingTypeId._id 
-              : matchingSpec.printingTypeId;
-            if (printingTypeId) {
-              newItems[index].printingTypeId = printingTypeId;
-            }
           }
         }
       }
@@ -336,6 +334,7 @@ export default function AddDispatch() {
         bottleId: item.bottleId,
         coatingShade: item.coatingShade || null,
         variantId: item.variantId || null,
+        detectedTextColor: item.detectedTextColor || 'Not Detected',
         printingTypeId: item.printingTypeId || null,
         box: Number(item.box) || 0,
         qty: Number(item.qty),
@@ -346,7 +345,7 @@ export default function AddDispatch() {
     dispatch(createDispatch(payload)).then(res => {
       if (!res.error) {
         Swal.fire('Success', 'Dispatch recorded successfully!', 'success');
-        navigate('/dispatch');
+        navigate(`/dispatch/company/${formData.companyId}`);
       } else {
         Swal.fire('Error', res.payload || 'Failed to save', 'error');
       }
@@ -445,7 +444,7 @@ export default function AddDispatch() {
                       <th className="small text-muted" style={{ width: '20%' }}>Bottle Name <span className="text-danger">*</span></th>
                       <th className="small text-muted" style={{ width: '15%' }}>Variant (Printing)</th>
                       <th className="small text-muted" style={{ width: '15%' }}>Coating Shade</th>
-                      <th className="small text-muted" style={{ width: '15%' }}>Printing Type</th>
+                      <th className="small text-muted" style={{ width: '15%' }}>Text Color</th>
                       <th className="small text-muted text-center" style={{ width: '12%' }}>No of boxes</th>
                       <th className="small text-muted text-center" style={{ width: '12%' }}>Qty/Box <span className="text-danger">*</span></th>
                       <th className="small text-muted text-end" style={{ width: '12%' }}>Total Qty</th>
@@ -459,7 +458,12 @@ export default function AddDispatch() {
                         <td>
                           <Select
                             options={bottleOptions}
-                            value={bottleOptions.find(opt => opt.value === item.bottleId) || null}
+                            value={
+                              item.bottleId
+                                ? (bottleOptions.find(opt => opt.value === item.bottleId) || 
+                                   { value: item.bottleId, label: bottlePerBoxes?.find(b => b._id === item.bottleId)?.bottleName || item.bottleId })
+                                : null
+                            }
                             onChange={(selected) => handleItemChange(index, 'bottleId', selected?.value || '')}
                             placeholder="Select Bottle"
                             isClearable
@@ -473,7 +477,11 @@ export default function AddDispatch() {
                         <td>
                           <Select
                             options={getVariantOptions(item.bottleId)}
-                            value={item.variantId ? getVariantOptions(item.bottleId).find(opt => opt.value === item.variantId) : null}
+                            value={
+                              item.variantId 
+                                ? { value: item.variantId, label: variants?.find(v => v._id === item.variantId)?.variantName || item.variantId }
+                                : null
+                            }
                             onChange={(selected) => handleItemChange(index, 'variantId', selected?.value || '')}
                             placeholder="Select Variant"
                             isClearable
@@ -501,19 +509,9 @@ export default function AddDispatch() {
                           />
                         </td>
                         <td>
-                          <Select
-                            options={getPrintingTypeOptions(item.bottleId, item.variantId)}
-                            value={item.printingTypeId ? getPrintingTypeOptions(item.bottleId, item.variantId).find(opt => opt.value === item.printingTypeId) : null}
-                            onChange={(selected) => handleItemChange(index, 'printingTypeId', selected?.value || '')}
-                            placeholder="Select Type"
-                            isClearable
-                            isDisabled={!item.bottleId}
-                            menuPortalTarget={document.body}
-                            styles={{
-                              menuPortal: base => ({ ...base, zIndex: 9999 }),
-                              control: (base) => ({ ...base, borderRadius: '8px', backgroundColor: 'var(--bs-light)', borderColor: 'var(--bs-border-color-translucent)' })
-                            }}
-                          />
+                          <div className="form-control bg-light" style={{ borderRadius: '8px', height: '38px', display: 'flex', alignItems: 'center', border: '1px solid var(--bs-border-color-translucent)', cursor: 'default' }}>
+                            <span className="text-muted small">{item.detectedTextColor || 'Not Detected'}</span>
+                          </div>
                         </td>
                         <td>
                           <input
@@ -580,7 +578,7 @@ export default function AddDispatch() {
                 <button type="submit" className="btn-accent px-5 py-3 flex-grow-1">
                   <i className="bi bi-check2-circle me-2" /> Save Dispatch
                 </button>
-                <button type="button" onClick={() => navigate('/dispatch')} className="btn-ghost px-5 py-3 text-decoration-none text-center">
+                <button type="button" onClick={() => navigate(`/dispatch/company/${formData.companyId}`)} className="btn-ghost px-5 py-3 text-decoration-none text-center">
                   Cancel
                 </button>
               </div>

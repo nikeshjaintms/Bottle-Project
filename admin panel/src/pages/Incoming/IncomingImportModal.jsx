@@ -101,6 +101,14 @@ export default function IncomingImportModal({ show, onClose, onImportComplete })
       return;
     }
 
+    // DEBUG: Log what we're about to send
+    console.log('[INCOMING IMPORT FRONTEND] About to commit:');
+    console.log('Total sheets:', previewData.sheets.length);
+    previewData.sheets.forEach((sheet, idx) => {
+      console.log(`  Sheet ${idx} "${sheet.sheetName}": ${sheet.incomingRecords.length} records (${sheet.validRows} valid)`);
+    });
+    console.log('Total valid rows in payload:', totalValid);
+
     const result = await Swal.fire({
       title: 'Confirm Import',
       html: `<p>Are you sure you want to import <strong>${totalValid}</strong> incoming records?</p>
@@ -118,7 +126,17 @@ export default function IncomingImportModal({ show, onClose, onImportComplete })
           sheetsToImport: previewData.sheets
         });
         if (res.data.success) {
-          Swal.fire('Success', `Imported ${res.data.data.incomingImported} records.`, 'success');
+          console.log('[INCOMING IMPORT RESPONSE]', res.data.data);
+          const { incomingImported, skipped, validRowsReceived } = res.data.data;
+          const lost = validRowsReceived - incomingImported - skipped;
+          let successMsg = `Imported ${incomingImported} of ${validRowsReceived} valid records.`;
+          if (skipped > 0) {
+            successMsg += ` Skipped ${skipped} duplicates.`;
+          }
+          if (lost > 0) {
+            successMsg += ` ⚠️ ${lost} rows unaccounted for!`;
+          }
+          Swal.fire('Success', successMsg, 'success');
           onImportComplete();
           handleReset();
           onClose();
@@ -245,9 +263,14 @@ export default function IncomingImportModal({ show, onClose, onImportComplete })
                 <th>Bottle Name</th>
                 <th>Challan No</th>
                 <th>Date</th>
-                <th>PO Date</th>
-                <th>PO No</th>
-                <th>PO Order Qty</th>
+                {/* PO columns only for SHRENO format */}
+                {activeData.detectedFormat === 'SHRENO' && (
+                  <>
+                    <th>PO Date</th>
+                    <th>PO No</th>
+                    <th>PO Order Qty</th>
+                  </>
+                )}
                 <th>Box</th>
                 <th>Qty</th>
                 <th>Total</th>
@@ -262,9 +285,14 @@ export default function IncomingImportModal({ show, onClose, onImportComplete })
                   <td>{r.bottleNameRaw || 'N/A'}</td>
                   <td className="fw-bold">{r.challanNo || '-'}</td>
                   <td>{r.incomingDate ? new Date(r.incomingDate).toLocaleDateString() : '-'}</td>
-                  <td>{r.poDate ? new Date(r.poDate).toLocaleDateString() : '-'}</td>
-                  <td className="fw-bold">{r.poNo || '-'}</td>
-                  <td className="fw-bold">{r.poOrderQty || '-'}</td>
+                  {/* PO columns only for SHRENO format */}
+                  {activeData.detectedFormat === 'SHRENO' && (
+                    <>
+                      <td>{r.poDate ? new Date(r.poDate).toLocaleDateString() : '-'}</td>
+                      <td className="fw-bold">{r.poNo || '-'}</td>
+                      <td className="fw-bold">{r.poOrderQty || '-'}</td>
+                    </>
+                  )}
                   <td className="fw-bold">{r.noOfBox || '-'}</td>
                   <td className="fw-bold">{r.qty || '-'}</td>
                   <td className="fw-bold">{r.totalQty || '-'}</td>
@@ -313,7 +341,7 @@ export default function IncomingImportModal({ show, onClose, onImportComplete })
                 </tr>
               )) : (
                 <tr>
-                  <td colSpan={filterTab !== 'VALID' ? 13 : 12} className="text-center py-4 text-muted">No rows match the current filters</td>
+                  <td colSpan={filterTab !== 'VALID' ? (activeData.detectedFormat === 'SHRENO' ? 13 : 10) : (activeData.detectedFormat === 'SHRENO' ? 12 : 9)} className="text-center py-4 text-muted">No rows match the current filters</td>
                 </tr>
               )}
             </tbody>
@@ -436,11 +464,14 @@ export default function IncomingImportModal({ show, onClose, onImportComplete })
                           <th className="py-3 border-bottom border-light-subtle text-center text-uppercase text-muted fw-bold" style={{ fontSize: '0.8rem', letterSpacing: '0.5px' }}>Total</th>
                           <th className="py-3 border-bottom border-light-subtle text-center text-uppercase text-muted fw-bold" style={{ fontSize: '0.8rem', letterSpacing: '0.5px' }}>Valid</th>
                           <th className="py-3 border-bottom border-light-subtle text-center text-uppercase text-muted fw-bold" style={{ fontSize: '0.8rem', letterSpacing: '0.5px' }}>Invalid</th>
+                          <th className="py-3 border-bottom border-light-subtle text-center text-uppercase text-muted fw-bold" style={{ fontSize: '0.8rem', letterSpacing: '0.5px' }}>Existing Plans</th>
                           <th className="py-3 border-bottom border-light-subtle text-end text-uppercase text-muted fw-bold" style={{ minWidth: '150px', fontSize: '0.8rem', letterSpacing: '0.5px' }}>Action</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {previewData.sheets.map((sheet, idx) => (
+                        {previewData.sheets.map((sheet, idx) => {
+                          console.log(`[SHEET ROW] ${sheet.sheetName}: existingPlansCount=${sheet.existingPlansCount}`);
+                          return (
                           <tr key={idx}>
                             <td className="fw-bold">{sheet.sheetName}</td>
                             <td className="text-center">
@@ -451,6 +482,13 @@ export default function IncomingImportModal({ show, onClose, onImportComplete })
                             <td className="text-center">{sheet.totalRows}</td>
                             <td className="text-center text-success fw-bold">{sheet.validRows}</td>
                             <td className="text-center text-danger">{sheet.invalidRows > 0 ? sheet.invalidRows : '-'}</td>
+                            <td className="text-center">
+                              {sheet.existingPlansCount > 0 ? (
+                                <span className="badge bg-warning text-dark fw-bold">{sheet.existingPlansCount}</span>
+                              ) : (
+                                <span className="text-muted">-</span>
+                              )}
+                            </td>
                             <td className="text-end">
                               <button 
                                 className="btn btn-sm btn-outline-info shadow-sm fw-bold"
@@ -464,7 +502,8 @@ export default function IncomingImportModal({ show, onClose, onImportComplete })
                               </button>
                             </td>
                           </tr>
-                        ))}
+                        );
+                        })}
                       </tbody>
                     </table>
                   </div>

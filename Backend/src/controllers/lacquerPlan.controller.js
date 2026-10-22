@@ -431,7 +431,9 @@ const syncPrintingPlanForLacquerPlan = async (plan, userId = null) => {
   }
 
   const shade = plan.coatingShade || plan.colour || "";
-  const plainStock = plan.coatingCompletedQty ?? plan.coatedQty ?? 0;
+  const plainStock = (plan.process === 'P') 
+    ? await computeLivePlainStock(plan.bottleName, plan.companyId, plan.planDate) 
+    : (plan.coatingCompletedQty ?? plan.coatedQty ?? 0);
 
   // Find linked PrintingPlan for this specific lacquerPlanId (including soft-deleted to restore)
   let existingPlan = await PrintingPlan.findOne({ lacquerPlanId: plan._id });
@@ -512,94 +514,75 @@ const createPrintingPlanIfApplicable = syncPrintingPlanForLacquerPlan;
  * @param {Date} excludeDate - (optional) Date to exclude from allocation count
  * @returns {Promise<{totalStock, allocated, available, breakdown}>}
  */
-const calculateAvailableStock = async (plainBottleName, companyId, excludeDate = null) => {
+const calculateAvailableStock = async (plainBottleName, companyId, excludeDate = null, planDate = null) => {
   try {
     if (!plainBottleName || !companyId) {
       return {
         totalStock: 0,
+        openingStock: 0,
+        totalCoatedToday: 0,
         allocated: 0,
         available: 0,
         breakdown: { lacquerPlans: 0, incomingPlan: 0, reserved: 0 }
       };
     }
 
-    // 1. Get total stock from PlainBottleStock
-    const stockResult = await recomputePlainStock(plainBottleName, companyId);
-    const totalStock = stockResult?.stockDoc?.availableQuantity || 0;
+    // 1. Get live shown stock computed as of target date (no cache fallback)
+    const effectiveDate = planDate || (excludeDate ? new Date(excludeDate) : new Date());
+    const shownStock = await computeLivePlainStock(plainBottleName, companyId, effectiveDate);
 
-    // 2. Sum incomplete LacquerPlan orderQty from TODAY onwards (excluding excludeDate)
-    const today = new Date();
-    today.setUTCHours(0, 0, 0, 0);
+    // 2. Sum that date's Σ Coating Completed Qty of the pool
+    const startOfDay = new Date(effectiveDate);
+    startOfDay.setUTCHours(0, 0, 0, 0);
+    const endOfDay = new Date(effectiveDate);
+    endOfDay.setUTCHours(23, 59, 59, 999);
 
-    let lacquerAllocationQuery = {
-      bottleName: plainBottleName,
-      companyId: companyId,
-      planDate: { $gte: today },
-      isDeleted: false,
-      orderQty: { $gt: 0 },
-      $expr: { $lt: ["$coatingCompletedQty", "$orderQty"] }
-    };
+    const escapeRegex = (string) => string ? string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') : '';
+    const nameTrimmed = String(plainBottleName).trim();
+    const BottlePerBox = require('../models/BottlePerBox');
+    const bp = await BottlePerBox.findOne({
+      $or: [
+        { bottleName: new RegExp("^" + escapeRegex(nameTrimmed) + "$", "i") },
+        { plainBottleName: new RegExp("^" + escapeRegex(nameTrimmed) + "$", "i") },
+        { bottleNames: new RegExp("^" + escapeRegex(nameTrimmed) + "$", "i") }
+      ],
+      isDeleted: false
+    });
 
-    // If excludeDate provided, exclude rows from that date
-    if (excludeDate) {
-      const excludeStart = new Date(excludeDate);
-      excludeStart.setUTCHours(0, 0, 0, 0);
-      const excludeEnd = new Date(excludeDate);
-      excludeEnd.setUTCHours(23, 59, 59, 999);
-
-      lacquerAllocationQuery.planDate = {
-        $gte: today,
-        $not: {
-          $gte: excludeStart,
-          $lte: excludeEnd
-        }
-      };
+    const bottleNames = [nameTrimmed];
+    if (bp) {
+      if (bp.bottleName) bottleNames.push(bp.bottleName);
+      if (bp.plainBottleName) bottleNames.push(bp.plainBottleName);
+      if (Array.isArray(bp.bottleNames)) bottleNames.push(...bp.bottleNames);
     }
+    const bottleRegexes = Array.from(new Set(bottleNames.map(n => n.trim()))).map(n => new RegExp("^" + escapeRegex(n) + "$", "i"));
 
-    const lacquerPlans = await LacquerPlan.find(lacquerAllocationQuery).select('orderQty coatingCompletedQty').lean();
-    const lacquerAllocated = lacquerPlans.reduce((sum, plan) => {
-      return sum + (plan.orderQty || 0);
+    const datePlans = await LacquerPlan.find({
+      bottleName: { $in: bottleRegexes },
+      $or: [
+        { canonicalCompanyId: companyId },
+        { companyId: companyId }
+      ],
+      planDate: { $gte: startOfDay, $lte: endOfDay },
+      isDeleted: false
+    }).select('coatingCompletedQty coatedQty').lean();
+
+    const totalCoatedToday = datePlans.reduce((sum, p) => {
+      const qty = (p.coatingCompletedQty !== undefined && p.coatingCompletedQty !== null)
+        ? p.coatingCompletedQty
+        : (p.coatedQty || 0);
+      return sum + (Number(qty) || 0);
     }, 0);
 
-    // 3. Sum Incoming Plan allocation qty (active orders for this bottle)
-    const Incoming = require('../models/Incoming');
-    const incomingOrders = await Incoming.find({
-      billToId: companyId,
-      isDeleted: false
-    }).select('items').lean();
-
-    let incomingAllocated = 0;
-    for (const order of incomingOrders) {
-      if (order.items && Array.isArray(order.items)) {
-        for (const item of order.items) {
-          if (item.bottleId) {
-            // Match by bottle ID using BottlePerBox lookup
-            const BottlePerBox = require('../models/BottlePerBox');
-            const bpb = await BottlePerBox.findById(item.bottleId).select('bottleName plainBottleName').lean();
-            if (bpb && (bpb.bottleName === plainBottleName || bpb.plainBottleName === plainBottleName)) {
-              incomingAllocated += item.totalQty || item.qty || 0;
-            }
-          }
-        }
-      }
-    }
-
-    // 4. Reserved (if applicable in future - currently 0)
-    const reserved = 0;
-
-    // 5. Calculate available
-    const allocated = lacquerAllocated + incomingAllocated + reserved;
-    const available = Math.max(0, totalStock - allocated);
+    const openingStock = shownStock + totalCoatedToday;
 
     return {
-      totalStock,
-      allocated,
-      available,
-      breakdown: {
-        lacquerPlans: lacquerAllocated,
-        incomingPlan: incomingAllocated,
-        reserved
-      }
+      totalStock: shownStock,
+      openingStock,
+      totalCoatedToday,
+      allocated: 0,
+      available: openingStock,
+      breakdown: { lacquerPlans: 0, incomingPlan: 0, reserved: 0 }
     };
   } catch (error) {
     console.error('calculateAvailableStock error:', error);
@@ -609,48 +592,52 @@ const calculateAvailableStock = async (plainBottleName, companyId, excludeDate =
 
 /**
  * Validate stock warning for a row
+ * Rule: For a row, warning applies only when that row's own Order Qty > opening stock of its pool for that date.
+ * Other rows' orders are never part of it. A blank or zero order never warns.
  * @param {string} plainBottleName - Name of the plain bottle
  * @param {ObjectId} companyId - Company ID
  * @param {number} orderQty - Quantity being ordered
- * @param {ObjectId} excludeRowId - (optional) Current row ID to exclude from allocation
- * @returns {Promise<{hasWarning, orderQty, availableStock, overBy, details}>}
+ * @param {ObjectId} excludeRowId - (optional)
+ * @param {Date|string} planDate - (optional) Target plan date
+ * @returns {Promise<{hasWarning, orderQty, availableStock, openingStock, overBy, details}>}
  */
-const validateRowStockWarning = async (plainBottleName, companyId, orderQty, excludeRowId = null) => {
+const validateRowStockWarning = async (plainBottleName, companyId, orderQty, excludeRowId = null, planDate = null) => {
   try {
-    if (!plainBottleName || !companyId || !orderQty || orderQty <= 0) {
+    const parsedOrder = parseFloat(orderQty) || 0;
+    if (!plainBottleName || !companyId || parsedOrder <= 0) {
       return {
         hasWarning: false,
-        orderQty: orderQty || 0,
+        orderQty: parsedOrder,
         availableStock: 0,
+        openingStock: 0,
         overBy: 0,
         details: null
       };
     }
 
-    // If excludeRowId provided, get that row's date and exclude it from allocation
     let excludeDate = null;
     if (excludeRowId) {
       const rowToExclude = await LacquerPlan.findById(excludeRowId).select('planDate orderQty').lean();
       if (rowToExclude) {
         excludeDate = rowToExclude.planDate;
-        // Subtract this row's orderQty from future allocation (it will be re-added as new value)
-        // This is handled in calculateAvailableStock by excluding the date
       }
     }
 
-    const stock = await calculateAvailableStock(plainBottleName, companyId, excludeDate);
-    const hasWarning = orderQty > stock.available;
-    const overBy = Math.max(0, orderQty - stock.available);
+    const stock = await calculateAvailableStock(plainBottleName, companyId, excludeDate, planDate);
+    const openingStock = stock.openingStock !== undefined ? stock.openingStock : stock.available;
+    const hasWarning = parsedOrder > 0 && parsedOrder > openingStock;
+    const overBy = hasWarning ? (parsedOrder - openingStock) : 0;
 
     return {
       hasWarning,
-      orderQty,
-      availableStock: stock.available,
+      orderQty: parsedOrder,
+      availableStock: openingStock,
+      openingStock,
       overBy,
       details: {
         totalStock: stock.totalStock,
-        allocated: stock.allocated,
-        breakdown: stock.breakdown
+        openingStock,
+        totalCoatedToday: stock.totalCoatedToday
       }
     };
   } catch (error) {
@@ -677,18 +664,8 @@ exports.createPlan = async (req, res) => {
             null
           );
 
-          if (warning.hasWarning && !item.stockWarningAcknowledged) {
-            return res.status(400).json({
-              success: false,
-              code: 'STOCK_WARNING_REQUIRED',
-              warning,
-              requiresAcknowledge: true,
-              message: `Stock warning for bottle "${item.bottleName}": order quantity (${warning.orderQty}) exceeds available stock (${warning.availableStock})`
-            });
-          }
-
-          // If warning is acknowledged, set metadata
-          if (warning.hasWarning && item.stockWarningAcknowledged) {
+          // If warning is triggered, record details but never block saving
+          if (warning.hasWarning) {
             item.stockWarningAcknowledged = true;
             item.acknowledgedAt = new Date();
             item.stockWarningDetails = warning;
@@ -776,18 +753,8 @@ exports.createPlan = async (req, res) => {
           null
         );
 
-        if (warning.hasWarning && !req.body.stockWarningAcknowledged) {
-          return res.status(400).json({
-            success: false,
-            code: 'STOCK_WARNING_REQUIRED',
-            warning,
-            requiresAcknowledge: true,
-            message: `Stock warning for bottle "${req.body.bottleName}": order quantity (${warning.orderQty}) exceeds available stock (${warning.availableStock})`
-          });
-        }
-
-        // If warning is acknowledged, set metadata
-        if (warning.hasWarning && req.body.stockWarningAcknowledged) {
+        // If warning is triggered, record details but never block saving
+        if (warning.hasWarning) {
           req.body.stockWarningAcknowledged = true;
           req.body.acknowledgedAt = new Date();
           req.body.stockWarningDetails = warning;
@@ -1133,7 +1100,7 @@ exports.getMonthStatus = async (req, res) => {
 // Validate Stock Warning for a row
 exports.validateStockWarning = async (req, res) => {
   try {
-    const { bottleName, companyId, orderQty, excludeRowId } = req.query;
+    const { bottleName, companyId, orderQty, excludeRowId, planDate, date } = req.query;
 
     if (!bottleName || !companyId || !orderQty) {
       return res.status(400).json({
@@ -1146,7 +1113,8 @@ exports.validateStockWarning = async (req, res) => {
       bottleName,
       companyId,
       parseInt(orderQty, 10),
-      excludeRowId || null
+      excludeRowId || null,
+      planDate || date || null
     );
 
     res.status(200).json({ success: true, data: warning });
@@ -1302,11 +1270,14 @@ exports.importPreviousDay = async (req, res) => {
     const newPlansData = openCandidates.map(c => {
       const finalValues = c.values;
       const sourcePlanId = c.sourcePlan._id;
+      const orderQty = Number(finalValues.orderQty) || 0;
+      const recalculatedBalanceToMake = 0 - orderQty;
+
       const snapshot = {
         orderQty: finalValues.orderQty,
-        coatingCompletedQty: finalValues.coatingCompletedQty,
-        coatedQty: finalValues.coatedQty,
-        balanceToMake: finalValues.balanceToMake,
+        coatingCompletedQty: 0,
+        coatedQty: 0,
+        balanceToMake: recalculatedBalanceToMake,
         boxQty: finalValues.boxQty,
         noOfBoxes: finalValues.noOfBoxes,
         dispatchPendingQty: finalValues.dispatchPendingQty,
@@ -1319,6 +1290,9 @@ exports.importPreviousDay = async (req, res) => {
 
       return {
         ...finalValues,
+        coatingCompletedQty: 0,
+        coatedQty: 0,
+        balanceToMake: recalculatedBalanceToMake,
         appliedStockDeduction: 0,
         planDate: new Date(targetDate),
         isEditedAfterImport: false,
@@ -1341,14 +1315,14 @@ exports.importPreviousDay = async (req, res) => {
         );
         
         if (existingImport) {
-          // Update existing import with new values
+          // Update existing import with new values (coated qty resets to 0, balanceToMake recalculated)
           await LacquerPlan.updateOne(
             { _id: existingImport._id },
             {
               $set: {
                 orderQty: candidate.orderQty,
-                coatingCompletedQty: candidate.coatingCompletedQty,
-                coatedQty: candidate.coatedQty,
+                coatingCompletedQty: 0,
+                coatedQty: 0,
                 balanceToMake: candidate.balanceToMake,
                 boxQty: candidate.boxQty,
                 noOfBoxes: candidate.noOfBoxes,
@@ -1430,7 +1404,8 @@ exports.importPreviousDay = async (req, res) => {
           candidate.bottleName,
           candidate.companyId,
           candidate.orderQty,
-          null
+          null,
+          candidate.planDate || targetDate
         );
 
         if (warning.hasWarning) {
@@ -1474,15 +1449,12 @@ exports.getPlanById = async (req, res) => {
 
     let plainStock = 0;
     if (plan.bottleName) {
-      const stockDoc = await findPlainBottleStockDoc(plan.bottleName, plan.canonicalCompanyId || plan.companyId);
-      if (stockDoc) {
-        plainStock = stockDoc.availableQuantity || 0;
-      }
+      plainStock = await computeLivePlainStock(plan.bottleName, plan.canonicalCompanyId || plan.companyId, plan.planDate);
     }
 
     const planObj = plan.toObject();
     planObj.livePlainStock = plainStock;
-    planObj.plainStock = plan.plainStock !== null && plan.plainStock !== undefined ? plan.plainStock : plainStock;
+    planObj.plainStock = plainStock;
 
     res.status(200).json({ success: true, data: planObj });
   } catch (error) {
@@ -1516,18 +1488,8 @@ exports.updatePlan = async (req, res) => {
         req.params.id
       );
 
-      if (warning.hasWarning && !req.body.stockWarningAcknowledged) {
-        return res.status(400).json({
-          success: false,
-          code: 'STOCK_WARNING_REQUIRED',
-          warning,
-          requiresAcknowledge: true,
-          message: `Stock warning: increasing order quantity from ${existingPlan.orderQty} to ${newQty} exceeds available stock (${warning.availableStock})`
-        });
-      }
-
-      // If warning is acknowledged, set metadata
-      if (warning.hasWarning && req.body.stockWarningAcknowledged) {
+      // If warning is triggered, record details but never block saving
+      if (warning.hasWarning) {
         req.body.stockWarningAcknowledged = true;
         req.body.acknowledgedAt = new Date();
         req.body.stockWarningDetails = warning;
@@ -1688,7 +1650,7 @@ exports.deletePlan = async (req, res) => {
 // Get computed stats for frontend form
 exports.getComputedStats = async (req, res) => {
   try {
-    const { bottleName, brandId, colour, companyId, planDate } = req.query;
+    const { bottleName, brandId, colour, companyId, planDate, excludePlanIds } = req.query;
     let plainStock = 0;
     let coatedQty = 0;
 
@@ -1704,6 +1666,57 @@ exports.getComputedStats = async (req, res) => {
     // 1. Fetch live day-based plain stock (Rule L3)
     if (bottleName) {
       plainStock = await computeLivePlainStock(bottleName, effectiveCompanyId, planDate);
+
+      let totalCoatedToday = 0;
+      if (planDate) {
+        const startOfDay = new Date(planDate);
+        startOfDay.setUTCHours(0, 0, 0, 0);
+        const endOfDay = new Date(planDate);
+        endOfDay.setUTCHours(23, 59, 59, 999);
+
+        const escapeRegex = (string) => string ? string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') : '';
+        const nameTrimmed = String(bottleName).trim();
+        const BottlePerBox = require("../models/BottlePerBox");
+        const bp = await BottlePerBox.findOne({
+          $or: [
+            { bottleName: new RegExp("^" + escapeRegex(nameTrimmed) + "$", "i") },
+            { plainBottleName: new RegExp("^" + escapeRegex(nameTrimmed) + "$", "i") },
+            { bottleNames: new RegExp("^" + escapeRegex(nameTrimmed) + "$", "i") }
+          ],
+          isDeleted: false
+        });
+
+        const bottleNames = [nameTrimmed];
+        if (bp) {
+          if (bp.bottleName) bottleNames.push(bp.bottleName);
+          if (bp.plainBottleName) bottleNames.push(bp.plainBottleName);
+          if (Array.isArray(bp.bottleNames)) bottleNames.push(...bp.bottleNames);
+        }
+        const bottleRegexes = Array.from(new Set(bottleNames.map(n => n.trim()))).map(n => new RegExp("^" + escapeRegex(n) + "$", "i"));
+
+        const dateQuery = {
+          bottleName: { $in: bottleRegexes },
+          planDate: { $gte: startOfDay, $lte: endOfDay },
+          isDeleted: false
+        };
+        if (effectiveCompanyId) {
+          dateQuery.$or = [
+            { canonicalCompanyId: effectiveCompanyId },
+            { companyId: effectiveCompanyId }
+          ];
+        }
+
+        const datePlans = await LacquerPlan.find(dateQuery).select('coatingCompletedQty coatedQty').lean();
+        totalCoatedToday = datePlans.reduce((sum, p) => {
+          const qty = (p.coatingCompletedQty !== undefined && p.coatingCompletedQty !== null)
+            ? p.coatingCompletedQty
+            : (p.coatedQty || 0);
+          return sum + (Number(qty) || 0);
+        }, 0);
+      }
+
+      const openingStock = plainStock + totalCoatedToday;
+      res.locals = { plainStock, openingStock, totalCoatedToday };
     }
 
     // 2. Fetch cumulative coatedQty
@@ -1742,7 +1755,8 @@ exports.getComputedStats = async (req, res) => {
       }
     }
 
-    res.status(200).json({ success: true, data: { plainStock, coatedQty } });
+    const { openingStock = plainStock, totalCoatedToday = 0 } = res.locals || {};
+    res.status(200).json({ success: true, data: { plainStock, openingStock, totalCoatedToday, coatedQty } });
   } catch (error) {
     res.status(400).json({ success: false, message: error.message });
   }
@@ -2732,6 +2746,10 @@ exports.previewImportExcel = async (req, res) => {
           });
         }
 
+        parsedRow.coatingCompletedQty = 0;
+        parsedRow.coatedQty = 0;
+        parsedRow.balanceToMake = 0 - (Number(parsedRow.orderQty) || 0);
+
         dateRows.push(parsedRow);
       }
 
@@ -2805,7 +2823,8 @@ exports.previewImportExcel = async (req, res) => {
             row.bottleName,
             row.companyId,
             row.orderQty,
-            null
+            null,
+            d.date
           );
 
           if (warning.hasWarning) {
@@ -2930,9 +2949,9 @@ exports.commitImportExcel = async (req, res) => {
           orderQty: r.orderQty,
           boxQty: r.boxQty,
           noOfBoxes: r.noOfBoxes,
-          coatingCompletedQty: r.coatingCompletedQty,
-          coatedQty: r.coatingCompletedQty,
-          balanceToMake: r.balanceToMake,
+          coatingCompletedQty: 0,
+          coatedQty: 0,
+          balanceToMake: 0 - (Number(r.orderQty) || 0),
           dispatchPendingQty: r.dispatchPendingQty,
           dispatchBalance: r.dispatchPendingQty,
           soldQty: r.soldQty,
@@ -2945,9 +2964,9 @@ exports.commitImportExcel = async (req, res) => {
           importGroupSize: r.groupSize !== undefined ? r.groupSize : null,
           originalImportedValues: {
             orderQty: r.orderQty,
-            coatingCompletedQty: r.coatingCompletedQty,
-            coatedQty: r.coatingCompletedQty,
-            balanceToMake: r.balanceToMake,
+            coatingCompletedQty: 0,
+            coatedQty: 0,
+            balanceToMake: 0 - (Number(r.orderQty) || 0),
             boxQty: r.boxQty,
             noOfBoxes: r.noOfBoxes,
             dispatchPendingQty: r.dispatchPendingQty,

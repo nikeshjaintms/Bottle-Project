@@ -89,7 +89,7 @@ export default function ViewDispatch() {
                       <th className="py-3 px-4 text-muted small fw-bold">Bottle Name</th>
                       <th className="py-3 px-3 text-muted small fw-bold">Variant</th>
                       <th className="py-3 px-3 text-muted small fw-bold">Coating Shade</th>
-                      <th className="py-3 px-3 text-muted small fw-bold">Printing Type</th>
+                      <th className="py-3 px-3 text-muted small fw-bold">Text Color</th>
                       <th className="py-3 px-3 text-muted small fw-bold text-end">Boxes</th>
                       <th className="py-3 px-3 text-muted small fw-bold text-end">Qty/Box</th>
                       <th className="py-3 px-3 text-muted small fw-bold text-end">Total Qty</th>
@@ -99,10 +99,10 @@ export default function ViewDispatch() {
                     {items?.map((item, index) => (
                       <tr key={index} className="align-middle">
                         <td className="ps-4 text-muted small">{index + 1}</td>
-                        <td className="fw-500">{item.bottleId?.bottleName || item.bottleId || '-'}</td>
+                        <td className="fw-500">{typeof item.bottleId === 'string' ? item.bottleId : (item.bottleId?.plainBottleName || item.bottleId?.bottleName || item.bottleId || '-')}</td>
                         <td>{item.variantId?.variantName || '-'}</td>
                         <td>{item.coatingShade || '-'}</td>
-                        <td>{item.printingTypeId?.printingType || '-'}</td>
+                        <td>{item.detectedTextColor || '-'}</td>
                         <td className="text-end fw-500">{item.box}</td>
                         <td className="text-end fw-500">{item.qty}</td>
                         <td className="text-end fw-bold text-primary">{item.totalQty}</td>

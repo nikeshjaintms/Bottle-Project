@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useParams, Link, useNavigate, useSearchParams } from 'react-router-dom';
 import Select from 'react-select';
+import Swal from 'sweetalert2';
 import api from '../../services/api';
 import { useSummaryLanguage } from '../../hooks/useSummaryLanguage';
 import './Summary.css';
@@ -196,10 +197,17 @@ export default function CompanySummary() {
   const bottleSelectOptions = useMemo(() => {
     return [
       { value: 'all', label: `★ ${labels.allBottles}` },
-      ...bottles.map((b) => ({
-        value: b._id,
-        label: b.isUnmatched ? `⚠️ ${b.bottleName} (Unmatched)` : b.bottleName
-      }))
+      ...bottles
+        .sort((a, b) => {
+          const nameA = (a.bottleName || a.plainBottleName || '').toLowerCase();
+          const nameB = (b.bottleName || b.plainBottleName || '').toLowerCase();
+          // Natural sort: handle numbers numerically (3 ML before 8 ML before 20 ML)
+          return nameA.localeCompare(nameB, undefined, { numeric: true, sensitivity: 'base' });
+        })
+        .map((b) => ({
+          value: b._id,
+          label: b.isUnmatched ? `⚠️ ${b.bottleName} (Unmatched)` : b.bottleName
+        }))
     ];
   }, [bottles, labels.allBottles]);
 
@@ -473,9 +481,8 @@ export default function CompanySummary() {
                         {formatNum(row.dispatchTotal)}
                       </td>
                       <td
-                        className={`num-col fw-bold ${
-                          row.difference < 0 ? 'text-danger' : 'text-primary'
-                        }`}
+                        className={`num-col fw-bold ${row.difference < 0 ? 'text-danger' : 'text-primary'
+                          }`}
                       >
                         {formatNum(row.difference)}
                       </td>
@@ -486,9 +493,8 @@ export default function CompanySummary() {
                       )}
                       {isShreno && (
                         <td
-                          className={`num-col fw-bold ${
-                            row.shrenoDifference < 0 ? 'text-danger' : 'text-dark'
-                          }`}
+                          className={`num-col fw-bold ${row.shrenoDifference < 0 ? 'text-danger' : 'text-dark'
+                            }`}
                         >
                           {formatNum(row.shrenoDifference)}
                         </td>
@@ -519,9 +525,8 @@ export default function CompanySummary() {
                       {formatNum(grandTotals.dispatchTotal)}
                     </td>
                     <td
-                      className={`num-col ${
-                        grandTotals.difference < 0 ? 'text-danger' : 'text-primary'
-                      }`}
+                      className={`num-col ${grandTotals.difference < 0 ? 'text-danger' : 'text-primary'
+                        }`}
                     >
                       {formatNum(grandTotals.difference)}
                     </td>
@@ -532,9 +537,8 @@ export default function CompanySummary() {
                     )}
                     {isShreno && (
                       <td
-                        className={`num-col ${
-                          grandTotals.shrenoDifference < 0 ? 'text-danger' : 'text-dark'
-                        }`}
+                        className={`num-col ${grandTotals.shrenoDifference < 0 ? 'text-danger' : 'text-dark'
+                          }`}
                       >
                         {formatNum(grandTotals.shrenoDifference)}
                       </td>
@@ -579,9 +583,8 @@ export default function CompanySummary() {
 
             {/* Net Stock Balance: Incoming − Dispatch */}
             <div
-              className={`summary-kpi-card theme-difference ${
-                (logsData?.kpis?.netDifference || 0) < 0 ? 'negative' : ''
-              }`}
+              className={`summary-kpi-card theme-difference ${(logsData?.kpis?.netDifference || 0) < 0 ? 'negative' : ''
+                }`}
             >
               <div className="kpi-title">
                 {language === 'gu'
@@ -614,9 +617,8 @@ export default function CompanySummary() {
 
           {/* Side by Side Blocks Grid */}
           <div
-            className={`summary-blocks-grid ${
-              isShreno ? 'three-blocks' : 'two-blocks'
-            }`}
+            className={`summary-blocks-grid ${isShreno ? 'three-blocks' : 'two-blocks'
+              }`}
           >
             {/* ------------------------------------------------------------- */}
             {/* 1ST: Incoming (sr no, po date, po no, po qty, date, challan no, no of box, qty, total) */}
@@ -636,28 +638,32 @@ export default function CompanySummary() {
                 <table className="summary-table">
                   <thead>
                     <tr>
-                      <th style={{ width: 45 }}>{labels.incSr}</th>
-                      <th>{labels.incPoDate}</th>
-                      <th>{labels.incPoNo}</th>
-                      <th className="num-col">{labels.incPoQty}</th>
-                      <th>{labels.incDate}</th>
-                      <th>{labels.incChallanNo}</th>
-                      <th className="num-col">{labels.incBox}</th>
-                      <th className="num-col">{labels.incQty}</th>
-                      <th className="num-col">{labels.incTotal}</th>
+                      <th style={{ width: 45 }} className="fw-bold">{labels.incSr}</th>
+                      {isShreno && (
+                        <>
+                          <th className="fw-bold">{labels.incPoDate}</th>
+                          <th className="fw-bold">{labels.incPoNo}</th>
+                          <th className="num-col fw-bold">{labels.incPoQty}</th>
+                        </>
+                      )}
+                      <th className="fw-bold">{labels.incDate}</th>
+                      <th className="fw-bold">{labels.incChallanNo}</th>
+                      <th className="num-col fw-bold">{labels.incBox}</th>
+                      <th className="num-col fw-bold">{labels.incQty}</th>
+                      <th className="num-col fw-bold">{labels.incTotal}</th>
                     </tr>
                   </thead>
                   <tbody>
                     {logsLoading ? (
                       <tr>
-                        <td colSpan={9} className="py-5 text-center text-muted">
+                        <td colSpan={isShreno ? 9 : 6} className="py-5 text-center text-muted">
                           <div className="spinner-border text-success mb-2" />
                           <div>{labels.loading}</div>
                         </td>
                       </tr>
                     ) : logsData?.incoming?.data?.length === 0 ? (
                       <tr>
-                        <td colSpan={9} className="p-0">
+                        <td colSpan={isShreno ? 9 : 6} className="p-0">
                           <div className="summary-empty-state">
                             <i className="bi bi-inbox text-success" />
                             <div>{labels.noIncomingRecords}</div>
@@ -670,9 +676,13 @@ export default function CompanySummary() {
                           <td className="text-muted fw-semibold">
                             {(logsData.incoming.page - 1) * logsData.incoming.limit + idx + 1}
                           </td>
-                          <td>{formatDate(row.poDate)}</td>
-                          <td className="text-muted">{row.poNo}</td>
-                          <td className="num-col">{row.poOrderQty ? formatNum(row.poOrderQty) : '-'}</td>
+                          {isShreno && (
+                            <>
+                              <td>{formatDate(row.poDate)}</td>
+                              <td className="text-muted">{row.poNo}</td>
+                              <td className="num-col">{row.poOrderQty ? formatNum(row.poOrderQty) : '-'}</td>
+                            </>
+                          )}
                           <td>{formatDate(row.date)}</td>
                           <td className="fw-bold text-dark">{row.challanNo}</td>
                           <td className="num-col">{formatNum(row.box)}</td>
@@ -686,7 +696,7 @@ export default function CompanySummary() {
                   </tbody>
                   <tfoot>
                     <tr>
-                      <td colSpan={6}>TOTAL</td>
+                      <td colSpan={isShreno ? 6 : 3}>TOTAL</td>
                       <td className="num-col bold-num">
                         {formatNum(logsData?.incoming?.totals?.totalBoxes || 0)}
                       </td>
@@ -743,25 +753,43 @@ export default function CompanySummary() {
                 <table className="summary-table">
                   <thead>
                     <tr>
-                      <th>{labels.dispDate}</th>
-                      <th>{labels.dispDcNo}</th>
-                      <th>{labels.dispProductName}</th>
-                      <th className="num-col">{labels.dispBox}</th>
-                      <th className="num-col">{labels.dispQty}</th>
-                      <th className="num-col">{labels.dispDispatchQty}</th>
+                      <th style={{ width: 45 }} className="fw-bold">Sr No</th>
+                      <th className="fw-bold">{labels.dispDate}</th>
+                      <th className="fw-bold">G.PASS NO</th>
+                      {isShreno ? (
+                        <th className="fw-bold">PRODUCT NAME</th>
+                      ) : (
+                        <>
+                          <th colSpan={2} style={{ textAlign: 'center' }} className="fw-bold">PRODUCT NAME</th>
+                          <th className="fw-bold">TEXT COLOR</th>
+                        </>
+                      )}
+                      <th className="num-col fw-bold">{labels.dispBox}</th>
+                      <th className="num-col fw-bold">{labels.dispQty}</th>
+                      <th className="num-col fw-bold">{labels.dispDispatchQty}</th>
+                      <th className="fw-bold">REMARK</th>
                     </tr>
+                    {!isShreno && (
+                      <tr style={{ fontSize: '12px', fontWeight: 'normal', backgroundColor: '#f8f9fa' }}>
+                        <th></th>
+                        <th colSpan={2}></th>
+                        <th style={{ textAlign: 'center' }} className="fw-bold">COATING</th>
+                        <th style={{ textAlign: 'center' }} className="fw-bold">PRINTING</th>
+                        <th colSpan={5}></th>
+                      </tr>
+                    )}
                   </thead>
                   <tbody>
                     {logsLoading ? (
                       <tr>
-                        <td colSpan={6} className="py-5 text-center text-muted">
+                        <td colSpan={isShreno ? 8 : 10} className="py-5 text-center text-muted">
                           <div className="spinner-border text-indigo mb-2" />
                           <div>{labels.loading}</div>
                         </td>
                       </tr>
                     ) : logsData?.dispatch?.data?.length === 0 ? (
                       <tr>
-                        <td colSpan={6} className="p-0">
+                        <td colSpan={isShreno ? 8 : 10} className="p-0">
                           <div className="summary-empty-state">
                             <i className="bi bi-truck text-indigo" />
                             <div>{labels.noDispatchRecords}</div>
@@ -769,17 +797,58 @@ export default function CompanySummary() {
                         </td>
                       </tr>
                     ) : (
-                      logsData?.dispatch?.data?.map((row) => (
+                      logsData?.dispatch?.data?.map((row, idx) => (
                         <tr key={row._id}>
-                          <td>{formatDate(row.date)}</td>
-                          <td className="fw-bold text-dark">{row.dcNo || row.gatePassNo}</td>
-                          <td className="text-truncate" style={{ maxWidth: 160 }} title={row.productName || row.type}>
-                            {row.productName || row.type}
+                          <td className="text-muted fw-semibold" style={{ width: 45 }}>
+                            {(logsData.dispatch.page - 1) * logsData.dispatch.limit + idx + 1}
                           </td>
-                          <td className="num-col">{formatNum(row.box)}</td>
-                          <td className="num-col text-muted">{formatNum(row.qty)}</td>
+                          <td>{formatDate(row.date || row.dispatchDate)}</td>
+                          <td className="fw-bold text-dark">{row.gatePassNo || row.dcNo || '-'}</td>
+                          {isShreno ? (
+                            <td style={{ textAlign: 'center', minWidth: '120px' }}>
+                              {row.coating || '-'} - {row.printing || '-'} - {row.detectedTextColor || '-'}
+                            </td>
+                          ) : (
+                            <>
+                              <td style={{ textAlign: 'center', minWidth: '120px' }}>{row.coating || '-'}</td>
+                              <td style={{ textAlign: 'center', minWidth: '120px' }}>{row.printing || '-'}</td>
+                              <td style={{ textAlign: 'center', minWidth: '120px' }}>{row.detectedTextColor || '-'}</td>
+                            </>
+                          )}
+                          <td className="num-col">{formatNum(row.box || 0)}</td>
+                          <td className="num-col text-muted">{formatNum(row.qty || 0)}</td>
                           <td className="num-col bold-num text-indigo">
-                            {formatNum(row.totalQty)}
+                            {formatNum(row.totalQty || 0)}
+                          </td>
+                          <td>
+                            <span
+                              className="badge bg-light text-dark cursor-pointer"
+                              style={{ cursor: 'pointer', padding: '4px 8px', fontSize: '11px' }}
+                              onClick={() => {
+                                Swal.fire({
+                                  title: 'Enter Remark',
+                                  input: 'textarea',
+                                  inputValue: row.remarks && row.remarks !== '-' ? row.remarks : '',
+                                  inputPlaceholder: 'Type your remark here...',
+                                  showCancelButton: true,
+                                  confirmButtonText: 'Save',
+                                  confirmButtonColor: '#0d6efd',
+                                  cancelButtonColor: '#6c757d',
+                                  inputAttributes: {
+                                    'aria-label': 'Enter remark'
+                                  }
+                                }).then((result) => {
+                                  if (result.isConfirmed && result.value) {
+                                    console.log('Update remark for', row.docId, ':', result.value);
+                                    // TODO: Implement API call to update dispatch remarks
+                                    Swal.fire('Success!', 'Remark saved.', 'success');
+                                  }
+                                });
+                              }}
+                              title={row.remarks && row.remarks !== '-' ? row.remarks : 'Click to add remark'}
+                            >
+                              {row.remarks && row.remarks !== '-' ? `📝 ${row.remarks.substring(0, 15)}...` : '+ Add'}
+                            </span>
                           </td>
                         </tr>
                       ))
@@ -787,7 +856,7 @@ export default function CompanySummary() {
                   </tbody>
                   <tfoot>
                     <tr>
-                      <td colSpan={3}>TOTAL</td>
+                      <td colSpan={isShreno ? 4 : 6}>TOTAL</td>
                       <td className="num-col bold-num">
                         {formatNum(logsData?.dispatch?.totals?.totalBoxes || 0)}
                       </td>
@@ -795,6 +864,7 @@ export default function CompanySummary() {
                       <td className="num-col bold-num text-indigo">
                         {formatNum(logsData?.dispatch?.totals?.totalQty || 0)}
                       </td>
+                      <td />
                     </tr>
                   </tfoot>
                 </table>
@@ -845,10 +915,10 @@ export default function CompanySummary() {
                   <table className="summary-table">
                     <thead>
                       <tr>
-                        <th>{labels.pmDate || 'DATE'}</th>
-                        <th>{labels.pmItemType}</th>
-                        <th>{labels.pmConfig}</th>
-                        <th className="num-col">{labels.pmQty}</th>
+                        <th className="fw-bold">{labels.pmDate || 'DATE'}</th>
+                        <th className="fw-bold">{labels.pmItemType}</th>
+                        <th className="fw-bold">{labels.pmConfig}</th>
+                        <th className="num-col fw-bold">{labels.pmQty}</th>
                       </tr>
                     </thead>
                     <tbody>

@@ -123,7 +123,9 @@ export default function ShrenoIncomingTable({ incomings, handleDelete, bottleFil
                   </div>
                 </td>
                 <td className="py-3 text-muted">
-                  {row.date ? new Date(row.date).toLocaleDateString('en-GB') : '-'}
+                  {row.deliveryNumber === 'OLD STOCK' 
+                    ? '-' 
+                    : (row.date ? new Date(row.date).toLocaleDateString('en-GB') : '-')}
                 </td>
                 <td className="py-3">
                   <span className="fw-500">{row.deliveryNumber}</span>

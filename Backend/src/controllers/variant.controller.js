@@ -84,13 +84,13 @@ exports.createVariant = async (req, res) => {
 // ✅ GET ALL
 exports.getVariants = async (req, res) => {
   try {
-    let { page, limit, search, pagination } = req.query;
+    let { page, limit, search, pagination, status } = req.query;
 
     let parsedPage = 1;
     if (page && page !== '') {
       parsedPage = parseInt(page) || 1;
       res.cookie('variantPage', parsedPage, { maxAge: 86400000, httpOnly: true }); // Save to cookie
-    } else if (req.cookies.variantPage) {
+    } else if (req.cookies && req.cookies.variantPage && !limit && pagination !== "false") {
       parsedPage = parseInt(req.cookies.variantPage) || 1;
     }
 
@@ -98,6 +98,10 @@ exports.getVariants = async (req, res) => {
     const skip = (parsedPage - 1) * parsedLimit;
 
     let query = { isDeleted: { $ne: true } };
+
+    if (status === 'true' || status === true) {
+      query.status = true;
+    }
 
     if (search && search.trim() !== "") {
       const searchWord = search.trim();

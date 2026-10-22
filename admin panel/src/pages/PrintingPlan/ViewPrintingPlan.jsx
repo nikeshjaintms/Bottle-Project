@@ -72,10 +72,10 @@ export default function ViewPrintingPlan() {
                     <th className="small text-muted text-center align-middle" style={{width: '12%', minWidth: '200px'}}>{labels.brand}</th>
                     <th className="small text-muted text-center align-middle" style={{width: '8%', minWidth: '150px'}}>{labels.plainColouredBottleStock}</th>
                     <th className="small text-muted text-center align-middle" style={{width: '7%'}}>{labels.orderQty}</th>
+                    <th className="small text-muted text-center align-middle" style={{width: '9%'}}>{labels.readyPrintedQty}</th>
                     <th className="small text-muted text-center align-middle" style={{width: '9%'}}>{labels.balanceToMake}</th>
                     <th className="small text-muted text-center align-middle" style={{width: '6%'}}>{labels.bottlePerBox}</th>
                     <th className="small text-muted text-center align-middle" style={{width: '6%'}}>{labels.noOfOrderBoxes}</th>
-                    <th className="small text-muted text-center align-middle" style={{width: '9%'}}>{labels.readyPrintedQty}</th>
                     <th className="small text-muted text-center align-middle" style={{width: '9%'}}>{labels.balanceToBeDispatched}</th>
                     <th className="small text-muted text-center align-middle" style={{width: '5%'}}>{labels.soldQty}</th>
                     <th className="small text-muted text-center align-middle" style={{width: '6%'}}>{labels.readyBoxes}</th>
@@ -108,6 +108,9 @@ export default function ViewPrintingPlan() {
                       <input type="text" className="form-control form-control-sm shadow-none bg-light text-center fw-bold" disabled value={currentPlan.orderQty || '0'} />
                     </td>
                     <td>
+                      <input type="text" className="form-control form-control-sm shadow-none bg-light text-center" disabled value={currentPlan.producedQty || '0'} />
+                    </td>
+                    <td>
                       <input type="text" className="form-control form-control-sm shadow-none bg-light text-center fw-bold text-danger" disabled value={currentPlan.balanceToMake || '0'} />
                     </td>
                     <td>
@@ -115,9 +118,6 @@ export default function ViewPrintingPlan() {
                     </td>
                     <td>
                       <input type="text" className="form-control form-control-sm shadow-none bg-light text-center" disabled value={currentPlan.noOfBoxes || '0'} />
-                    </td>
-                    <td>
-                      <input type="text" className="form-control form-control-sm shadow-none bg-light text-center" disabled value={currentPlan.producedQty || '0'} />
                     </td>
                     <td>
                       <input type="text" className="form-control form-control-sm shadow-none bg-light text-center" disabled value={currentPlan.dispatchBalance || '0'} />

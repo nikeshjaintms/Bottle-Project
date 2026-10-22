@@ -505,10 +505,9 @@ exports.getSummaryLogs = async (req, res) => {
         .sort({ documentDate: -1, createdAt: -1 })
         .lean(),
       Dispatch.find(dispatchQuery)
-        .populate("items.printingTypeId", "printingType")
+        .populate("items.printingTypeId", "name")
         .populate("items.variantId", "variantName")
-        .sort({ dispatchDate: -1, createdAt: -1 })
-        .lean(),
+        .sort({ dispatchDate: -1, createdAt: -1 }),
       isShreno
         ? ShrenoIncoming.find(shrenoQuery)
             .populate("items.itemType", "name")
@@ -517,6 +516,9 @@ exports.getSummaryLogs = async (req, res) => {
             .lean()
         : Promise.resolve([])
     ]);
+
+    // Convert Dispatch docs to plain objects to ensure post-hook is applied
+    const dispatchDocsPlain = dispatchDocs.map(doc => doc.toObject ? doc.toObject() : doc);
 
     // 1. Process Incoming rows matching target bottle
     // Excel columns: Sr, Date, Challan No, Box, Qty, Total
@@ -556,7 +558,7 @@ exports.getSummaryLogs = async (req, res) => {
     let dispatchTotalQty = 0;
     let dispatchTotalBoxes = 0;
 
-    for (const disp of dispatchDocs) {
+    for (const disp of dispatchDocsPlain) {
       const docDate = disp.dispatchDate;
       for (const item of disp.items || []) {
         const ref = item.bottleId || item.productName;
@@ -578,7 +580,8 @@ exports.getSummaryLogs = async (req, res) => {
             dcNo: disp.gatePassNo || "-",
             productName,
             coating: item.coatingShade || "-",
-            printing: (item.printingTypeId && item.printingTypeId.printingType) || item.printing || "-",
+            printing: (item.variantId && item.variantId.variantName) || item.printing || "-",
+            detectedTextColor: item.detectedTextColor || (item.printingTypeId && item.printingTypeId.name) || "-",
             type: (item.variantId && item.variantId.variantName) || item.productName || "-",
             box,
             qty,

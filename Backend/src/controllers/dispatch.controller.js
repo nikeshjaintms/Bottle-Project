@@ -1,6 +1,57 @@
 const Dispatch = require("../models/Dispatch");
 const mongoose = require("mongoose");
 
+exports.getDispatchBottles = async (req, res) => {
+  try {
+    const { companyId } = req.query;
+    
+    if (!companyId) {
+      return res.status(400).json({ message: "companyId is required" });
+    }
+
+    // Get all dispatches for this company and extract unique bottles
+    const dispatches = await Dispatch.find({ companyId, isDeleted: false })
+      .populate({
+        path: 'items.bottleId',
+        select: 'bottleName plainBottleName _id'
+      });
+
+    const bottleMap = new Map();
+    dispatches.forEach(dispatch => {
+      if (dispatch.items && Array.isArray(dispatch.items)) {
+        dispatch.items.forEach(item => {
+          if (item.bottleId) {
+            const bottleId = item.bottleId._id || item.bottleId;
+            const bottleName = item.bottleId.bottleName || item.bottleId.plainBottleName;
+            if (!bottleMap.has(String(bottleId))) {
+              bottleMap.set(String(bottleId), {
+                _id: bottleId,
+                bottleName: bottleName,
+                plainBottleName: item.bottleId.plainBottleName || bottleName
+              });
+            }
+          }
+        });
+      }
+    });
+
+    const bottles = Array.from(bottleMap.values());
+    const mostRecentBottleId = dispatches.length > 0 && dispatches[0].items?.length > 0 
+      ? dispatches[0].items[0].bottleId?._id 
+      : (bottles.length > 0 ? bottles[0]._id : null);
+
+    res.json({
+      data: {
+        bottles: bottles,
+        mostRecentBottleId: mostRecentBottleId,
+        company: { name: companyId }
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
 exports.getAllDispatch = async (req, res) => {
   try {
     const { page, limit, search, pagination = "true", dateFrom, dateTo, searchPrinting, companyId } = req.query;
@@ -34,7 +85,7 @@ exports.getAllDispatch = async (req, res) => {
       { path: 'companyId', select: 'name' },
       { path: 'items.bottleId', select: 'bottleName plainBottleName' },
       { path: 'items.variantId', select: 'variantName' },
-      { path: 'items.printingTypeId', select: 'printingType' }
+      { path: 'items.printingTypeId', select: 'name' }
     ];
 
     if (pagination === "false") {
@@ -79,7 +130,7 @@ exports.getDispatchById = async (req, res) => {
       })
       .populate({
         path: 'items.printingTypeId',
-        select: 'printingType'
+        select: 'name'
       });
       
     if (!dispatch || dispatch.isDeleted) {
@@ -111,15 +162,15 @@ exports.createDispatch = async (req, res) => {
       return res.status(400).json({ message: "Gate Pass No. already exists" });
     }
 
-    // Validate and transform items - handle both old and new schema
     const validatedItems = items.map(item => {
-      // New schema: bottleId, variantId, coatingShade, printingTypeId
+      // New schema: bottleId, variantId, coatingShade, printingTypeId, detectedTextColor
       // Old schema: productName, printing, foil, organic, additionalBox
       
       const bottleId = item.bottleId;
       const variantId = item.variantId || null;
       const coatingShade = item.coatingShade || null;
       const printingTypeId = item.printingTypeId || null;
+      const detectedTextColor = item.detectedTextColor || "Not Detected";
       const box = Number(item.box) || 0;
       const qty = Number(item.qty) || 0;
       const totalQty = Number(item.totalQty) || (box * qty);
@@ -138,6 +189,7 @@ exports.createDispatch = async (req, res) => {
         variantId,
         coatingShade,
         printingTypeId,
+        detectedTextColor,
         box,
         qty,
         totalQty,
@@ -165,9 +217,9 @@ exports.createDispatch = async (req, res) => {
     // Populate references
     await dispatch.populate([
       { path: 'companyId', select: 'name' },
-      { path: 'items.bottleId', select: 'bottleName' },
+      { path: 'items.bottleId', select: 'bottleName plainBottleName' },
       { path: 'items.variantId', select: 'variantName' },
-      { path: 'items.printingTypeId', select: 'printingType' }
+      { path: 'items.printingTypeId', select: 'name' }
     ]);
 
     res.status(201).json({
@@ -201,13 +253,14 @@ exports.updateDispatch = async (req, res) => {
       items = typeof rawItems === 'string' ? JSON.parse(rawItems) : rawItems;
       
       const validatedItems = items.map(item => {
-        // New schema: bottleId, variantId, coatingShade, printingTypeId
+        // New schema: bottleId, variantId, coatingShade, printingTypeId, detectedTextColor
         // Old schema: productName, printing, foil, organic, additionalBox
         
         const bottleId = item.bottleId;
         const variantId = item.variantId || null;
         const coatingShade = item.coatingShade || null;
         const printingTypeId = item.printingTypeId || null;
+        const detectedTextColor = item.detectedTextColor || "Not Detected";
         const box = Number(item.box) || 0;
         const qty = Number(item.qty) || 0;
         const totalQty = Number(item.totalQty) || (box * qty);
@@ -226,6 +279,7 @@ exports.updateDispatch = async (req, res) => {
           variantId,
           coatingShade,
           printingTypeId,
+          detectedTextColor,
           box,
           qty,
           totalQty,
@@ -251,9 +305,9 @@ exports.updateDispatch = async (req, res) => {
     // Populate references
     await dispatch.populate([
       { path: 'companyId', select: 'name' },
-      { path: 'items.bottleId', select: 'bottleName' },
+      { path: 'items.bottleId', select: 'bottleName plainBottleName' },
       { path: 'items.variantId', select: 'variantName' },
-      { path: 'items.printingTypeId', select: 'printingType' }
+      { path: 'items.printingTypeId', select: 'name' }
     ]);
 
     res.json({

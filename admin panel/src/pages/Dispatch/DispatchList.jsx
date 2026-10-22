@@ -3,7 +3,10 @@ import { useDispatch, useSelector } from 'react-redux';
 import { Link, useSearchParams, useParams, useNavigate } from 'react-router-dom';
 import { fetchDispatch, deleteDispatch } from '../../redux/slices/dispatchSlice';
 import { fetchCompanies } from '../../redux/slices/companySlice';
+import { fetchBottlePerBoxes } from '../../redux/slices/bottlePerBoxSlice';
+import { fetchBottleSpecs } from '../../redux/slices/bottleSpecSlice';
 import { Can } from '../../context/AbilityContext';
+import Select from 'react-select';
 import Swal from 'sweetalert2';
 import * as XLSX from 'xlsx';
 import api from '../../services/api';
@@ -13,10 +16,13 @@ export default function DispatchList() {
   const dispatch = useDispatch();
   const { data: dispatches, loading, totalPages, total, page } = useSelector(state => state.dispatch);
   const { companies } = useSelector(state => state.companies);
+  const { items: bottlePerBoxes } = useSelector(state => state.bottlePerBox);
+  const { bottleSpecs } = useSelector(state => state.bottleSpecs);
 
   const [searchTerm, setSearchTerm] = useState('');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
+  const [bottleFilter, setBottleFilter] = useState('');
   const [itemsPerPage, setItemsPerPage] = useState(10);
   const [showImportModal, setShowImportModal] = useState(false);
   
@@ -29,7 +35,94 @@ export default function DispatchList() {
 
   useEffect(() => {
     dispatch(fetchCompanies({ pagination: "false" }));
-  }, [dispatch]);
+    if (companyId) {
+      dispatch(fetchBottlePerBoxes({ pagination: "false" }));
+      dispatch(fetchBottleSpecs({ pagination: "false" }));
+    }
+  }, [dispatch, companyId]);
+
+  const selectedCompany = React.useMemo(() => {
+    if (!companyId || !companies) return null;
+    return companies.find(c => c._id === companyId);
+  }, [companyId, companies]);
+
+  // Calculate which bottles have actual dispatch records for this company
+  const [allDispatchesForBottles, setAllDispatchesForBottles] = useState([]);
+
+  useEffect(() => {
+    if (companyId) {
+      // Fetch all dispatch records for this company without pagination
+      dispatch(fetchDispatch({ pagination: "false", companyId })).then(res => {
+        if (res.payload && res.payload.data) {
+          setAllDispatchesForBottles(res.payload.data);
+        }
+      });
+    }
+  }, [companyId]);
+
+  const availableBottlesWithRecords = React.useMemo(() => {
+    const dataToUse = allDispatchesForBottles.length > 0 ? allDispatchesForBottles : dispatches;
+    if (!dataToUse || !Array.isArray(dataToUse) || dataToUse.length === 0) return [];
+    
+    const bottleIds = new Set();
+    const bottleNameMap = new Map(); // Map bottle names to IDs for fallback
+    
+    dataToUse.forEach(disp => {
+      if (disp.items && Array.isArray(disp.items)) {
+        disp.items.forEach(item => {
+          if (item.bottleId) {
+            // Handle both object IDs and string IDs
+            const id = typeof item.bottleId === 'object' ? (item.bottleId._id || item.bottleId.id) : item.bottleId;
+            const name = typeof item.bottleId === 'object' ? (item.bottleId.bottleName || item.bottleId.plainBottleName) : null;
+            if (id) {
+              bottleIds.add(String(id));
+              if (name) {
+                bottleNameMap.set(name, String(id));
+              }
+            }
+          }
+        });
+      }
+    });
+    
+    // Return only bottlePerBoxes that have dispatch records
+    let filtered = (bottlePerBoxes || [])
+      .filter(b => bottleIds.has(String(b._id)))
+      .sort((a, b) => {
+        const nameA = (a.bottleName || a.plainBottleName || '').toLowerCase();
+        const nameB = (b.bottleName || b.plainBottleName || '').toLowerCase();
+        return nameA.localeCompare(nameB, undefined, { numeric: true, sensitivity: 'base' });
+      });
+    
+    // If no bottlePerBoxes data, create fallback objects from dispatch records
+    if (filtered.length === 0 && bottleNameMap.size > 0) {
+      filtered = Array.from(bottleNameMap.entries()).map(([name, id]) => ({
+        _id: id,
+        bottleName: name,
+        plainBottleName: name
+      }));
+    }
+    
+    return filtered;
+  }, [allDispatchesForBottles, dispatches, bottlePerBoxes]);
+
+  // Auto-select first bottle when company changes (only once per company)
+  const [autoSelectDone, setAutoSelectDone] = useState(false);
+  useEffect(() => {
+    if (companyId) {
+      setAutoSelectDone(false);
+      setBottleFilter('');
+    }
+  }, [companyId]);
+
+  useEffect(() => {
+    if (companyId && !autoSelectDone && bottleFilter === '' && availableBottlesWithRecords.length > 0) {
+      const firstBottleId = availableBottlesWithRecords[0]._id;
+      setBottleFilter(firstBottleId);
+      setAutoSelectDone(true);
+      setSearchParams({ page: 1 });
+    }
+  }, [availableBottlesWithRecords, autoSelectDone, companyId, bottleFilter]);
 
   useEffect(() => {
     dispatch(fetchDispatch({ 
@@ -39,9 +132,10 @@ export default function DispatchList() {
       dateFrom,
       dateTo,
       companyId,
+      bottleName: bottleFilter,
       pagination: companyId ? "false" : "true"
     }));
-  }, [dispatch, currentPage, itemsPerPage, searchTerm, dateFrom, dateTo, companyId]);
+  }, [dispatch, currentPage, itemsPerPage, searchTerm, dateFrom, dateTo, companyId, bottleFilter]);
   
   const handlePageChange = (newPage) => {
     setSearchParams({ page: newPage });
@@ -49,6 +143,10 @@ export default function DispatchList() {
 
   const handleReset = () => {
     setSearchTerm('');
+    setDateFrom('');
+    setDateTo('');
+    setBottleFilter('');
+    setAutoSelectDone(false);
     setSearchParams({ page: 1 });
   };
 
@@ -117,10 +215,10 @@ export default function DispatchList() {
               'Dispatch Date': new Date(dispatch.dispatchDate).toLocaleDateString('en-GB'),
               'G. Pass No': dispatch.gatePassNo || 'N/A',
               'Company': dispatch.companyId?.name || 'N/A',
-              'Bottle Name': item.bottleId?.bottleName || item.bottleId || 'N/A',
+              'Bottle Name': typeof item.bottleId === 'string' ? item.bottleId : (item.bottleId?.plainBottleName || item.bottleId?.bottleName || 'N/A'),
               'Variant': item.variantId?.variantName || 'N/A',
               'Coating Shade': item.coatingShade || 'N/A',
-              'Printing Type': item.printingTypeId?.printingType || 'N/A',
+              'Text Color': item.detectedTextColor || 'N/A',
               'Box': item.box || 0,
               'Qty/Box': item.qty || 0,
               'Total Qty': item.totalQty || 0,
@@ -136,7 +234,7 @@ export default function DispatchList() {
             'Bottle Name': 'N/A',
             'Variant': 'N/A',
             'Coating Shade': 'N/A',
-            'Printing Type': 'N/A',
+            'Text Color': 'N/A',
             'Box': 0,
             'Qty/Box': 0,
             'Total Qty': 0,
@@ -174,7 +272,7 @@ export default function DispatchList() {
             <i className="bi bi-arrow-left fs-5 text-secondary" />
           </button>
           <div>
-            <h1 className="page-title mb-0">Dispatch Register</h1>
+            <h1 className="page-title mb-0">Dispatch Register{selectedCompany ? ` - ${selectedCompany.name}` : ''}</h1>
             <p className="page-subtitle mb-0">Record dispatch/gate-pass transactions</p>
           </div>
         </div>
@@ -193,8 +291,115 @@ export default function DispatchList() {
         </div>
       </div>
 
+      {companyId && (
+        <div className="dash-card mb-4 border-top-accent" style={{ borderTop: '3px solid var(--accent)' }}>
+          <div className="dash-card-body p-3">
+            <div className="d-flex align-items-center gap-2 mb-3">
+              <i className="bi bi-funnel text-accent fw-bold" style={{ fontSize: 18 }}></i>
+              <h6 className="mb-0 fw-bold text-dark">Filter by Dispatch Date & Bottle</h6>
+            </div>
+            <div className="row g-3 align-items-end">
+              <div className="col-12 col-sm-6 col-md-3 col-lg-2">
+                <label className="small text-muted fw-bold mb-1 d-block">From</label>
+                <input
+                  type="date"
+                  className="form-control form-control-sm border-light-subtle bg-light shadow-none w-100"
+                  style={{ borderRadius: 10, height: 38 }}
+                  value={dateFrom}
+                  onChange={(e) => {
+                    setSearchParams({ page: 1 });
+                    setDateFrom(e.target.value);
+                  }}
+                />
+              </div>
+              <div className="col-12 col-sm-6 col-md-3 col-lg-2">
+                <label className="small text-muted fw-bold mb-1 d-block">To</label>
+                <input
+                  type="date"
+                  className="form-control form-control-sm border-light-subtle bg-light shadow-none w-100"
+                  style={{ borderRadius: 10, height: 38 }}
+                  value={dateTo}
+                  onChange={(e) => {
+                    setSearchParams({ page: 1 });
+                    setDateTo(e.target.value);
+                  }}
+                />
+              </div>
+              <div className="col-12 col-sm-12 col-md-6 col-lg-3">
+                <label className="small text-muted fw-bold mb-1 d-block">🔍 Plain Bottle Name</label>
+                <Select
+                  isClearable={true}
+                  isSearchable
+                  options={
+                    availableBottlesWithRecords.map(b => ({ value: b._id, label: b.bottleName || b.plainBottleName }))
+                  }
+                  value={
+                    bottleFilter && bottleFilter !== '' 
+                      ? (() => {
+                          const foundBottle = availableBottlesWithRecords?.find(b => String(b._id) === String(bottleFilter));
+                          return {
+                            value: bottleFilter,
+                            label: foundBottle?.bottleName || foundBottle?.plainBottleName || 'Unknown'
+                          };
+                        })()
+                      : null
+                  }
+                  onChange={(selected) => {
+                    setSearchParams({ page: 1 });
+                    if (selected && selected.value !== undefined && selected.value !== null) {
+                      setBottleFilter(selected.value);
+                    } else {
+                      setBottleFilter('');
+                    }
+                  }}
+                  classNamePrefix="react-select"
+                  placeholder="Select bottle name..."
+                  styles={{
+                    control: (base) => ({
+                      ...base,
+                      borderRadius: 10,
+                      minHeight: 38,
+                      borderColor: 'var(--bs-border-color-translucent)',
+                      backgroundColor: 'var(--bs-light)',
+                      boxShadow: 'none'
+                    })
+                  }}
+                />
+              </div>
+              <div className="col-12 col-sm-6 col-md-6 col-lg-3">
+                <label className="small text-muted fw-bold mb-1 d-block">Search G. Pass No</label>
+                <div className="search-input-wrapper position-relative">
+                  <i className="bi bi-search text-muted position-absolute top-50 start-0 translate-middle-y ms-3" style={{ pointerEvents: 'none' }} />
+                  <input
+                    type="text"
+                    className="form-control form-control-sm border-light-subtle bg-light ps-5 shadow-none w-100"
+                    placeholder="Search..."
+                    value={searchTerm}
+                    onChange={(e) => {
+                      setSearchTerm(e.target.value);
+                      setSearchParams({ page: 1 });
+                    }}
+                    style={{ borderRadius: 10, height: 38 }}
+                  />
+                </div>
+              </div>
+              <div className="col-12 col-sm-6 col-md-6 col-lg-2">
+                <button
+                  type="button"
+                  onClick={handleReset}
+                  className="btn btn-sm btn-light border-light-subtle w-100"
+                  style={{ borderRadius: 10, fontWeight: 600, height: 38 }}
+                >
+                  ✕ Reset All
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="dash-card border-0 shadow-sm">
-        <div className="dash-card-header d-flex align-items-center justify-content-between p-3 border-bottom bg-white companies-dash-toolbar flex-wrap gap-3">
+        <div className="dash-card-header d-flex align-items-center justify-content-between p-3 border-bottom bg-white companies-dash-toolbar">
           <div className="d-flex align-items-center gap-2 text-muted small fw-500">
             <span>Show</span>
             <select
@@ -213,18 +418,20 @@ export default function DispatchList() {
             <span>entries</span>
           </div>
 
-          <div className="d-flex flex-wrap gap-3">
-            <div className="search-input-wrapper position-relative companies-search-wrap">
-              <i className="bi bi-search text-muted position-absolute top-50 start-0 translate-middle-y ms-3" style={{ pointerEvents: 'none' }} />
-              <input
-                type="text"
-                className="form-control form-control-sm border-light-subtle bg-light ps-5 py-2 shadow-none"
-                placeholder="Search G. Pass No or Bottle..."
-                value={searchTerm}
-                onChange={e => { setSearchTerm(e.target.value); setSearchParams({ page: 1 }); }}
-                style={{ borderRadius: 10, fontSize: 13, width: 250 }}
-              />
-            </div>
+          <div className="d-flex gap-2 flex-wrap">
+            {!companyId && (
+              <div className="search-input-wrapper position-relative companies-search-wrap">
+                <i className="bi bi-search text-muted position-absolute top-50 start-0 translate-middle-y ms-3" style={{ pointerEvents: 'none' }} />
+                <input
+                  type="text"
+                  className="form-control form-control-sm border-light-subtle bg-light ps-5 py-2 shadow-none"
+                  placeholder="Search G. Pass No or Bottle..."
+                  value={searchTerm}
+                  onChange={e => { setSearchTerm(e.target.value); setSearchParams({ page: 1 }); }}
+                  style={{ borderRadius: 10, fontSize: 13, width: 250 }}
+                />
+              </div>
+            )}
           </div>
         </div>
         
@@ -251,7 +458,7 @@ export default function DispatchList() {
                     <th className="py-3 text-uppercase small fw-bold text-muted">Bottle Name</th>
                     <th className="py-3 text-uppercase small fw-bold text-muted">Variant</th>
                     <th className="py-3 text-uppercase small fw-bold text-muted">Coating Shade</th>
-                    <th className="py-3 text-uppercase small fw-bold text-muted">Printing Type</th>
+                    <th className="py-3 text-uppercase small fw-bold text-muted">Text Color</th>
                     <th className="py-3 text-uppercase small fw-bold text-muted text-center" style={{ width: 70 }}>Box</th>
                     <th className="py-3 text-uppercase small fw-bold text-muted text-center" style={{ width: 70 }}>Qty</th>
                     <th className="py-3 text-uppercase small fw-bold text-muted text-end" style={{ width: 100 }}>Total</th>
@@ -277,10 +484,10 @@ export default function DispatchList() {
                             )}
                           </>
                         )}
-                        <td className="small fw-500">{item.bottleId?.bottleName || '-'}</td>
+                        <td className="small fw-500">{typeof item.bottleId === 'string' ? item.bottleId : (item.bottleId?.plainBottleName || item.bottleId?.bottleName || '-')}</td>
                         <td className="small">{item.variantId?.variantName || '-'}</td>
                         <td className="small">{item.coatingShade || '-'}</td>
-                        <td className="small">{item.printingTypeId?.printingType || '-'}</td>
+                        <td className="small">{item.detectedTextColor || '-'}</td>
                         <td className="text-center fw-500 small">{item.box}</td>
                         <td className="text-center fw-500 small">{item.qty}</td>
                         <td className="text-end fw-bold text-accent small">{item.totalQty}</td>

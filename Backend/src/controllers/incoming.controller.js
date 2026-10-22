@@ -121,6 +121,7 @@ exports.createIncoming = async (req, res) => {
 
     const payload = {
       date: new Date(date),
+      documentDate: new Date(date),
       deliveryNumber,
       billToId,
       images: imageUrls,
@@ -176,29 +177,23 @@ exports.bulkDeleteIncoming = async (req, res) => {
       return res.status(404).json({ message: "No active incoming records found to delete" });
     }
 
-    const revertOps = [];
-    for (const inc of incomings) {
-      for (const item of (inc.items || [])) {
-        revertOps.push({
-          updateOne: {
-            filter: { bottleId: item.bottleId },
-            update: {
-              $inc: { availableQuantity: -item.totalQty },
-              $set: { lastUpdatedBy: req.user?._id }
-            }
-          }
-        });
-      }
-    }
-
-    if (revertOps.length > 0) {
-      await PlainBottleStock.bulkWrite(revertOps);
-    }
-
     await Incoming.updateMany(
       { _id: { $in: incomings.map(i => i._id) } },
       { $set: { isDeleted: true } }
     );
+
+    const affectedPairs = new Set();
+    for (const inc of incomings) {
+      for (const item of (inc.items || [])) {
+        if (item.bottleId && inc.billToId) {
+          affectedPairs.add(`${item.bottleId}:::${inc.billToId}`);
+        }
+      }
+    }
+    for (const pair of affectedPairs) {
+      const [bId, billToId] = pair.split(':::');
+      await recomputePlainStock(bId, billToId, req.user?._id);
+    }
 
     res.json({ success: true, message: `Successfully deleted ${incomings.length} incoming records and reversed stock` });
   } catch (err) {
@@ -223,29 +218,23 @@ exports.rollbackImport = async (req, res) => {
       return res.status(404).json({ message: "No active matching records found to rollback" });
     }
 
-    const revertOps = [];
-    for (const inc of incomings) {
-      for (const item of (inc.items || [])) {
-        revertOps.push({
-          updateOne: {
-            filter: { bottleId: item.bottleId },
-            update: {
-              $inc: { availableQuantity: -item.totalQty },
-              $set: { lastUpdatedBy: req.user?._id }
-            }
-          }
-        });
-      }
-    }
-
-    if (revertOps.length > 0) {
-      await PlainBottleStock.bulkWrite(revertOps);
-    }
-
     await Incoming.updateMany(
       { _id: { $in: incomings.map(i => i._id) } },
       { $set: { isDeleted: true } }
     );
+
+    const affectedPairs = new Set();
+    for (const inc of incomings) {
+      for (const item of (inc.items || [])) {
+        if (item.bottleId && inc.billToId) {
+          affectedPairs.add(`${item.bottleId}:::${inc.billToId}`);
+        }
+      }
+    }
+    for (const pair of affectedPairs) {
+      const [bId, billToId] = pair.split(':::');
+      await recomputePlainStock(bId, billToId, req.user?._id);
+    }
 
     res.json({ success: true, message: `Successfully rolled back ${incomings.length} imported records and reversed stock` });
   } catch (err) {

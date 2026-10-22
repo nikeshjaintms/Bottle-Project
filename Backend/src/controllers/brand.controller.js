@@ -40,7 +40,7 @@ exports.getBrands = async (req, res) => {
     if (page && page !== '') {
       parsedPage = parseInt(page) || 1;
       res.cookie('brandsPage', parsedPage, { maxAge: 86400000, httpOnly: true });
-    } else if (req.cookies.brandsPage) {
+    } else if (req.cookies && req.cookies.brandsPage && !limit && pagination !== "false") {
       parsedPage = parseInt(req.cookies.brandsPage) || 1;
     }
 

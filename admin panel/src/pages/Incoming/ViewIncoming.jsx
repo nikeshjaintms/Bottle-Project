@@ -93,7 +93,13 @@ export default function ViewIncoming() {
                 <div className="col-md-6">
                   <div className="p-3 bg-light rounded-4 border border-light-subtle h-100">
                     <span className="text-uppercase small fw-bold text-muted d-block mb-1">Date</span>
-                    <span className="fw-bold fs-6">{(incoming.documentDate || incoming.date || incoming.createdAt) ? new Date(incoming.documentDate || incoming.date || incoming.createdAt).toLocaleDateString('en-GB') : '-'}</span>
+                    <span className="fw-bold fs-6">
+                      {incoming.deliveryNumber === 'OLD STOCK'
+                        ? '-'
+                        : ((incoming.documentDate || incoming.date || incoming.createdAt) 
+                            ? new Date(incoming.documentDate || incoming.date || incoming.createdAt).toLocaleDateString('en-GB')
+                            : '-')}
+                    </span>
                   </div>
                 </div>
                 <div className="col-md-6">

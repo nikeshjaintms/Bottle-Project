@@ -15,6 +15,7 @@ import CreatableSelect from 'react-select/creatable';
 import API from '../../services/api';
 import Swal from 'sweetalert2';
 import { usePrintingPlanLanguage } from '../../hooks/usePrintingPlanLanguage';
+import { calculateBalanceAndStock, recalculateBalanceForBlock, calculateBalance } from '../../utils/printingPlanCalcs';
 
 export const sortTypesList = (types = []) => {
   const getRank = (name) => {
@@ -644,7 +645,8 @@ export default function EditPrintingPlan() {
                                   const o = parseFloat(targetItem.orderQty) || 0;
                                   targetItem.balanceToMake = Math.max(0, o - p);
                                 } else {
-                                  targetItem.balanceToMake = p > 0 ? (stockVal - p) : stockVal;
+                                  const o = parseFloat(targetItem.orderQty) || 0;
+                                  targetItem.balanceToMake = Math.max(0, o - p);
                                 }
                             }
                             return b;
@@ -731,7 +733,8 @@ export default function EditPrintingPlan() {
                 const rOrder = parseFloat(r.orderQty) || 0;
                 r.balanceToMake = Math.max(0, rOrder - rProd);
               } else {
-                r.balanceToMake = rProd > 0 ? (parseFloat(currentRow.plainBottleStock) || 0) - rProd : (parseFloat(currentRow.plainBottleStock) || 0);
+                const rOrder = parseFloat(r.orderQty) || 0;
+                r.balanceToMake = Math.max(0, rOrder - rProd);
               }
             }
           }
@@ -803,13 +806,17 @@ export default function EditPrintingPlan() {
             r.plainBottleStock = newStock;
             r.coatedStockAvailable = newStock;
             const rProd = parseFloat(r === currentRow ? newProduced : r.producedQty) || 0;
-            r.balanceToMake = rProd > 0 ? (newStock - rProd) : newStock;
+            const rOrder = parseFloat(r.orderQty) || 0;
+            // Balance = orderQty - producedQty (not stock-based)
+            r.balanceToMake = Math.max(0, rOrder - rProd);
           }
         });
       } else {
         currentRow.plainBottleStock = newStock;
         currentRow.coatedStockAvailable = newStock;
-        currentRow.balanceToMake = newProduced > 0 ? (newStock - newProduced) : newStock;
+        const curOrder = parseFloat(currentRow.orderQty) || 0;
+        // Balance = orderQty - producedQty (not stock-based)
+        currentRow.balanceToMake = Math.max(0, curOrder - newProduced);
       }
     }
 
@@ -860,7 +867,9 @@ export default function EditPrintingPlan() {
       } else {
         const stock = parseFloat(currentRow.plainBottleStock || currentRow.coatedStockAvailable);
         const producedQty = parseFloat(currentRow.producedQty);
-        currentRow.balanceToMake = producedQty > 0 ? ((stock || 0) - producedQty) : (stock || 0);
+        const orderQty = parseFloat(currentRow.orderQty) || 0;
+        // Balance = orderQty - producedQty (never uses stock)
+        currentRow.balanceToMake = Math.max(0, orderQty - (producedQty || 0));
         currentRow.isExceedingStock = false;
       }
     }
@@ -925,7 +934,8 @@ export default function EditPrintingPlan() {
                   it.coatedStockAvailable = stockVal;
                   it.plainBottleStock = stockVal;
                   const p = parseFloat(it.producedQty) || 0;
-                  it.balanceToMake = p > 0 ? (stockVal - p) : stockVal;
+                  const o = parseFloat(it.orderQty) || 0;
+                  it.balanceToMake = Math.max(0, o - p);
                 }
               });
             }
@@ -1222,10 +1232,10 @@ export default function EditPrintingPlan() {
                           <th className="small text-muted text-center align-middle" style={{ width: '8%', minWidth: '150px' }}>Text Color</th>
                           <th className="small text-muted text-center align-middle" style={{ width: '8%', minWidth: '150px' }}>{labels.plainColouredBottleStock}</th>
                           <th className="small text-muted text-center align-middle" style={{ width: '7%' }}>{labels.orderQty} <span className="text-danger">*</span></th>
+                          <th className="small text-muted text-center align-middle" style={{ width: '9%' }}>{labels.readyPrintedQty}</th>
                           <th className="small text-muted text-center align-middle" style={{ width: '9%' }}>{labels.balanceToMake}</th>
                           <th className="small text-muted text-center align-middle" style={{ width: '6%' }}>{labels.bottlePerBox}</th>
                           <th className="small text-muted text-center align-middle" style={{ width: '6%' }}>{labels.noOfOrderBoxes}</th>
-                          <th className="small text-muted text-center align-middle" style={{ width: '9%' }}>{labels.readyPrintedQty}</th>
                           <th className="small text-muted text-center align-middle" style={{ width: '9%' }}>{labels.balanceToBeDispatched}</th>
                           <th className="small text-muted text-center align-middle" style={{ width: '5%' }}>{labels.soldQty}</th>
                           <th className="small text-muted text-center align-middle" style={{ width: '6%' }}>{labels.readyBoxes}</th>
@@ -1465,7 +1475,8 @@ export default function EditPrintingPlan() {
                                         const o = parseFloat(updatedBlock.items[i].orderQty) || 0;
                                         updatedBlock.items[i].balanceToMake = Math.max(0, o - prod);
                                       } else {
-                                        updatedBlock.items[i].balanceToMake = prod > 0 ? (parsed - prod) : parsed;
+                                        const o = parseFloat(updatedBlock.items[i].orderQty) || 0;
+                                        updatedBlock.items[i].balanceToMake = Math.max(0, o - prod);
                                       }
                                     }
                                     setBlock(updatedBlock);
@@ -1477,17 +1488,6 @@ export default function EditPrintingPlan() {
                               )}
                               <td>
                                 <input type="number" className={`form-control form-control-sm shadow-none text-center ${item.isExceedingStock && (item.coatingShade || '').trim().toUpperCase() === 'PLAIN' ? 'bg-warning' : ''}`} value={item.orderQty} onChange={(e) => handleItemChange(itemIndex, 'orderQty', e.target.value)} min="1" required />
-                              </td>
-                              <td>
-                                <input type="number" className="form-control form-control-sm shadow-none text-center" value={item.balanceToMake} onChange={(e) => handleItemChange(itemIndex, 'balanceToMake', e.target.value)} />
-                              </td>
-                              {renderGroupCell && (
-                              <td rowSpan={rowSpan} className="align-middle" style={{ backgroundColor: isGrouped ? '#f8f9fa' : 'inherit' }}>
-                                <input type="number" className="form-control form-control-sm shadow-none text-center" value={item.boxQty} onChange={(e) => handleItemChange(itemIndex, 'boxQty', e.target.value)} min="1" />
-                              </td>
-                              )}
-                              <td>
-                                <input type="number" className="form-control form-control-sm shadow-none text-center" value={item.noOfBoxes} onChange={(e) => handleItemChange(itemIndex, 'noOfBoxes', e.target.value)} min="0" />
                               </td>
                               <td>
                                 <input
@@ -1503,6 +1503,17 @@ export default function EditPrintingPlan() {
                                     <i className="bi bi-exclamation-triangle-fill me-1"></i>Exceeds Stock
                                   </div>
                                 )}
+                              </td>
+                              <td>
+                                <input type="number" className="form-control form-control-sm shadow-none text-center" value={item.balanceToMake} onChange={(e) => handleItemChange(itemIndex, 'balanceToMake', e.target.value)} />
+                              </td>
+                              {renderGroupCell && (
+                              <td rowSpan={rowSpan} className="align-middle" style={{ backgroundColor: isGrouped ? '#f8f9fa' : 'inherit' }}>
+                                <input type="number" className="form-control form-control-sm shadow-none text-center" value={item.boxQty} onChange={(e) => handleItemChange(itemIndex, 'boxQty', e.target.value)} min="1" />
+                              </td>
+                              )}
+                              <td>
+                                <input type="number" className="form-control form-control-sm shadow-none text-center" value={item.noOfBoxes} onChange={(e) => handleItemChange(itemIndex, 'noOfBoxes', e.target.value)} min="0" />
                               </td>
                               <td>
                                 <input type="number" className="form-control form-control-sm shadow-none text-center" value={item.dispatchBalance} onChange={(e) => handleItemChange(itemIndex, 'dispatchBalance', e.target.value)} min="0" />
@@ -1581,8 +1592,8 @@ export default function EditPrintingPlan() {
                                 <td className="text-center">{totalOrderQty}</td>
                                 <td></td>
                                 <td></td>
-                                <td className="text-center">{totalNoOfBoxes}</td>
                                 <td></td>
+                                <td className="text-center">{totalNoOfBoxes}</td>
                                 <td></td>
                                 <td></td>
                                 <td></td>

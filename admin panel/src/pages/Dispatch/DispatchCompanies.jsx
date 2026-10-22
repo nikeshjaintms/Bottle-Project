@@ -3,6 +3,7 @@ import { Link, useSearchParams, useNavigate } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
 import { fetchCompanies, setSearchTerm } from '../../redux/slices/companySlice';
 import { Can } from '../../context/AbilityContext';
+import DispatchImportModal from './DispatchImportModal';
 
 export default function DispatchCompanies() {
   const dispatch = useDispatch();
@@ -13,6 +14,7 @@ export default function DispatchCompanies() {
   const urlPage = searchParams.get('page') || '';
   const currentPage = Number(urlPage) || page || 1;
   const [itemsPerPage, setItemsPerPage] = useState(10);
+  const [showImportModal, setShowImportModal] = useState(false);
 
   useEffect(() => {
     dispatch(fetchCompanies({
@@ -36,11 +38,23 @@ export default function DispatchCompanies() {
           <h1 className="page-title">Dispatch Register</h1>
           <p className="page-subtitle">Select a company to view their dispatch records</p>
         </div>
-        <Can I="create" a="dispatch">
-          <Link to="/dispatch/add" className="btn-accent companies-header-action">
-            <i className="bi bi-plus-lg me-2" /> New Dispatch
-          </Link>
-        </Can>
+        <div className="d-flex gap-2">
+          <Can I="create" a="dispatch">
+            <button 
+              className="btn btn-outline-success shadow-sm px-4 py-2 rounded-3"
+              onClick={() => setShowImportModal(true)}
+              title="Import from Excel"
+              style={{ fontWeight: 600 }}
+            >
+              <i className="bi bi-file-earmark-excel me-2" /> Import Excel
+            </button>
+          </Can>
+          <Can I="create" a="dispatch">
+            <Link to="/dispatch/add" className="btn-accent companies-header-action">
+              <i className="bi bi-plus-lg me-2" /> New Dispatch
+            </Link>
+          </Can>
+        </div>
       </div>
 
       <div className="dash-card border-0 shadow-sm">
@@ -201,6 +215,14 @@ export default function DispatchCompanies() {
           </div>
         </div>
       </div>
+
+      <DispatchImportModal 
+        show={showImportModal} 
+        onClose={() => setShowImportModal(false)}
+        onImportComplete={() => {
+          dispatch(fetchCompanies({ page: currentPage, limit: itemsPerPage, search }));
+        }}
+      />
     </div>
   );
 }

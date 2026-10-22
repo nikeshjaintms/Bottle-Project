@@ -1,5 +1,0 @@
-[TextColor] Loaded 418 colors from palette.json
-◇ injected env (2) from .env // tip: ⌘ enable debugging { debug: true }
-server is running on port 5000
-Connected to database
-RBAC Seeding and Migration completed successfully!

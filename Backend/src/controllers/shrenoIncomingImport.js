@@ -1402,8 +1402,8 @@ exports.commitImport = async (req, res) => {
             const shrenoIncomingDocs = [];
 
             for (const record of validRecords) {
-                // Top-level date: use record.date (F: incoming entry date) or today for OLD STOCK
-                const docDate = record.date || new Date();
+                // For OLD STOCK (opening balance), don't set a date - it's historical stock without a specific incoming date
+                const docDate = record.challanNo === 'OLD STOCK' ? null : (record.date || null);
 
                 // Resolve bottle name string to ObjectId
                 const bottleNameStr = record.itemData.bottleNameId;
