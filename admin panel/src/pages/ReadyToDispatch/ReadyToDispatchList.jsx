@@ -155,16 +155,17 @@ export default function ReadyToDispatchList() {
             Daily ready-to-dispatch sheets, boxes, produced quantities, and weights
           </p>
         </div>
-        <div className="d-flex align-items-center gap-2">
+        <div className="d-flex align-items-center gap-3 productions-page-actions">
           <button
             type="button"
-            className="btn btn-outline-success btn-sm shadow-sm"
+            disabled={loading}
+            className="btn btn-outline-primary shadow-sm px-4 py-2 rounded-3"
             onClick={handleExportList}
           >
-            <i className="bi bi-file-earmark-excel me-1" /> Export Excel
+            <i className="bi bi-file-earmark-excel-fill me-2" /> Export Excel
           </button>
-          <Link to="/ready-to-dispatch/add" className="btn btn-primary btn-sm shadow-sm">
-            <i className="bi bi-plus-lg me-1" /> New Ready to Dispatch
+          <Link to="/ready-to-dispatch/add" className="btn btn-accent shadow-sm px-4 py-2 rounded-3" style={{ color: 'white', textDecoration: 'none' }}>
+            <i className="bi bi-plus-lg me-2" /> New Ready to Dispatch
           </Link>
         </div>
       </div>
@@ -250,34 +251,50 @@ export default function ReadyToDispatchList() {
       </div>
 
       {/* Filter Card */}
-      <div className="card border-0 shadow-sm rounded-3 mb-4 bg-white">
-        <div className="card-body p-3">
-          <form onSubmit={handleSearch} className="row g-2 align-items-center">
-            {/* Search */}
-            <div className="col-12 col-md-3">
-              <div className="input-group input-group-sm">
-                <span className="input-group-text bg-light border-end-0">
-                  <i className="bi bi-search text-muted" />
-                </span>
-                <input
-                  type="text"
-                  className="form-control border-start-0"
-                  placeholder="Search title, bottle, shade..."
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                />
-              </div>
+      <div className="dash-card mb-4">
+        <div className="dash-card-body p-3 border-bottom bg-white companies-dash-toolbar">
+          <div className="row g-3 align-items-end productions-filters-panel">
+            {/* Date From Filter */}
+            <div className="col-12 col-sm-6 col-md-4 col-lg-2">
+              <label className="small text-muted fw-bold mb-1 d-block">From Date</label>
+              <input 
+                type="date" 
+                className="form-control form-control-sm border-light-subtle bg-light shadow-none w-100" 
+                value={dateFrom} 
+                onChange={(e) => {
+                  setDateFrom(e.target.value);
+                  setSearchParams({ page: 1 });
+                }} 
+                style={{ borderRadius: 10, height: 38 }} 
+              />
+            </div>
+
+            {/* To Date Filter */}
+            <div className="col-12 col-sm-6 col-md-4 col-lg-2">
+              <label className="small text-muted fw-bold mb-1 d-block">To Date</label>
+              <input 
+                type="date" 
+                className="form-control form-control-sm border-light-subtle bg-light shadow-none w-100" 
+                value={dateTo} 
+                onChange={(e) => {
+                  setDateTo(e.target.value);
+                  setSearchParams({ page: 1 });
+                }} 
+                style={{ borderRadius: 10, height: 38 }} 
+              />
             </div>
 
             {/* Company Filter */}
-            <div className="col-12 col-md-2">
+            <div className="col-12 col-sm-6 col-md-4 col-lg-2">
+              <label className="small text-muted fw-bold mb-1 d-block">Company</label>
               <select
-                className="form-select form-select-sm"
+                className="form-select form-select-sm border-light-subtle bg-light shadow-none"
                 value={selectedCompany}
                 onChange={(e) => {
                   setSelectedCompany(e.target.value);
                   setSearchParams({ page: 1 });
                 }}
+                style={{ borderRadius: 10, height: 38 }}
               >
                 <option value="">All Companies</option>
                 {companies.map((c) => (
@@ -288,49 +305,34 @@ export default function ReadyToDispatchList() {
               </select>
             </div>
 
-            {/* Date From */}
-            <div className="col-6 col-md-2">
-              <input
-                type="date"
-                className="form-control form-control-sm"
-                value={dateFrom}
-                onChange={(e) => {
-                  setDateFrom(e.target.value);
-                  setSearchParams({ page: 1 });
-                }}
-                title="From Date"
-              />
+            {/* Search */}
+            <div className="col-12 col-sm-6 col-md-4 col-lg-2">
+              <label className="small text-muted fw-bold mb-1 d-block">Search</label>
+              <div className="search-input-wrapper position-relative">
+                <i className="bi bi-search text-muted position-absolute top-50 start-0 translate-middle-y ms-3" style={{ pointerEvents: 'none' }} />
+                <input
+                  type="text"
+                  className="form-control form-control-sm border-light-subtle bg-light ps-5 shadow-none w-100"
+                  placeholder="Search sheet..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  style={{ borderRadius: 10, height: 38 }}
+                />
+              </div>
             </div>
 
-            {/* Date To */}
-            <div className="col-6 col-md-2">
-              <input
-                type="date"
-                className="form-control form-control-sm"
-                value={dateTo}
-                onChange={(e) => {
-                  setDateTo(e.target.value);
-                  setSearchParams({ page: 1 });
-                }}
-                title="To Date"
-              />
-            </div>
-
-            {/* Actions */}
-            <div className="col-12 col-md-3 d-flex gap-2">
-              <button type="submit" className="btn btn-sm btn-primary flex-grow-1">
-                <i className="bi bi-filter me-1" /> Filter
-              </button>
-              <button
+            {/* Reset Button */}
+            <div className="col-12 col-sm-6 col-md-4 col-lg-2">
+              <button 
+                onClick={handleReset} 
                 type="button"
-                className="btn btn-sm btn-outline-secondary"
-                onClick={handleReset}
-                title="Reset Filters"
+                className="btn btn-sm btn-light border-light-subtle w-100" 
+                style={{ borderRadius: 10, fontWeight: 600, height: 38 }}
               >
-                <i className="bi bi-arrow-counterclockwise" /> Reset
+                Reset Filters
               </button>
             </div>
-          </form>
+          </div>
         </div>
       </div>
 

@@ -76,6 +76,7 @@ export default function EditBottlePerBox() {
     plainBottleName: '',
     bottleNames: [],
     bottlePerBox: '',
+    boxWeight: '',
     status: 'active'
   });
 
@@ -143,7 +144,8 @@ export default function EditBottlePerBox() {
 
   const [errors, setErrors] = useState({
     bottleNames: '',
-    bottlePerBox: ''
+    bottlePerBox: '',
+    boxWeight: ''
   });
 
   useEffect(() => {
@@ -157,6 +159,7 @@ export default function EditBottlePerBox() {
         plainBottleName: record.plainBottleName || derivePlainBottleName(record.bottleName),
         bottleNames: namesList.map(n => ({ value: n, label: n })),
         bottlePerBox: record.bottlePerBox !== null && record.bottlePerBox !== undefined ? record.bottlePerBox : '',
+        boxWeight: record.boxWeight !== null && record.boxWeight !== undefined ? record.boxWeight : '',
         status: record.status === true ? 'active' : 'inactive'
       });
       setIsPlainBottleManuallyEdited(!!record.plainBottleName);
@@ -168,7 +171,7 @@ export default function EditBottlePerBox() {
     if (name === 'bottleNames' && (!value || value.length === 0)) {
       msg = 'Please select at least one bottle';
     } else if (name !== 'bottleNames' && !value) {
-      msg = 'Bottle per Box is mandatory';
+      msg = name === 'boxWeight' ? 'Box Weight is mandatory' : 'Bottle per Box is mandatory';
     }
     setErrors(prev => ({ ...prev, [name]: msg }));
     return msg;
@@ -203,8 +206,9 @@ export default function EditBottlePerBox() {
     e.preventDefault();
     const nameError = validateField('bottleNames', formData.bottleNames);
     const countError = validateField('bottlePerBox', formData.bottlePerBox);
+    const weightError = validateField('boxWeight', formData.boxWeight);
 
-    if (nameError || countError) {
+    if (nameError || countError || weightError) {
       return Swal.fire('Validation Error', 'Please fill all required fields.', 'error');
     }
 
@@ -351,6 +355,23 @@ export default function EditBottlePerBox() {
                       style={{ borderRadius: 12, padding: '8px 12px' }}
                     />
                     {errors.bottlePerBox && <div className="invalid-feedback">{errors.bottlePerBox}</div>}
+                  </div>
+
+                  <div className="col-md-6">
+                    <label className="form-label fw-600 small text-uppercase text-muted">Box Weight <span className="text-danger">*</span></label>
+                    <input
+                      type="number"
+                      className={`form-control custom-input-field ${errors.boxWeight ? 'is-invalid' : ''}`}
+                      name="boxWeight"
+                      value={formData.boxWeight}
+                      onChange={handleChange}
+                      onBlur={handleBlur}
+                      placeholder="Enter box weight"
+                      min="0"
+                      step="any"
+                      style={{ borderRadius: 12, padding: '8px 12px' }}
+                    />
+                    {errors.boxWeight && <div className="invalid-feedback">{errors.boxWeight}</div>}
                   </div>
 
                   <div className="col-md-12">

@@ -105,6 +105,9 @@ export default function BottlePerBoxes() {
                   <div className="text-muted small mb-2 text-truncate">
                     Bottle per Box: <span className="fw-600 text-dark">{s.bottlePerBox || 'N/A'}</span>
                   </div>
+                  <div className="text-muted small mb-2 text-truncate">
+                    Box Weight: <span className="fw-600 text-dark">{s.boxWeight ?? 'N/A'}</span>
+                  </div>
                   <span className={`badge-status badge-${isItemActive(s) ? 'active' : 'inactive'} mt-1 d-inline-block`}>
                     {isItemActive(s) ? 'Active' : 'Inactive'}
                   </span>
@@ -142,6 +145,7 @@ export default function BottlePerBoxes() {
                 <th className="py-3 text-uppercase small fw-bold text-muted text-center">Plain Bottle</th>
                 <th className="py-3 text-uppercase small fw-bold text-muted text-center">Bottle Name</th>
                 <th className="py-3 text-uppercase small fw-bold text-muted text-center">Bottle per Box</th>
+                <th className="py-3 text-uppercase small fw-bold text-muted text-center">Box Weight</th>
                 <th className="py-3 text-uppercase small fw-bold text-muted text-center" style={{ width: 120 }}>Status</th>
                 <th className="py-3 text-uppercase small fw-bold text-muted text-center" style={{ width: 150 }}>Actions</th>
               </tr>
@@ -149,7 +153,7 @@ export default function BottlePerBoxes() {
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan="6" className="text-center py-5">
+                  <td colSpan="7" className="text-center py-5">
                     <div className="spinner-border text-primary" role="status"><span className="visually-hidden">Loading...</span></div>
                   </td>
                 </tr>
@@ -179,6 +183,9 @@ export default function BottlePerBoxes() {
                     </td>
                     <td className="py-3 text-center">
                       <span className="fw-600 text-dark" style={{ fontSize: 13 }}>{s.bottlePerBox || 'N/A'}</span>
+                    </td>
+                    <td className="py-3 text-center">
+                      <span className="fw-600 text-dark" style={{ fontSize: 13 }}>{s.boxWeight ?? 'N/A'}</span>
                     </td>
                     <td className="py-3 text-center">
                       <span className={`badge-status rounded-pill px-3 py-1 text-uppercase fw-bold`}
@@ -216,7 +223,7 @@ export default function BottlePerBoxes() {
                 ))
               ) : (
                 <tr>
-                  <td colSpan={5} className="text-center py-5">
+                  <td colSpan={7} className="text-center py-5">
                     <div className="py-4">
                       <i className="bi bi-search text-muted mb-3 d-block" style={{ fontSize: 48 }} />
                       <h5 className="text-dark fw-bold">No results found</h5>

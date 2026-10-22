@@ -20,6 +20,10 @@ const bottlePerBoxSchema = new mongoose.Schema({
     type: Number,
     default: null
   },
+  boxWeight: {
+    type: Number,
+    default: null
+  },
   status: {
     type: Boolean,
     default: true

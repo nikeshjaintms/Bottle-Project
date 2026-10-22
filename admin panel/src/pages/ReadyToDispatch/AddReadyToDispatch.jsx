@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import API from '../../services/api';
 import SearchableSelect from '../../components/SearchableSelect';
 import Swal from 'sweetalert2';
@@ -371,34 +371,20 @@ export default function AddReadyToDispatch() {
     <div className="page-content">
       {/* Header */}
       <div className="page-header d-flex flex-wrap align-items-center justify-content-between gap-3 mb-4">
-        <div>
-          <nav aria-label="breadcrumb">
-            <ol className="breadcrumb mb-1 small">
-              <li className="breadcrumb-item">
-                <Link to="/ready-to-dispatch" className="text-decoration-none">
-                  Ready to Dispatch
-                </Link>
-              </li>
-              <li className="breadcrumb-item active" aria-current="page">
-                New Sheet
-              </li>
-            </ol>
-          </nav>
-          <h1 className="page-title mb-0 d-flex align-items-center gap-2">
-            <i className="bi bi-plus-circle-fill text-primary" />
-            Create Ready to Dispatch Material
-          </h1>
-        </div>
-        <div>
-          <Link to="/ready-to-dispatch" className="btn btn-outline-secondary btn-sm shadow-sm">
-            <i className="bi bi-arrow-left me-1" /> Back to List
-          </Link>
+        <div className="d-flex align-items-center gap-3">
+          <button type="button" onClick={() => navigate(-1)} className="btn-ghost border-0 shadow-sm" style={{ width: 40, height: 40, borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <i className="bi bi-arrow-left fs-5" />
+          </button>
+          <div>
+            <h1 className="page-title mb-0">Create Ready to Dispatch Material</h1>
+            <p className="page-subtitle mb-0">Record ready to dispatch material entries</p>
+          </div>
         </div>
       </div>
 
       <form onSubmit={handleSubmit}>
         {/* Section 1: Sheet & Party Details */}
-        <div className="card border-0 shadow-sm rounded-3 mb-4 bg-white">
+        <div className="card border border-light-subtle shadow-sm rounded-3 mb-4 bg-white">
           <div className="card-header bg-white p-3 border-bottom">
             <h6 className="fw-bold text-dark mb-0 d-flex align-items-center gap-2">
               <i className="bi bi-file-text-fill text-primary" />
@@ -412,7 +398,7 @@ export default function AddReadyToDispatch() {
                   Company / Party <span className="text-danger">*</span>
                 </label>
                 <select
-                  className="form-select form-select-sm"
+                  className="form-select shadow-none bg-white border-light-subtle rounded-3"
                   value={companyId}
                   onChange={(e) => handleCompanyChange(e.target.value)}
                   required
@@ -432,7 +418,7 @@ export default function AddReadyToDispatch() {
                 </label>
                 <input
                   type="date"
-                  className="form-control form-control-sm"
+                  className="form-control shadow-none bg-white border-light-subtle rounded-3"
                   value={dispatchDate}
                   onChange={(e) => setDispatchDate(e.target.value)}
                   required
@@ -443,7 +429,7 @@ export default function AddReadyToDispatch() {
                 <label className="form-label small fw-bold text-muted">Sheet Title / Heading</label>
                 <input
                   type="text"
-                  className="form-control form-control-sm"
+                  className="form-control shadow-none bg-white border-light-subtle rounded-3"
                   value={sheetTitle}
                   onChange={(e) => setSheetTitle(e.target.value)}
                   placeholder="e.g. TPP - ready to dispatch material"
@@ -454,7 +440,7 @@ export default function AddReadyToDispatch() {
                 <label className="form-label small fw-bold text-muted">Remarks / Notes</label>
                 <input
                   type="text"
-                  className="form-control form-control-sm"
+                  className="form-control shadow-none bg-white border-light-subtle rounded-3"
                   value={remarks}
                   onChange={(e) => setRemarks(e.target.value)}
                   placeholder="Optional notes or vehicle / batch reference"
@@ -465,7 +451,7 @@ export default function AddReadyToDispatch() {
         </div>
 
         {/* Section 2: Plain Bottles & Variant Lines */}
-        <div className="card border-0 shadow-sm rounded-3 mb-4 bg-white">
+        <div className="card border border-light-subtle shadow-sm rounded-3 mb-4 bg-white">
           <div className="card-header bg-white p-3 border-bottom d-flex align-items-center justify-content-between">
             <h6 className="fw-bold text-dark mb-0 d-flex align-items-center gap-2">
               <i className="bi bi-boxes text-primary" />
@@ -485,9 +471,9 @@ export default function AddReadyToDispatch() {
               const variants = variantsCache[grp.plainBottleName] || [];
 
               return (
-                <div key={grp.id} className="p-3 border rounded-3 mb-4 bg-light shadow-sm">
+                <div key={grp.id} className="border border-light-subtle rounded-3 mb-4 bg-white p-4 shadow-sm">
                   {/* Group Header: Plain Bottle Selection */}
-                  <div className="row g-2 align-items-center mb-3 pb-3 border-bottom bg-white p-2 rounded-2">
+                  <div className="row g-2 align-items-center mb-3 pb-3 border-bottom bg-white p-2 rounded-2 border border-light-subtle">
                     <div className="col-md-6">
                       <label className="form-label small fw-bold text-primary mb-1">
                         Plain Bottle #{grpIdx + 1} <span className="text-danger">*</span>
@@ -506,7 +492,7 @@ export default function AddReadyToDispatch() {
                       </label>
                       <input
                         type="number"
-                        className="form-control form-control-sm bg-light"
+                        className="form-control shadow-none bg-light border-light-subtle rounded-3"
                         value={grp.unit}
                         onChange={(e) => {
                           const newGroups = [...groups];
@@ -567,7 +553,7 @@ export default function AddReadyToDispatch() {
                               <td>
                                 {variants.length > 0 && (
                                   <select
-                                    className="form-select form-select-sm mb-1 text-primary fw-medium"
+                                    className="form-select shadow-none bg-white border-light-subtle rounded-3 mb-1 text-primary fw-medium"
                                     value={vl.variantId}
                                     onChange={(e) =>
                                       handleLineChange(grpIdx, lineIdx, 'variantId', e.target.value)
@@ -583,7 +569,7 @@ export default function AddReadyToDispatch() {
                                 )}
                                 <input
                                   type="text"
-                                  className="form-control form-control-sm"
+                                  className="form-control shadow-none bg-white border-light-subtle rounded-3"
                                   placeholder="e.g. TR.RED-GOD FATHER-WHITE ORGANIC"
                                   value={vl.description}
                                   onChange={(e) =>
@@ -597,7 +583,7 @@ export default function AddReadyToDispatch() {
                               <td>
                                 <input
                                   type="number"
-                                  className="form-control form-control-sm text-center fw-bold"
+                                  className="form-control shadow-none bg-white border-light-subtle rounded-3 text-center fw-bold"
                                   placeholder="0"
                                   min="0"
                                   value={vl.noOfBoxes}
@@ -612,7 +598,7 @@ export default function AddReadyToDispatch() {
                               <td>
                                 <input
                                   type="number"
-                                  className="form-control form-control-sm text-center text-primary fw-bold"
+                                  className="form-control shadow-none bg-white border-light-subtle rounded-3 text-center text-primary fw-bold"
                                   placeholder="0"
                                   min="0"
                                   value={vl.producedQty}
@@ -627,7 +613,7 @@ export default function AddReadyToDispatch() {
                                 <input
                                   type="number"
                                   step="0.001"
-                                  className="form-control form-control-sm text-center"
+                                  className="form-control shadow-none bg-white border-light-subtle rounded-3 text-center"
                                   placeholder="9.500"
                                   value={vl.weight}
                                   onChange={(e) =>
@@ -641,7 +627,7 @@ export default function AddReadyToDispatch() {
                                 <input
                                   type="number"
                                   step="0.001"
-                                  className="form-control form-control-sm text-end fw-bold bg-light"
+                                  className="form-control shadow-none bg-light border-light-subtle rounded-3 text-end fw-bold"
                                   value={vl.totalWeight}
                                   readOnly
                                   placeholder="0.000"
@@ -703,7 +689,7 @@ export default function AddReadyToDispatch() {
         </div>
 
         {/* Section 3: Grand Summary Footer */}
-        <div className="card border-0 shadow-sm rounded-3 mb-4 bg-white">
+        <div className="card border border-light-subtle shadow-sm rounded-3 mb-4 bg-white">
           <div className="card-body p-4">
             <div className="row g-3 text-center align-items-center">
               <div className="col-12 col-md-3">
@@ -735,15 +721,8 @@ export default function AddReadyToDispatch() {
 
             <hr className="my-4" />
 
-            <div className="d-flex justify-content-end gap-2">
-              <Link to="/ready-to-dispatch" className="btn btn-outline-secondary px-4">
-                Cancel
-              </Link>
-              <button
-                type="submit"
-                className="btn btn-primary px-5 fw-bold shadow-sm"
-                disabled={loading}
-              >
+            <div className="d-flex gap-2 mt-4 user-form-actions border-top pt-4">
+              <button type="submit" className="btn-accent px-5 py-3 flex-grow-1" disabled={loading}>
                 {loading ? (
                   <>
                     <span className="spinner-border spinner-border-sm me-2" role="status" />
@@ -751,9 +730,12 @@ export default function AddReadyToDispatch() {
                   </>
                 ) : (
                   <>
-                    <i className="bi bi-check2-circle me-1" /> Save Sheet
+                    <i className="bi bi-check2-circle me-2" /> Save Sheet
                   </>
                 )}
+              </button>
+              <button type="button" onClick={() => navigate('/ready-to-dispatch')} className="btn-ghost px-5 py-3 text-decoration-none text-center">
+                Cancel
               </button>
             </div>
           </div>

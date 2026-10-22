@@ -180,6 +180,9 @@ exports.updateBottlePerBox = async (req, res) => {
     if (rest.bottlePerBox !== undefined) {
       rest.bottlePerBox = rest.bottlePerBox === '' || rest.bottlePerBox === null ? null : parseFloat(rest.bottlePerBox);
     }
+    if (rest.boxWeight !== undefined) {
+      rest.boxWeight = rest.boxWeight === '' || rest.boxWeight === null ? null : parseFloat(rest.boxWeight);
+    }
 
     const cleanName = (n) => String(n || '').trim().replace(/\s+/g, ' ');
 
@@ -478,6 +481,7 @@ exports.updateBottlePerBox = async (req, res) => {
       bottleName: oldRecord.bottleName,
       bottleNames: [...(oldRecord.bottleNames || [])],
       bottlePerBox: oldRecord.bottlePerBox,
+      boxWeight: oldRecord.boxWeight,
       status: oldRecord.status
     };
 
@@ -485,6 +489,7 @@ exports.updateBottlePerBox = async (req, res) => {
     oldRecord.bottleName = targetPlain;
     oldRecord.bottleNames = requestedNames;
     if (rest.bottlePerBox !== undefined) oldRecord.bottlePerBox = rest.bottlePerBox;
+    if (rest.boxWeight !== undefined) oldRecord.boxWeight = rest.boxWeight;
     if (rest.status !== undefined) oldRecord.status = rest.status;
     oldRecord.isDeleted = false;
 
