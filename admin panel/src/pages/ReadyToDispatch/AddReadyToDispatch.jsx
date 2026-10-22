@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import API from '../../services/api';
-import SearchableSelect from '../../components/SearchableSelect';
+import Select from 'react-select';
 import Swal from 'sweetalert2';
 
 export default function AddReadyToDispatch() {
@@ -162,7 +162,7 @@ export default function AddReadyToDispatch() {
 
     await fetchVariantsForBottle(selectedBottle);
 
-    // Recalculate variant lines in group with new unit
+    // Clear variant selection and description when bottle is changed
     grp.variantLines = grp.variantLines.map((vl) => {
       const boxes = Number(vl.noOfBoxes) || 0;
       const u = Number(unit) || 0;
@@ -171,6 +171,8 @@ export default function AddReadyToDispatch() {
       const totalW = boxes > 0 ? parseFloat((boxes * w).toFixed(3)) : '';
       return {
         ...vl,
+        variantId: '',
+        description: '',
         producedQty: calcQty,
         totalWeight: totalW,
       };
@@ -476,19 +478,23 @@ export default function AddReadyToDispatch() {
                   <div className="row g-2 align-items-center mb-3 pb-3 border-bottom bg-white p-2 rounded-2 border border-light-subtle">
                     <div className="col-md-6">
                       <label className="form-label small fw-bold text-primary mb-1">
-                        Plain Bottle #{grpIdx + 1} <span className="text-danger">*</span>
+                        Plain Bottle <span className="text-danger">*</span>
                       </label>
-                      <SearchableSelect
+                      <Select
                         options={plainBottleOptions}
-                        value={grp.plainBottleName}
-                        onChange={(val) => handleGroupBottleChange(grpIdx, val)}
-                        placeholder="Search & Select Plain Bottle (e.g. 20 ML SAAB, 50 ML CHAPLIN)..."
+                        value={plainBottleOptions.find(opt => opt.value === grp.plainBottleName) || (grp.plainBottleName ? { value: grp.plainBottleName, label: grp.plainBottleName } : null)}
+                        onChange={(selected) => handleGroupBottleChange(grpIdx, selected?.value || '')}
+                        placeholder={companyId ? "Select Plain Bottle..." : "Select company first..."}
+                        isDisabled={!companyId}
+                        isClearable
+                        menuPortalTarget={document.body}
+                        styles={{ menuPortal: base => ({ ...base, zIndex: 9999 }) }}
                       />
                     </div>
 
                     <div className="col-md-3">
                       <label className="form-label small fw-bold text-muted mb-1">
-                        Unit (Pcs / Box)
+                        BottlePerBox
                       </label>
                       <input
                         type="number"
@@ -499,7 +505,6 @@ export default function AddReadyToDispatch() {
                           newGroups[grpIdx].unit = e.target.value;
                           setGroups(newGroups);
                         }}
-                        placeholder="Auto-resolved or input"
                       />
                     </div>
 
@@ -549,34 +554,38 @@ export default function AddReadyToDispatch() {
                             <tr key={vl.id}>
                               <td className="text-center small text-muted">{lineIdx + 1}</td>
 
-                              {/* Description with preset dropdown or text input */}
+                              {/* Description: Variant Dropdown + Editable Text Input */}
                               <td>
-                                {variants.length > 0 && (
-                                  <select
-                                    className="form-select shadow-none bg-white border-light-subtle rounded-3 mb-1 text-primary fw-medium"
-                                    value={vl.variantId}
-                                    onChange={(e) =>
-                                      handleLineChange(grpIdx, lineIdx, 'variantId', e.target.value)
+                                <div className="d-flex flex-column gap-2">
+                                  {/* Variant Dropdown */}
+                                  <Select
+                                    options={variantOptions}
+                                    value={
+                                      vl.variantId
+                                        ? variantOptions.find((opt) => opt.value === vl.variantId)
+                                        : null
                                     }
-                                  >
-                                    <option value="">-- Quick Choose Preset Variant --</option>
-                                    {variantOptions.map((opt) => (
-                                      <option key={opt.value} value={opt.value}>
-                                        {opt.label}
-                                      </option>
-                                    ))}
-                                  </select>
-                                )}
-                                <input
-                                  type="text"
-                                  className="form-control shadow-none bg-white border-light-subtle rounded-3"
-                                  placeholder="e.g. TR.RED-GOD FATHER-WHITE ORGANIC"
-                                  value={vl.description}
-                                  onChange={(e) =>
-                                    handleLineChange(grpIdx, lineIdx, 'description', e.target.value)
-                                  }
-                                  required
-                                />
+                                    onChange={(selected) => {
+                                      handleLineChange(grpIdx, lineIdx, 'variantId', selected?.value || '');
+                                    }}
+                                    placeholder="Select the variant"
+                                    isClearable
+                                    isDisabled={!grp.plainBottleName}
+                                    menuPortalTarget={document.body}
+                                    styles={{ menuPortal: base => ({ ...base, zIndex: 9999 }) }}
+                                  />
+                                  {/* Editable Description Text Input */}
+                                  <input
+                                    type="text"
+                                    className="form-control shadow-none bg-white border-light-subtle rounded-3"
+                                    placeholder="Description"
+                                    value={vl.description}
+                                    onChange={(e) =>
+                                      handleLineChange(grpIdx, lineIdx, 'description', e.target.value)
+                                    }
+                                    required
+                                  />
+                                </div>
                               </td>
 
                               {/* No of Boxes */}
