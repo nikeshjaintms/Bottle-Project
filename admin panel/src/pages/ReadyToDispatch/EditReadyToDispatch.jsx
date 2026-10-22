@@ -4,6 +4,15 @@ import API from '../../services/api';
 import Select from 'react-select';
 import Swal from 'sweetalert2';
 
+// Helper function to format variant description
+const formatVariantDescription = (variant) => {
+  if (!variant) return '';
+  const shade = variant.coatingShade || '';
+  const vName = variant.variantName || variant.name || '';
+  const textColor = (variant.detectedTextColor && variant.detectedTextColor !== 'Not Detected') ? variant.detectedTextColor : '';
+  return [shade, vName, textColor].filter(Boolean).join(' - ');
+};
+
 export default function EditReadyToDispatch() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -72,10 +81,11 @@ export default function EditReadyToDispatch() {
             variantLines: (grp.variantLines || []).map((vl, lIdx) => ({
               id: `line_${Date.now()}_${gIdx}_${lIdx}`,
               variantId: vl.variantId?._id || vl.variantId || '',
-              description: vl.description || '',
+              variantDescription: vl.description || '',
               noOfBoxes: vl.noOfBoxes !== undefined ? String(vl.noOfBoxes) : '',
               producedQty: vl.producedQty !== undefined ? String(vl.producedQty) : '',
-              weight: vl.weight !== undefined ? String(vl.weight) : '9.500',
+              // Preserve stored weight values - do NOT override with lookup
+              weight: vl.weight !== undefined ? String(vl.weight) : '',
               totalWeight: vl.totalWeight !== undefined ? String(vl.totalWeight) : '',
             })),
           }));
@@ -129,6 +139,21 @@ export default function EditReadyToDispatch() {
     return partial?.bottlePerBox ? String(partial.bottlePerBox) : '';
   };
 
+  // Get Weight from bottleperbox module
+  const getWeightForBottle = (bottleName) => {
+    if (!bottleName || !bottlePerBoxes.length) return '';
+    const clean = bottleName.trim().toLowerCase().replace(/\s+/g, ' ');
+
+    const exact = bottlePerBoxes.find((b) => {
+      const p = (b.plainBottleName || '').trim().toLowerCase().replace(/\s+/g, ' ');
+      const n = (b.bottleName || '').trim().toLowerCase().replace(/\s+/g, ' ');
+      return p === clean || n === clean;
+    });
+
+    if (exact && exact.weight) return Number(exact.weight);
+    return ''; // return empty string if weight not found
+  };
+
   // Fetch Variants for selected bottle
   const fetchVariantsForBottle = async (bottleName, cId = companyId) => {
     if (!bottleName) return [];
@@ -160,19 +185,22 @@ export default function EditReadyToDispatch() {
     const unit = lookupUnitForBottle(selectedBottle);
     grp.unit = unit;
 
+    const weight = getWeightForBottle(selectedBottle);
+
     await fetchVariantsForBottle(selectedBottle);
 
-    // Clear variant selection and description when bottle is changed
+    // Clear variant selection and update weight
     grp.variantLines = grp.variantLines.map((vl) => {
       const boxes = Number(vl.noOfBoxes) || 0;
       const u = Number(unit) || 0;
       const calcQty = u > 0 && boxes > 0 ? boxes * u : vl.producedQty || '';
-      const w = Number(vl.weight) || 9.5;
-      const totalW = boxes > 0 ? parseFloat((boxes * w).toFixed(3)) : '';
+      const w = weight !== '' ? Number(weight) : 0;
+      const totalW = boxes > 0 && weight !== '' ? parseFloat((boxes * w).toFixed(3)) : '';
       return {
         ...vl,
         variantId: '',
-        description: '',
+        variantDescription: '',
+        weight: weight,
         producedQty: calcQty,
         totalWeight: totalW,
       };
@@ -189,31 +217,34 @@ export default function EditReadyToDispatch() {
 
     line[field] = value;
 
-    if (field === 'variantId') {
-      const vars = variantsCache[grp.plainBottleName] || [];
-      const found = vars.find((v) => v._id === value);
-      if (found) {
-        const shade = found.coatingShade || '';
-        const name = found.variantName || '';
-        const text =
-          found.detectedTextColor && found.detectedTextColor !== 'Not Detected'
-            ? found.detectedTextColor
-            : '';
-        line.description = [shade, name, text].filter(Boolean).join(' - ') || found.variantName || found.name;
+    // Auto-populate variantDescription when variantId changes
+    if (field === 'variantId' && value) {
+      const variants = variantsCache[grp.plainBottleName] || [];
+      const selectedVariant = variants.find((v) => v._id === value);
+      if (selectedVariant) {
+        line.variantDescription = formatVariantDescription(selectedVariant);
       }
     }
 
     const boxes = Number(line.noOfBoxes) || 0;
     const unit = Number(grp.unit) || 0;
-    const weight = line.weight !== '' && line.weight !== undefined ? Number(line.weight) : 9.5;
+    const weight = line.weight !== '' && line.weight !== undefined ? Number(line.weight) : '';
 
     if (field === 'noOfBoxes') {
       if (unit > 0) {
         line.producedQty = boxes > 0 ? boxes * unit : '';
       }
-      line.totalWeight = boxes > 0 ? parseFloat((boxes * weight).toFixed(3)) : '';
+      if (weight !== '') {
+        line.totalWeight = boxes > 0 ? parseFloat((boxes * weight).toFixed(3)) : '';
+      } else {
+        line.totalWeight = '';
+      }
     } else if (field === 'weight') {
-      line.totalWeight = boxes > 0 ? parseFloat((boxes * weight).toFixed(3)) : '';
+      if (weight !== '') {
+        line.totalWeight = boxes > 0 ? parseFloat((boxes * weight).toFixed(3)) : '';
+      } else {
+        line.totalWeight = '';
+      }
     }
 
     setGroups(newGroups);
@@ -222,13 +253,14 @@ export default function EditReadyToDispatch() {
   // Add Variant Line
   const addVariantLine = (grpIdx) => {
     const newGroups = [...groups];
+    const weight = getWeightForBottle(newGroups[grpIdx].plainBottleName);
     newGroups[grpIdx].variantLines.push({
       id: `line_${Date.now()}_${Math.random()}`,
       variantId: '',
-      description: '',
+      variantDescription: '',
       noOfBoxes: '',
       producedQty: '',
-      weight: '9.500',
+      weight: weight,
       totalWeight: '',
     });
     setGroups(newGroups);
@@ -258,10 +290,9 @@ export default function EditReadyToDispatch() {
           {
             id: `line_${Date.now()}_1`,
             variantId: '',
-            description: '',
             noOfBoxes: '',
             producedQty: '',
-            weight: '9.500',
+            weight: '',
             totalWeight: '',
           },
         ],
@@ -287,7 +318,7 @@ export default function EditReadyToDispatch() {
       grp.variantLines.forEach((vl) => {
         const b = Number(vl.noOfBoxes) || 0;
         const q = Number(vl.producedQty) || 0;
-        const w = Number(vl.totalWeight) || (b * (Number(vl.weight) || 9.5));
+        const w = Number(vl.totalWeight) || (b * (Number(vl.weight) || 0));
 
         totalBoxes += b;
         totalProducedQty += q;
@@ -319,13 +350,13 @@ export default function EditReadyToDispatch() {
         plainBottleName: g.plainBottleName.trim(),
         unit: Number(g.unit) || 0,
         variantLines: g.variantLines
-          .filter((vl) => vl.description && vl.description.trim())
+          .filter((vl) => vl.variantId && vl.variantId.trim())
           .map((vl) => ({
             variantId: vl.variantId || null,
-            description: vl.description.trim(),
+            description: vl.variantDescription || '',
             noOfBoxes: Number(vl.noOfBoxes) || 0,
             producedQty: Number(vl.producedQty) || 0,
-            weight: Number(vl.weight) || 9.5,
+            weight: Number(vl.weight) || 0,
             totalWeight: Number(vl.totalWeight) || 0,
           })),
       }))
@@ -334,7 +365,7 @@ export default function EditReadyToDispatch() {
     if (payloadGroups.length === 0) {
       return Swal.fire(
         'Warning',
-        'Please enter at least one valid variant line with description',
+        'Please enter at least one valid variant line',
         'warning'
       );
     }
@@ -572,38 +603,24 @@ export default function EditReadyToDispatch() {
                             <tr key={vl.id}>
                               <td className="text-center small text-muted">{lineIdx + 1}</td>
 
-                              {/* Description: Variant Dropdown + Editable Text Input */}
+                              {/* Variant Dropdown Only */}
                               <td>
-                                <div className="d-flex flex-column gap-2">
-                                  {/* Variant Dropdown */}
-                                  <Select
-                                    options={variantOptions}
-                                    value={
-                                      vl.variantId
-                                        ? variantOptions.find((opt) => opt.value === vl.variantId)
-                                        : null
-                                    }
-                                    onChange={(selected) => {
-                                      handleLineChange(grpIdx, lineIdx, 'variantId', selected?.value || '');
-                                    }}
-                                    placeholder="Select the variant"
-                                    isClearable
-                                    isDisabled={!grp.plainBottleName}
-                                    menuPortalTarget={document.body}
-                                    styles={{ menuPortal: base => ({ ...base, zIndex: 9999 }) }}
-                                  />
-                                  {/* Editable Description Text Input */}
-                                  <input
-                                    type="text"
-                                    className="form-control shadow-none bg-white border-light-subtle rounded-3"
-                                    placeholder="Description"
-                                    value={vl.description}
-                                    onChange={(e) =>
-                                      handleLineChange(grpIdx, lineIdx, 'description', e.target.value)
-                                    }
-                                    required
-                                  />
-                                </div>
+                                <Select
+                                  options={variantOptions}
+                                  value={
+                                    vl.variantId
+                                      ? variantOptions.find((opt) => opt.value === vl.variantId)
+                                      : null
+                                  }
+                                  onChange={(selected) => {
+                                    handleLineChange(grpIdx, lineIdx, 'variantId', selected?.value || '');
+                                  }}
+                                  placeholder="Select the variant"
+                                  isClearable
+                                  isDisabled={!grp.plainBottleName}
+                                  menuPortalTarget={document.body}
+                                  styles={{ menuPortal: base => ({ ...base, zIndex: 9999 }) }}
+                                />
                               </td>
 
                               <td>
@@ -638,7 +655,7 @@ export default function EditReadyToDispatch() {
                                   type="number"
                                   step="0.001"
                                   className="form-control shadow-none bg-white border-light-subtle rounded-3 text-center"
-                                  placeholder="9.500"
+                                  placeholder="0.000"
                                   value={vl.weight}
                                   onChange={(e) =>
                                     handleLineChange(grpIdx, lineIdx, 'weight', e.target.value)

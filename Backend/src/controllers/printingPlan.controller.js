@@ -94,6 +94,40 @@ const revertPrintingPlanStockDeduction = async (planDocOrId, userId = null) => {
   }
 };
 
+// Helper to get all rows marked as sent to Ready To Dispatch before target date
+// Returns a Set of Printing Plan IDs that have been sent
+// This is used to skip sent rows during import (similar to completed rows)
+const getSentToDispatchPrintingRows = async (targetDate = null, includeTargetDate = false) => {
+  const query = {
+    isDeleted: false,
+    readyToDispatch: { $exists: true, $ne: null } // Only rows with the readyToDispatch mark
+  };
+
+  if (targetDate) {
+    const target = new Date(targetDate);
+    if (includeTargetDate) {
+      const endOfTarget = new Date(target);
+      endOfTarget.setUTCHours(23, 59, 59, 999);
+      query.planDate = { $lte: endOfTarget };
+    } else {
+      const startOfTarget = new Date(target);
+      startOfTarget.setUTCHours(0, 0, 0, 0);
+      query.planDate = { $lt: startOfTarget };
+    }
+  }
+
+  const sentPlans = await PrintingPlan.find(query).select('_id bottleName brandId printingToBeDone coatingShade').lean();
+  
+  // Build a set of identifiers (using bottle + brand + shade combo for matching)
+  const sentSet = new Set();
+  sentPlans.forEach(p => {
+    const key = `${String(p.bottleName || '').trim().toUpperCase()}|${String(p.brandId || '')}|${String(p.printingToBeDone || '').trim().toUpperCase()}|${String(p.coatingShade || '').trim().toUpperCase()}`;
+    sentSet.add(key);
+  });
+  
+  return sentSet;
+};
+
 // Create Printing Plan Manually
 exports.createPlan = async (req, res) => {
   try {
@@ -749,8 +783,19 @@ exports.importPreviousDay = async (req, res) => {
       };
     });
 
-    // Skip any combination that is already completed
-    const openCandidates = candidatePlans.filter(c => !isPrintingPlanRowCompleted(c.values));
+    // Get sent-to-dispatch rows set for filtering
+    const sentSet = await getSentToDispatchPrintingRows(prev, false);
+
+    // Skip any combination that is already completed OR sent to ready-to-dispatch
+    const openCandidates = candidatePlans.filter(c => {
+      if (isPrintingPlanRowCompleted(c.values)) return false;
+      
+      // Check if this row has been sent to Ready To Dispatch
+      const key = `${String(c.values.bottleName || '').trim().toUpperCase()}|${String(c.values.brandId || '')}|${String(c.values.printingToBeDone || '').trim().toUpperCase()}|${String(c.values.coatingShade || '').trim().toUpperCase()}`;
+      if (sentSet.has(key)) return false; // Skip sent rows
+      
+      return true;
+    });
 
     const newPlansData = await Promise.all(openCandidates.map(async (c) => {
       const finalValues = { ...c.values };

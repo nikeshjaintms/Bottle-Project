@@ -217,6 +217,42 @@ const getCompletedCombinationsSet = async (targetDate = null, resolveBrand = nul
   return completedSet;
 };
 
+// Helper to get all rows marked as sent to Ready To Dispatch before target date
+// Returns a Set of combination keys for all rows with readyToDispatch mark
+// This is used to skip sent rows during import (similar to completed rows)
+const getSentToDispatchCombinationsSet = async (targetDate = null, resolveBrand = null, resolveVariant = null, includeTargetDate = false) => {
+  const query = {
+    isDeleted: false,
+    readyToDispatch: { $exists: true, $ne: null } // Only rows with the readyToDispatch mark
+  };
+
+  if (targetDate) {
+    const target = new Date(targetDate);
+    if (includeTargetDate) {
+      const endOfTarget = new Date(target);
+      endOfTarget.setUTCHours(23, 59, 59, 999);
+      query.planDate = { $lte: endOfTarget };
+    } else {
+      const startOfTarget = new Date(target);
+      startOfTarget.setUTCHours(0, 0, 0, 0);
+      query.planDate = { $lt: startOfTarget };
+    }
+  }
+
+  const sentPlans = await LacquerPlan.find(query)
+    .populate('brandId', 'name')
+    .populate('variantId', 'variantName')
+    .lean();
+
+  const sentSet = new Set();
+  sentPlans.forEach(p => {
+    const keys = getPlanCombinationKeys(p, resolveBrand, resolveVariant);
+    keys.forEach(k => sentSet.add(k));
+  });
+
+  return sentSet;
+};
+
 // Helper to find PlainBottleStock for a bottle, optionally scoped to a company
 const findPlainBottleStockDoc = async (bottleName, companyId = null) => {
   if (!bottleName) return null;
@@ -1250,8 +1286,9 @@ exports.importPreviousDay = async (req, res) => {
     });
 
     const completedSet = await getCompletedCombinationsSet(sourceDate || prev, resolveBrandKey, resolveVariantKey, false);
+    const sentSet = await getSentToDispatchCombinationsSet(sourceDate || prev, resolveBrandKey, resolveVariantKey, false);
 
-    // Also mark any plan in candidatePlans that is already completed on sourceDate
+    // Also mark any plan in candidatePlans that is already completed or sent on sourceDate
     candidatePlans.forEach(c => {
       if (isPlanRowCompleted(c.values)) {
         const keys = getPlanCombinationKeys(c.values, resolveBrandKey, resolveVariantKey);
@@ -1259,11 +1296,12 @@ exports.importPreviousDay = async (req, res) => {
       }
     });
 
-    // Skip any combination that is already completed (balance >= 0 or coating completed >= order qty)
+    // Skip any combination that is already completed OR sent to ready-to-dispatch
     const openCandidates = candidatePlans.filter(c => {
       if (isPlanRowCompleted(c.values)) return false;
       const keys = getPlanCombinationKeys(c.values, resolveBrandKey, resolveVariantKey);
       if (keys.some(k => completedSet.has(k))) return false;
+      if (keys.some(k => sentSet.has(k))) return false; // Skip rows sent to ready-to-dispatch
       return true;
     });
 
@@ -2325,10 +2363,12 @@ exports.previewImportExcel = async (req, res) => {
       result.detectedSheets++;
 
       const completedSetForDate = await getCompletedCombinationsSet(planDateStr, resolveBrandKey, resolveVariantKey, false);
+      const sentSetForDate = await getSentToDispatchCombinationsSet(planDateStr, resolveBrandKey, resolveVariantKey, false);
       for (const k of completedInBatch) {
         completedSetForDate.add(k);
       }
       const dateSkippedCompletedRows = [];
+      const dateSkippedSentRows = [];
 
       const sheet = workbook.Sheets[sheetName];
 
@@ -2734,6 +2774,25 @@ exports.previewImportExcel = async (req, res) => {
           continue; // Skip already completed combination entirely
         }
 
+        // Skip rows that have been sent to Ready To Dispatch (regardless of quantity or completion status)
+        const isAlreadySent = rowKeys.length > 0 && rowKeys.some(k => sentSetForDate.has(k));
+
+        if (isAlreadySent) {
+          dateSkippedSentRows.push({
+            excelRowNumber,
+            bottleName: parsedRow.bottleName,
+            brandName: parsedRow.brandName,
+            coatingShade: parsedRow.coatingShade,
+            variantName: parsedRow.variantName,
+            process: parsedRow.process,
+            orderQty: parsedRow.orderQty,
+            coatingCompletedQty: parsedRow.coatingCompletedQty,
+            balanceToMake: parsedRow.balanceToMake,
+            reason: 'Sent to Ready To Dispatch. Skipped.'
+          });
+          continue; // Skip sent rows entirely
+        }
+
         dateTotalRows++;
         result.totalRows++;
         if (parsedRow.isValid) {
@@ -2796,6 +2855,8 @@ exports.previewImportExcel = async (req, res) => {
         invalidReasons,
         skippedCompletedCount: dateSkippedCompletedRows.length,
         skippedCompletedRows: dateSkippedCompletedRows,
+        skippedSentCount: dateSkippedSentRows.length,
+        skippedSentRows: dateSkippedSentRows,
         rows: dateRows
       });
     }
@@ -2904,6 +2965,7 @@ exports.commitImportExcel = async (req, res) => {
       }
 
       const completedSetForDate = await getCompletedCombinationsSet(date, resolveBrandKey, resolveVariantKey, false);
+      const sentSetForDate = await getSentToDispatchCombinationsSet(date, resolveBrandKey, resolveVariantKey, false);
       for (const k of completedInCommitBatch) {
         completedSetForDate.add(k);
       }
@@ -2919,6 +2981,12 @@ exports.commitImportExcel = async (req, res) => {
             completedInCommitBatch.add(k);
           });
           return false; // Skip already completed combination
+        }
+
+        // Skip rows that have been sent to Ready To Dispatch (regardless of quantity or completion status)
+        const isAlreadySent = rowKeys.length > 0 && rowKeys.some(k => sentSetForDate.has(k));
+        if (isAlreadySent) {
+          return false; // Skip sent rows
         }
 
         // Check if row has stock warning and no override
