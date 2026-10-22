@@ -32,10 +32,9 @@ export default function AddReadyToDispatch() {
         {
           id: `line_${Date.now()}_1`,
           variantId: '',
-          description: '',
           noOfBoxes: '',
           producedQty: '',
-          weight: '9.500',
+          weight: '',
           totalWeight: '',
         },
       ],
@@ -129,6 +128,21 @@ export default function AddReadyToDispatch() {
     return partial?.bottlePerBox ? String(partial.bottlePerBox) : '';
   };
 
+  // Get Weight from bottleperbox module
+  const getWeightForBottle = (bottleName) => {
+    if (!bottleName || !bottlePerBoxes.length) return 9.5;
+    const clean = bottleName.trim().toLowerCase().replace(/\s+/g, ' ');
+
+    const exact = bottlePerBoxes.find((b) => {
+      const p = (b.plainBottleName || '').trim().toLowerCase().replace(/\s+/g, ' ');
+      const n = (b.bottleName || '').trim().toLowerCase().replace(/\s+/g, ' ');
+      return p === clean || n === clean;
+    });
+
+    if (exact && exact.weight) return Number(exact.weight);
+    return 9.5; // fallback default
+  };
+
   // Fetch Variants for selected bottle
   const fetchVariantsForBottle = async (bottleName) => {
     if (!bottleName) return [];
@@ -160,19 +174,20 @@ export default function AddReadyToDispatch() {
     const unit = lookupUnitForBottle(selectedBottle);
     grp.unit = unit;
 
+    const weight = getWeightForBottle(selectedBottle);
+
     await fetchVariantsForBottle(selectedBottle);
 
-    // Clear variant selection and description when bottle is changed
+    // Clear variant selection when bottle is changed, and update weight
     grp.variantLines = grp.variantLines.map((vl) => {
       const boxes = Number(vl.noOfBoxes) || 0;
       const u = Number(unit) || 0;
       const calcQty = u > 0 && boxes > 0 ? boxes * u : vl.producedQty || '';
-      const w = Number(vl.weight) || 9.5;
-      const totalW = boxes > 0 ? parseFloat((boxes * w).toFixed(3)) : '';
+      const totalW = boxes > 0 ? parseFloat((boxes * weight).toFixed(3)) : '';
       return {
         ...vl,
         variantId: '',
-        description: '',
+        weight: weight,
         producedQty: calcQty,
         totalWeight: totalW,
       };
@@ -188,17 +203,6 @@ export default function AddReadyToDispatch() {
     const line = grp.variantLines[lineIdx];
 
     line[field] = value;
-
-    if (field === 'variantId') {
-      const vars = variantsCache[grp.plainBottleName] || [];
-      const found = vars.find((v) => v._id === value);
-      if (found) {
-        const shade = found.coatingShade || '';
-        const name = found.variantName || '';
-        const text = found.detectedTextColor && found.detectedTextColor !== 'Not Detected' ? found.detectedTextColor : '';
-        line.description = [shade, name, text].filter(Boolean).join(' - ') || found.variantName || found.name;
-      }
-    }
 
     const boxes = Number(line.noOfBoxes) || 0;
     const unit = Number(grp.unit) || 0;
@@ -220,13 +224,13 @@ export default function AddReadyToDispatch() {
   // Add Variant Line
   const addVariantLine = (grpIdx) => {
     const newGroups = [...groups];
+    const weight = getWeightForBottle(newGroups[grpIdx].plainBottleName);
     newGroups[grpIdx].variantLines.push({
       id: `line_${Date.now()}_${Math.random()}`,
       variantId: '',
-      description: '',
       noOfBoxes: '',
       producedQty: '',
-      weight: '9.500',
+      weight: weight,
       totalWeight: '',
     });
     setGroups(newGroups);
@@ -256,10 +260,9 @@ export default function AddReadyToDispatch() {
           {
             id: `line_${Date.now()}_1`,
             variantId: '',
-            description: '',
             noOfBoxes: '',
             producedQty: '',
-            weight: '9.500',
+            weight: '',
             totalWeight: '',
           },
         ],
@@ -322,10 +325,9 @@ export default function AddReadyToDispatch() {
       plainBottleName: g.plainBottleName.trim(),
       unit: Number(g.unit) || 0,
       variantLines: g.variantLines
-        .filter((vl) => vl.description && vl.description.trim())
+        .filter((vl) => vl.variantId && vl.variantId.trim())
         .map((vl) => ({
           variantId: vl.variantId || null,
-          description: vl.description.trim(),
           noOfBoxes: Number(vl.noOfBoxes) || 0,
           producedQty: Number(vl.producedQty) || 0,
           weight: Number(vl.weight) || 9.5,
@@ -336,7 +338,7 @@ export default function AddReadyToDispatch() {
     if (payloadGroups.length === 0) {
       return Swal.fire(
         'Warning',
-        'Please enter at least one valid variant line with description',
+        'Please enter at least one valid variant line',
         'warning'
       );
     }
@@ -554,38 +556,24 @@ export default function AddReadyToDispatch() {
                             <tr key={vl.id}>
                               <td className="text-center small text-muted">{lineIdx + 1}</td>
 
-                              {/* Description: Variant Dropdown + Editable Text Input */}
+                              {/* Variant Dropdown Only */}
                               <td>
-                                <div className="d-flex flex-column gap-2">
-                                  {/* Variant Dropdown */}
-                                  <Select
-                                    options={variantOptions}
-                                    value={
-                                      vl.variantId
-                                        ? variantOptions.find((opt) => opt.value === vl.variantId)
-                                        : null
-                                    }
-                                    onChange={(selected) => {
-                                      handleLineChange(grpIdx, lineIdx, 'variantId', selected?.value || '');
-                                    }}
-                                    placeholder="Select the variant"
-                                    isClearable
-                                    isDisabled={!grp.plainBottleName}
-                                    menuPortalTarget={document.body}
-                                    styles={{ menuPortal: base => ({ ...base, zIndex: 9999 }) }}
-                                  />
-                                  {/* Editable Description Text Input */}
-                                  <input
-                                    type="text"
-                                    className="form-control shadow-none bg-white border-light-subtle rounded-3"
-                                    placeholder="Description"
-                                    value={vl.description}
-                                    onChange={(e) =>
-                                      handleLineChange(grpIdx, lineIdx, 'description', e.target.value)
-                                    }
-                                    required
-                                  />
-                                </div>
+                                <Select
+                                  options={variantOptions}
+                                  value={
+                                    vl.variantId
+                                      ? variantOptions.find((opt) => opt.value === vl.variantId)
+                                      : null
+                                  }
+                                  onChange={(selected) => {
+                                    handleLineChange(grpIdx, lineIdx, 'variantId', selected?.value || '');
+                                  }}
+                                  placeholder="Select the variant"
+                                  isClearable
+                                  isDisabled={!grp.plainBottleName}
+                                  menuPortalTarget={document.body}
+                                  styles={{ menuPortal: base => ({ ...base, zIndex: 9999 }) }}
+                                />
                               </td>
 
                               {/* No of Boxes */}
@@ -617,7 +605,7 @@ export default function AddReadyToDispatch() {
                                 />
                               </td>
 
-                              {/* Weight (default 9.500) */}
+                              {/* Weight (default 9.5) */}
                               <td>
                                 <input
                                   type="number"
