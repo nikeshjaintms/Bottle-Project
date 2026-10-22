@@ -7,6 +7,7 @@ import coatingSpecReducer from './slices/coatingSpecSlice';
 import coatingColorReducer from './slices/coatingColorSlice';
 import coatingTypeReducer from './slices/coatingTypeSlice';
 import companyReducer from './slices/companySlice';
+import companyAddressReducer from './slices/companyAddressSlice';
 import authReducer from './slices/loginSlice';
 import permissionReducer from './slices/permissionSlice';
 import printingColorReducer from './slices/printingColorSlice';
@@ -32,6 +33,7 @@ import lacquerPlanReducer from './slices/lacquerPlanSlice';
 import printingPlanReducer from './slices/printingPlanSlice';
 import shrenoIncomingReducer from './slices/shrenoIncomingSlice';
 import dispatchReducer from './slices/dispatchSlice';
+import deliveryChallanReducer from './slices/deliveryChallanSlice';
 export const store = configureStore({
   reducer: {
     incoming: incomingReducer,
@@ -45,6 +47,7 @@ export const store = configureStore({
     coatingColor: coatingColorReducer,
     coatingType: coatingTypeReducer,
     companies: companyReducer,
+    companyAddresses: companyAddressReducer,
     permissions: permissionReducer,
     printingColor: printingColorReducer,
     printingType: printingTypeReducer,
@@ -65,6 +68,7 @@ export const store = configureStore({
     printingPlans: printingPlanReducer,
     shrenoIncoming: shrenoIncomingReducer,
     dispatch: dispatchReducer,
+    deliveryChallans: deliveryChallanReducer,
   },
   middleware: (getDefaultMiddleware) =>
     getDefaultMiddleware({

@@ -158,6 +158,13 @@ export default function Companies() {
                 </div>
               </div>
               <div className="companies-mobile-actions brands-mobile-actions">
+                <Link
+                  to={`/company-addresses/add?companyId=${b._id}`}
+                  className="btn btn-sm btn-outline-info border-0 rounded-3 shadow-none companies-mobile-action-btn"
+                  title="Add Address"
+                >
+                  <i className="bi bi-geo-alt-fill fs-6" />
+                </Link>
                 <Can I="edit" a="company">
                   <Link
                     to={`/companies/edit/${b._id}`}
@@ -213,6 +220,13 @@ export default function Companies() {
                   </td>
                   <td className="py-3 text-center">
                     <div className="d-flex gap-2 justify-content-center">
+                      <Link
+                        to={`/company-addresses/add?companyId=${b._id}`}
+                        className="btn btn-sm btn-outline-info border-0 rounded-3 shadow-none p-2"
+                        title="Add Address for this Company"
+                      >
+                        <i className="bi bi-geo-alt-fill fs-6" />
+                      </Link>
                       <Can I="edit" a="company">
                         <Link to={`/companies/edit/${b._id}`} className="btn btn-sm btn-outline-primary border-0 rounded-3 shadow-none p-2" title="Edit">
                           <i className="bi bi-pencil-square fs-6" />

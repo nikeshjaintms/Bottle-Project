@@ -16,9 +16,16 @@ async function seed() {
   let alreadyExisting = 0;
 
   for (const name of canonicalNames) {
-    const existing = await BottlePerBox.findOne({ bottleName: name });
+    const existing = await BottlePerBox.findOne({
+      $or: [{ plainBottleName: name }, { bottleName: name }, { bottleNames: name }],
+    });
     if (!existing) {
-      await BottlePerBox.create({ bottleName: name, bottlePerBox: null });
+      await BottlePerBox.create({
+        plainBottleName: name,
+        bottleName: name,
+        bottleNames: [name],
+        bottlePerBox: null,
+      });
       newlyCreated++;
     } else {
       alreadyExisting++;

@@ -146,7 +146,7 @@ exports.createSpec = async (req, res) => {
 // GET
 exports.getSpecs = async (req, res) => {
   try {
-    let { page, limit, search, pagination = "true", type } = req.query;
+    let { page, limit, search, pagination = "true", type, companyId } = req.query;
 
     let parsedPage = 1;
     if (page && page !== '') {
@@ -160,6 +160,15 @@ exports.getSpecs = async (req, res) => {
     const skip = (parsedPage - 1) * parsedLimit;
 
     let query = { isDeleted: { $ne: true } };
+
+    if (companyId) {
+      const matchingBrands = await Brand.find({
+        companyId,
+        isDeleted: { $ne: true }
+      }).select('_id');
+      const brandIds = matchingBrands.map(b => b._id);
+      query.brandId = { $in: brandIds };
+    }
 
     if (type === 'coating') {
       // Coating specs: explicitly marked isCoating=true
@@ -180,19 +189,19 @@ exports.getSpecs = async (req, res) => {
 
     if (search && search.trim() !== "") {
       const searchWord = search.trim();
-      
+
       const searchTokens = searchWord.split(/[\W_]+/).filter(Boolean);
       let regexStr = "";
-      
+
       if (searchTokens.length > 0) {
         const escapeRegExp = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         regexStr = searchTokens.map(escapeRegExp).join('[\\W_]+');
       } else {
         regexStr = searchWord.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       }
-      
+
       const wholeWordRegex = new RegExp(`(?:^|\\W)${regexStr}(?:\\W|$)`, "i");
-      
+
       const matchingCompanies = await Company.find({
         isDeleted: { $ne: true },
         name: { $regex: wholeWordRegex }
@@ -215,7 +224,7 @@ exports.getSpecs = async (req, res) => {
           { variantSize: { $regex: wholeWordRegex } }
         ]
       }).select('_id bottleSpecId');
-      
+
       const variantIds = matchingVariants.map(v => v._id);
       const parentSpecIds = matchingVariants.map(v => v.bottleSpecId).filter(id => id);
 
@@ -291,8 +300,8 @@ exports.updateSpec = async (req, res) => {
       path: "brandId",
       populate: { path: "companyId" }
     })
-    .populate("printingTypeId")
-    .populate("printingColorId");
+      .populate("printingTypeId")
+      .populate("printingColorId");
     res.json(spec);
   } catch (err) {
     res.status(500).json(err.message);

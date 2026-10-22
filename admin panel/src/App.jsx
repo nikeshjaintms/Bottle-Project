@@ -15,6 +15,21 @@ import UserDetail from './pages/Users/UserDetail';
 import Companies from './pages/Company/Companies';
 import AddCompany from './pages/Company/AddCompany';
 import EditCompany from './pages/Company/EditCompany';
+import CompanyAddresses from './pages/CompanyAddress/CompanyAddresses';
+import AddCompanyAddress from './pages/CompanyAddress/AddCompanyAddress';
+import EditCompanyAddress from './pages/CompanyAddress/EditCompanyAddress';
+import ShayonaChallanList from './pages/DeliveryChallan/Shayona/ShayonaChallanList';
+import AddShayonaChallan from './pages/DeliveryChallan/Shayona/AddShayonaChallan';
+import EditShayonaChallan from './pages/DeliveryChallan/Shayona/EditShayonaChallan';
+import ViewShayonaChallan from './pages/DeliveryChallan/Shayona/ViewShayonaChallan';
+import McnoreChallanList from './pages/DeliveryChallan/Mcnore/McnoreChallanList';
+import AddMcnoreChallan from './pages/DeliveryChallan/Mcnore/AddMcnoreChallan';
+import EditMcnoreChallan from './pages/DeliveryChallan/Mcnore/EditMcnoreChallan';
+import ViewMcnoreChallan from './pages/DeliveryChallan/Mcnore/ViewMcnoreChallan';
+import ShernoChallanList from './pages/DeliveryChallan/Sherno/ShernoChallanList';
+import AddShernoChallan from './pages/DeliveryChallan/Sherno/AddShernoChallan';
+import EditShernoChallan from './pages/DeliveryChallan/Sherno/EditShernoChallan';
+import ViewShernoChallan from './pages/DeliveryChallan/Sherno/ViewShernoChallan';
 import Brands from './pages/Brands/Brands';
 import AddBrand from './pages/Brands/AddBrand';
 import EditBrand from './pages/Brands/EditBrand';
@@ -122,6 +137,10 @@ import EditDispatch from './pages/Dispatch/EditDispatch';
 import ViewDispatch from './pages/Dispatch/ViewDispatch';
 import SummaryCompanies from './pages/Summary/SummaryCompanies';
 import CompanySummary from './pages/Summary/CompanySummary';
+import ReadyToDispatchList from './pages/ReadyToDispatch/ReadyToDispatchList';
+import AddReadyToDispatch from './pages/ReadyToDispatch/AddReadyToDispatch';
+import EditReadyToDispatch from './pages/ReadyToDispatch/EditReadyToDispatch';
+import ViewReadyToDispatch from './pages/ReadyToDispatch/ViewReadyToDispatch';
 import './App.css';
 
 export default function App() {
@@ -160,6 +179,9 @@ export default function App() {
               <Route path="/companies" element={<Companies />} />
               <Route path="/companies/add" element={<AddCompany />} />
               <Route path="/companies/edit/:id" element={<EditCompany />} />
+              <Route path="/company-addresses" element={<CompanyAddresses />} />
+              <Route path="/company-addresses/add" element={<AddCompanyAddress />} />
+              <Route path="/company-addresses/edit/:id" element={<EditCompanyAddress />} />
               <Route path="/brands" element={<Brands />} />
               <Route path="/brands/add" element={<AddBrand />} />
               <Route path="/brands/edit/:id" element={<EditBrand />} />
@@ -201,7 +223,7 @@ export default function App() {
               <Route path="/stock-entries/add" element={<AddStockIn />} />
               <Route path="/stock-entries/view/:id" element={<ViewStockIn />} />
               <Route path="/stock-entries/edit/:id" element={<EditStockIn />} />
-              
+
               <Route path="/incoming" element={<IncomingCompanies />} />
               <Route path="/incoming/company/:companyId" element={<IncomingList />} />
               <Route path="/incoming/add" element={<AddIncoming />} />
@@ -216,7 +238,7 @@ export default function App() {
               <Route path="/item-types" element={<ItemTypes />} />
               <Route path="/item-types/add" element={<AddItemType />} />
               <Route path="/item-types/edit/:id" element={<EditItemType />} />
-              
+
               <Route path="/lacquer-plan" element={<LacquerPlan />} />
               <Route path="/lacquer-plan/add" element={<AddLacquerPlan />} />
               <Route path="/lacquer-plan/edit/:id" element={<EditLacquerPlan />} />
@@ -226,17 +248,41 @@ export default function App() {
               <Route path="/printing-plan/add" element={<AddPrintingPlan />} />
               <Route path="/printing-plan/edit/:id" element={<EditPrintingPlan />} />
               <Route path="/printing-plan/view/:id" element={<ViewPrintingPlan />} />
-              
+
               <Route path="/pending-sheet" element={<PendingSheet />} />
               <Route path="/pending-sheet/add" element={<AddPendingSheet />} />
               <Route path="/pending-sheet/edit/:id" element={<EditPendingSheet />} />
               <Route path="/pending-sheet/view/:id" element={<ViewPendingSheet />} />
-              
+
               <Route path="/dispatch" element={<DispatchCompanies />} />
               <Route path="/dispatch/company/:companyId" element={<DispatchList />} />
               <Route path="/dispatch/add" element={<AddDispatch />} />
               <Route path="/dispatch/edit/:id" element={<EditDispatch />} />
               <Route path="/dispatch/view/:id" element={<ViewDispatch />} />
+
+              <Route path="/ready-to-dispatch" element={<ReadyToDispatchList />} />
+              <Route path="/ready-to-dispatch/add" element={<AddReadyToDispatch />} />
+              <Route path="/ready-to-dispatch/edit/:id" element={<EditReadyToDispatch />} />
+              <Route path="/ready-to-dispatch/view/:id" element={<ViewReadyToDispatch />} />
+
+              <Route path="/delivery-challan/shayoona" element={<ShayonaChallanList />} />
+              <Route path="/delivery-challan/shayoona/add" element={<AddShayonaChallan />} />
+              <Route path="/delivery-challan/shayoona/edit/:id" element={<EditShayonaChallan />} />
+              <Route path="/delivery-challan/shayoona/view/:id" element={<ViewShayonaChallan />} />
+
+              <Route path="/delivery-challan/mcnore" element={<McnoreChallanList />} />
+              <Route path="/delivery-challan/mcnore/add" element={<AddMcnoreChallan />} />
+              <Route path="/delivery-challan/mcnore/edit/:id" element={<EditMcnoreChallan />} />
+              <Route path="/delivery-challan/mcnore/view/:id" element={<ViewMcnoreChallan />} />
+
+              <Route path="/delivery-challan/sherno" element={<ShernoChallanList />} />
+              <Route path="/delivery-challan/sherno/add" element={<AddShernoChallan />} />
+              <Route path="/delivery-challan/sherno/edit/:id" element={<EditShernoChallan />} />
+              <Route path="/delivery-challan/sherno/view/:id" element={<ViewShernoChallan />} />
+
+              {/* <Route path="/gst" element={<GstList />} />
+              <Route path="/gst/add" element={<AddGst />} />
+              <Route path="/gst/edit/:id" element={<EditGst />} /> */}
 
               <Route path="/summary" element={<SummaryCompanies />} />
               <Route path="/summary/company/:companyId" element={<CompanySummary />} />
@@ -244,7 +290,7 @@ export default function App() {
               <Route path="/bottle-per-box" element={<BottlePerBoxes />} />
               <Route path="/bottle-per-box/add" element={<AddBottlePerBox />} />
               <Route path="/bottle-per-box/edit/:id" element={<EditBottlePerBox />} />
-              
+
               <Route path="/productions" element={<Productions />} />
               <Route path="/production" element={<Production />} />
               <Route path="/productions/add" element={<AddProduction />} />

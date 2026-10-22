@@ -73,6 +73,7 @@ async function run() {
 
     const group = targetGroups.get(targetPlain);
     group.docs.push(doc);
+    group.allNames.add(targetPlain);
     names.forEach(n => group.allNames.add(n));
     if (doc.bottlePerBox !== null && doc.bottlePerBox !== undefined) {
       group.counts.push({ docId: doc._id, name: currentPlain, count: doc.bottlePerBox });
@@ -264,6 +265,9 @@ async function run() {
           plainBottleName: su.targetPlain,
           bottleName: su.targetPlain,
           updatedAt: new Date()
+        },
+        $addToSet: {
+          bottleNames: su.targetPlain
         }
       }
     );

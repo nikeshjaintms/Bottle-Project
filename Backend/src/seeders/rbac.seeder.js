@@ -20,6 +20,7 @@ const seedRBAC = async () => {
       "create-coating-type", "edit-coating-type", "delete-coating-type", "sidebar-coating-type", "read-coating-type",
       "create-raw-material", "edit-raw-material", "delete-raw-material", "sidebar-raw-material", "read-raw-material",
       "create-company", "edit-company", "delete-company", "sidebar-company", "read-company",
+      "create-company-address", "edit-company-address", "delete-company-address", "sidebar-company-address", "read-company-address",
       "create-operator", "edit-operator", "delete-operator", "sidebar-operator", "read-operator",
       "create-shift", "edit-shift", "delete-shift", "sidebar-shift", "read-shift",
       "create-unit", "edit-unit", "delete-unit", "sidebar-unit", "read-unit",
@@ -30,6 +31,10 @@ const seedRBAC = async () => {
       "create-incoming", "edit-incoming", "delete-incoming", "sidebar-incoming", "read-incoming",
       "create-itemType", "edit-itemType", "delete-itemType", "sidebar-itemType", "read-itemType",
       "create-gst", "edit-gst", "delete-gst", "sidebar-gst", "read-gst",
+      "create-delivery-challan", "edit-delivery-challan", "delete-delivery-challan", "sidebar-delivery-challan", "read-delivery-challan",
+      "sidebar-delivery-challan-mcnore", "read-delivery-challan-mcnore",
+      "sidebar-delivery-challan-sherno", "read-delivery-challan-sherno",
+      "sidebar-delivery-challan-shayoona", "read-delivery-challan-shayoona",
       "use-vision", "manage-all",
       "production-date-validation", "coating-production-date-validation",
       "production-record-unlock", "coating-production-record-unlock"
@@ -64,6 +69,7 @@ const seedRBAC = async () => {
           "show-user", "sidebar-user", "read-user",
           "sidebar-unit", "read-unit",
           "create-brand", "edit-brand", "sidebar-brand", "read-brand", "read-company",
+          "create-company-address", "edit-company-address", "sidebar-company-address", "read-company-address",
           "create-bottlespec", "edit-bottlespec", "sidebar-bottlespec", "read-bottlespec", "read-bottlespecdetail",
           "read-printing-type", "read-printing-color", "read-coating-type",
           "create-variant", "edit-variant", "sidebar-variant", "read-variant",
@@ -76,7 +82,11 @@ const seedRBAC = async () => {
           "create-gst", "edit-gst", "sidebar-gst", "read-gst",
           "create-sg-label", "edit-sg-label", "delete-sg-label", "sidebar-sg-label", "read-sg-label",
           "create-sg-label-2", "edit-sg-label-2", "delete-sg-label-2", "sidebar-sg-label-2", "read-sg-label-2",
-          "create-stock_entry", "edit-stock_entry", "delete-stock_entry", "sidebar-stock_entry", "read-stock_entry", "rate-stock_entry", "ledger-stock_entry", "stockout-stock_entry"
+          "create-stock_entry", "edit-stock_entry", "delete-stock_entry", "sidebar-stock_entry", "read-stock_entry", "rate-stock_entry", "ledger-stock_entry", "stockout-stock_entry",
+          "create-delivery-challan", "edit-delivery-challan", "sidebar-delivery-challan", "read-delivery-challan",
+          "sidebar-delivery-challan-mcnore", "read-delivery-challan-mcnore",
+          "sidebar-delivery-challan-sherno", "read-delivery-challan-sherno",
+          "sidebar-delivery-challan-shayoona", "read-delivery-challan-shayoona"
         ]
       },
       {
