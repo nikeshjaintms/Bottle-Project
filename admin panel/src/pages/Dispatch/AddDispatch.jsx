@@ -355,7 +355,7 @@ export default function AddDispatch() {
   const grandTotal = items.reduce((acc, curr) => acc + (Number(curr.totalQty) || 0), 0);
 
   return (
-    <div className="page-content">
+    <div className="page-content dispatch-module-page dispatch-module-form">
       <div className="page-header d-flex align-items-center justify-content-between user-form-page-header">
         <div className="d-flex align-items-center gap-3">
           <button onClick={() => navigate(-1)} className="btn btn-light border-0 shadow-sm rounded-circle d-flex align-items-center justify-content-center" style={{ width: 40, height: 40 }}>
@@ -371,7 +371,7 @@ export default function AddDispatch() {
       <div className="row justify-content-center">
         <div className="col-xl-12 col-lg-12">
           <div className="dash-card border-0 shadow-sm p-4">
-            <form onSubmit={handleSubmit}>
+            <form onSubmit={handleSubmit} className="dispatch-entry-form">
               <div className="row g-4 mb-4">
                 <div className="col-md-3">
                   <label className="form-label fw-bold small">Dispatch Date <span className="text-danger">*</span></label>
@@ -436,7 +436,7 @@ export default function AddDispatch() {
                 <h6 className="fw-bold text-primary mb-0">BOTTLE ENTRIES</h6>
               </div>
 
-              <div className="table-responsive mb-3">
+              <div className="table-responsive mb-3 dispatch-entry-table">
                 <table className="table table-bordered align-middle">
                   <thead className="table-light">
                     <tr>
@@ -589,4 +589,3 @@ export default function AddDispatch() {
     </div>
   );
 }
-

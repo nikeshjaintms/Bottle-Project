@@ -1,6 +1,7 @@
 /**
  * Generates official Shreno Delivery Challan HTML document matching the exact Shreno format.
  */
+const { getChallanLogoDataUri } = require("./challanLogo");
 
 function escapeHtml(str) {
   if (str === null || str === undefined) return '';
@@ -25,6 +26,7 @@ function formatDate(dateStr) {
 function buildHeaderHtml() {
   return `
     <div class="challan-header">
+      <img class="challan-logo" src="${getChallanLogoDataUri()}" alt="Shayona Glass Decor logo">
       <div class="company-name">SHAYONA GLASS DECOR PVT. LTD.</div>
       <div class="company-sub">Plot.no-128,At &amp; Post Vavli, Ta. Jambusar, Dist : Bharuch, 392150</div>
       <div class="company-gst">GSTIN NO:-24AAUCS9498K1Z5</div>
@@ -202,14 +204,24 @@ function generateShrenoChallanHtml(challan) {
 
         /* HEADER */
         .challan-header {
+          position: relative;
           text-align: center;
           border-bottom: 2px solid #000;
+        }
+
+        .challan-logo {
+          position: absolute;
+          top: 5px;
+          left: 10px;
+          width: 140px;
+          height: 92px;
+          object-fit: contain;
         }
 
         .company-name {
           font-size: 21px;
           font-weight: bold;
-          color: #1a56db;
+          color: #00b2ff;
           letter-spacing: 0.5px;
           padding-top: 8px;
         }

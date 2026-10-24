@@ -214,8 +214,8 @@ export default function EditStockIn() {
   const validItemsCount = allActiveItems.filter(i => i.rawMaterialId && Number(i.quantity) > 0).length;
 
   return (
-    <div className="page-content">
-      <div className="page-header d-flex align-items-center gap-3 user-form-page-header">
+    <div className="page-content stock-entry-page stock-entry-form-page">
+      <div className="page-header d-flex align-items-center gap-3 user-form-page-header stock-entry-form-header">
         <Link to={fallbackUrl} className="btn btn-light border-0 shadow-sm rounded-circle d-flex align-items-center justify-content-center" style={{ width: 40, height: 40 }}>
           <i className="bi bi-arrow-left fs-5 text-secondary"></i>
         </Link>
@@ -227,8 +227,8 @@ export default function EditStockIn() {
 
       <div className="row justify-content-center">
         <div className="col-xl-10 col-lg-12">
-          <div className="dash-card">
-            <div className="dash-card-body p-4">
+          <div className="dash-card stock-entry-form-card">
+            <div className="dash-card-body p-4 stock-entry-form-body">
               <form onSubmit={handleSubmit}>
                 <div className="row g-4 mb-4">
                   <div className="col-md-4">
@@ -249,7 +249,7 @@ export default function EditStockIn() {
                   <h6 className="fw-bold text-primary mb-0">INVOICE ITEMS</h6>
                 </div>
                 
-                <div className="table-responsive mb-3">
+                <div className="table-responsive mb-3 stock-entry-items-table">
                   <table className="table table-bordered align-middle">
                     <thead className="table-light">
                       <tr>

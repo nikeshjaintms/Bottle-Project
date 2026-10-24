@@ -5,6 +5,8 @@ const BottlePerBox = require('../models/BottlePerBox');
 const PlainBottleStock = require('../models/PlainBottleStock');
 const Incoming = require('../models/Incoming');
 const Dispatch = require('../models/Dispatch');
+const Brand = require('../models/Brand');
+const BottleSpec = require('../models/Bottlespecs');
 const { matchBottleNameFromMaster, normalizeBottleForMatching, levenshteinDistance, getSimilarityScore, normalizeBottle } = require('../utils/bottleMatching');
 
 /**
@@ -52,6 +54,85 @@ const resolveCompanyFromFilename = (filename, companyMasters) => {
         matched: false,
         source: 'filename'
     };
+};
+
+/**
+ * Expand bottle master with aliases (e.g. "30 ML ZC GC (VICTOR)" -> "30 ML VICTOR", "30 ML ZC GC", "VICTOR")
+ */
+const expandBottleWithAliases = (bottle) => {
+    if (!bottle) return bottle;
+    const names = new Set(bottle.bottleNames || []);
+    if (bottle.bottleName) names.add(bottle.bottleName);
+    if (bottle.plainBottleName) names.add(bottle.plainBottleName);
+
+    for (const name of Array.from(names)) {
+        const parenMatch = name.match(/^(.*?)\s*\((.*?)\)\s*$/);
+        if (parenMatch) {
+            const beforeParen = parenMatch[1].trim();
+            const insideParen = parenMatch[2].trim();
+            names.add(beforeParen);
+            names.add(insideParen);
+
+            const capMatch = beforeParen.match(/^(\d+(?:\.\d+)?\s*(?:ML|GM|L|KG))\b/i);
+            if (capMatch) {
+                names.add(`${capMatch[1]} ${insideParen}`);
+            }
+        }
+    }
+    return {
+        ...bottle,
+        bottleNames: Array.from(names)
+    };
+};
+
+/**
+ * Filter bottles by company to ensure bottles belonging to other companies are not matched
+ */
+const getCompanyFilteredBottles = async (companyId, allCompanies, rawBottles) => {
+    const expandedBottles = rawBottles.map(expandBottleWithAliases);
+    if (!companyId) return expandedBottles;
+
+    const comp = allCompanies.find(c => String(c._id) === String(companyId));
+    if (!comp) return expandedBottles;
+
+    // 1. Bottles in BottleSpec for THIS company
+    const companyBrands = await Brand.find({ companyId: comp._id, isDeleted: { $ne: true } }).select('_id').lean();
+    const companyBrandIds = companyBrands.map(b => b._id);
+    const companySpecs = await BottleSpec.find({ brandId: { $in: companyBrandIds }, isDeleted: { $ne: true } }).select('bottleName').lean();
+    const companyBottleNames = new Set(companySpecs.map(s => (s.bottleName || '').trim()).filter(Boolean));
+
+    // 2. Bottles in BottleSpec for OTHER companies
+    const otherBrands = await Brand.find({ companyId: { $ne: comp._id }, isDeleted: { $ne: true } }).select('_id').lean();
+    const otherBrandIds = otherBrands.map(b => b._id);
+    const otherSpecs = await BottleSpec.find({ brandId: { $in: otherBrandIds }, isDeleted: { $ne: true } }).select('bottleName').lean();
+    const otherBottleNames = new Set(otherSpecs.map(s => (s.bottleName || '').trim()).filter(Boolean));
+
+    // 3. Names of other companies (e.g. SFP, SHRENO, MCNORE)
+    const otherCompanyNamesList = allCompanies
+        .filter(c => String(c._id) !== String(comp._id))
+        .map(c => c.name.trim())
+        .filter(n => n.length >= 3 && !['THE', 'AND'].includes(n.toUpperCase()));
+
+    return expandedBottles.filter(b => {
+        const allNames = [b.bottleName, b.plainBottleName, ...(b.bottleNames || [])].filter(Boolean);
+
+        // If bottle belongs to this company's specs, definitely include
+        const inThisCompany = allNames.some(n => companyBottleNames.has(n.trim()));
+        if (inThisCompany) return true;
+
+        // If bottle belongs to another company's specs and not this company, exclude
+        const inOtherCompany = allNames.some(n => otherBottleNames.has(n.trim()));
+        if (inOtherCompany) return false;
+
+        // If bottle explicitly contains another company's name/code, exclude
+        const hasOtherCompanyName = otherCompanyNamesList.some(compName => 
+            allNames.some(n => new RegExp(`\\b${compName}\\b`, 'i').test(n))
+        );
+        if (hasOtherCompanyName) return false;
+
+        // Generic / unassigned bottle: allow as fallback
+        return true;
+    });
 };
 
 /**
@@ -188,15 +269,7 @@ const parseTppIncoming = (rowData, rowIndex, allBottles, sheetName = null, sheet
 
     // DIAGNOSTIC LOGGING: Trace raw cell values for debugging combined sheet issues
     if (rowIndex < 10 || rowIndex % 5 === 0) { // Log first 10 rows and every 5th row after
-        console.log(`[TPP PARSE DEBUG] Row ${rowIndex + 1} (Excel row ${rowIndex + 1}):`, {
-            colA_srNo: { index: 0, raw: rowData[0], value: srNo },
-            colB_date: { index: 1, raw: rowData[1], value: date },
-            colC_challan: { index: 2, raw: rowData[2], value: challanNo },
-            colD_description: { index: 3, raw: rowData[3], value: bottleNameText },
-            colE_box: { index: 4, raw: rowData[4], value: box, parsed: !isNaN(parseFloat(box)) ? parseFloat(box) : 'NaN' },
-            colF_qty: { index: 5, raw: rowData[5], value: qty, parsed: !isNaN(parseFloat(qty)) ? parseFloat(qty) : 'NaN' },
-            colG_total: { index: 6, raw: rowData[6], value: totalQty, parsed: !isNaN(parseFloat(totalQty)) ? parseFloat(totalQty) : 'NaN' }
-        });
+
     }
 
     const record = {
@@ -212,10 +285,10 @@ const parseTppIncoming = (rowData, rowIndex, allBottles, sheetName = null, sheet
 
     // Bottle identity comes from sheet name (outer) or row text (inner fallback)
     // sheetBottleId is pre-resolved and passed in; use it directly
-    record.bottleNameRaw = sheetBottleId;
+    record.bottleNameRaw = (sheetBottleId && sheetBottleId !== 'MISSING') ? sheetBottleId : (sheetName || bottleNameText || 'MISSING');
 
     if (!sheetBottleId || sheetBottleId === 'MISSING') {
-        record.errors.push("MISSING BOTTLE");
+        record.errors.push(`Sheet "${sheetName}": bottle not found in master`);
     }
 
     // CRITICAL: PO fields (poDate, poNo, poOrderQty) are NOT supported in DEFAULT/TPP format
@@ -224,10 +297,8 @@ const parseTppIncoming = (rowData, rowIndex, allBottles, sheetName = null, sheet
     record.poNo = null;
     record.poOrderQty = null;
 
-    // Validate SR.NO (serial number)
-    if (!srNo) {
-        record.errors.push("MISSING SR.NO");
-    } else if (isNaN(parseInt(srNo))) {
+    // Validate SR.NO (serial number) - only error if provided and not a number
+    if (srNo && isNaN(parseInt(srNo))) {
         record.errors.push("INVALID SR.NO");
     }
 
@@ -242,10 +313,6 @@ const parseTppIncoming = (rowData, rowIndex, allBottles, sheetName = null, sheet
         record.noOfBox = 0;
         record.qty = 0;
         record.totalQty = !isNaN(parseFloat(totalQty)) ? parseFloat(totalQty) : 0;
-
-        if (record.totalQty <= 0) {
-            record.errors.push("OPENING BALANCE QUANTITY MUST BE > 0");
-        }
     } else {
         // Normal challan-based incoming row
         // Note: bottleNameText in column D is descriptive only, not used for matching
@@ -253,52 +320,30 @@ const parseTppIncoming = (rowData, rowIndex, allBottles, sheetName = null, sheet
         record.challanNo = challanNo || null;
         record.noOfBox = !isNaN(parseFloat(box)) ? parseFloat(box) : 0;
         record.qty = !isNaN(parseFloat(qty)) ? parseFloat(qty) : 0;
-        record.totalQty = !isNaN(parseFloat(totalQty)) ? parseFloat(totalQty) : 0;
+        record.totalQty = !isNaN(parseFloat(totalQty)) ? parseFloat(totalQty) : (record.noOfBox * record.qty);
 
-        // Validation checks for incoming date
-        if (!record.incomingDate) {
-            record.errors.push("MISSING DATE");
-        } else if (isNaN(record.incomingDate.getTime())) {
+        // Validation checks for incoming date: optional, only error if provided but invalid
+        if (date !== null && date !== undefined && String(date).trim() !== '' && (!record.incomingDate || isNaN(record.incomingDate.getTime()))) {
             record.errors.push("INVALID DATE");
         }
 
-        // Validation check for challan number - CHALLAN IS OPTIONAL (not required)
-        // Removed error checking for missing challan number
-
-        // Validation checks for quantities - distinguish between missing and invalid
-        // If the raw value is empty/null, it's missing; if it's not a valid number, it's invalid
+        // Validation checks for quantities: optional, only error if provided and not a valid number
         const boxRaw = rowData[4];
         const qtyRaw = rowData[5];
         const totalQtyRaw = rowData[6];
 
-        if (boxRaw === null || boxRaw === undefined || String(boxRaw).trim() === '') {
-            record.errors.push("MISSING BOX");
-        } else if (isNaN(parseFloat(boxRaw))) {
+        if (boxRaw !== null && boxRaw !== undefined && String(boxRaw).trim() !== '' && isNaN(parseFloat(boxRaw))) {
             record.errors.push("INVALID BOX");
         }
 
-        if (qtyRaw === null || qtyRaw === undefined || String(qtyRaw).trim() === '') {
-            record.errors.push("MISSING QTY");
-        } else if (isNaN(parseFloat(qtyRaw))) {
+        if (qtyRaw !== null && qtyRaw !== undefined && String(qtyRaw).trim() !== '' && isNaN(parseFloat(qtyRaw))) {
             record.errors.push("INVALID QTY");
         }
 
-        if (totalQtyRaw === null || totalQtyRaw === undefined || String(totalQtyRaw).trim() === '') {
-            record.errors.push("MISSING TOTAL QTY");
-        } else if (isNaN(parseFloat(totalQtyRaw))) {
+        if (totalQtyRaw !== null && totalQtyRaw !== undefined && String(totalQtyRaw).trim() !== '' && isNaN(parseFloat(totalQtyRaw))) {
             record.errors.push("INVALID TOTAL QTY");
         }
-
-        // Check if at least one quantity field is present and valid
-        const hasAnyQuantity = !isNaN(parseFloat(boxRaw)) || !isNaN(parseFloat(qtyRaw)) || !isNaN(parseFloat(totalQtyRaw));
-        if (!hasAnyQuantity) {
-            record.errors.push("MISSING QUANTITY");
-        }
     }
-
-    // RELAXED: Challan number is optional - removed this check: if (!record.challanNo) record.errors.push("Challan number is missing");
-    // RELAXED: Quantity is now optional - rows with blank Box/Qty/Total are valid if they have bottle/challan/date info
-    // Removed: if (record.totalQty <= 0) record.errors.push("Total quantity must be greater than 0");
 
     record.isValid = record.errors.length === 0;
     return record;
@@ -326,18 +371,7 @@ const parseShrenoIncoming = (rowData, rowIndex, allBottles, sheetName = null, sh
 
     // DIAGNOSTIC LOGGING: Trace raw cell values for debugging combined sheet issues
     if (rowIndex < 10 || rowIndex % 5 === 0) { // Log first 10 rows and every 5th row after
-        console.log(`[SHRENO PARSE DEBUG] Row ${rowIndex + 1} (Excel row ${rowIndex + 1}):`, {
-            colA_srNo: { index: 0, raw: rowData[0], value: srNo },
-            colB_poDate: { index: 1, raw: rowData[1], value: poDate },
-            colC_poNo: { index: 2, raw: rowData[2], value: poNo },
-            colD_poOrderQty: { index: 3, raw: rowData[3], value: poOrderQty, parsed: !isNaN(parseFloat(poOrderQty)) ? parseFloat(poOrderQty) : 'NaN' },
-            colE_description: { index: 4, raw: rowData[4], value: description },
-            colF_incomingDate: { index: 5, raw: rowData[5], value: incomingDate },
-            colG_challan: { index: 6, raw: rowData[6], value: challanNo },
-            colH_noOfBox: { index: 7, raw: rowData[7], value: noOfBox, parsed: !isNaN(parseFloat(noOfBox)) ? parseFloat(noOfBox) : 'NaN' },
-            colI_qty: { index: 8, raw: rowData[8], value: qty, parsed: !isNaN(parseFloat(qty)) ? parseFloat(qty) : 'NaN' },
-            colJ_incomingQty: { index: 9, raw: rowData[9], value: incomingQty, parsed: !isNaN(parseFloat(incomingQty)) ? parseFloat(incomingQty) : 'NaN' }
-        });
+
     }
 
     const record = {
@@ -355,16 +389,14 @@ const parseShrenoIncoming = (rowData, rowIndex, allBottles, sheetName = null, sh
 
     // Bottle identity comes from sheet name (outer) or row text (inner fallback)
     // sheetBottleId is pre-resolved and passed in; use it directly
-    record.bottleNameRaw = sheetBottleId;
+    record.bottleNameRaw = (sheetBottleId && sheetBottleId !== 'MISSING') ? sheetBottleId : (sheetName || description || 'MISSING');
 
     if (!sheetBottleId || sheetBottleId === 'MISSING') {
-        record.errors.push("MISSING BOTTLE");
+        record.errors.push(`Sheet "${sheetName}": bottle not found in master`);
     }
 
-    // Validate SR.NO (serial number)
-    if (!srNo) {
-        record.errors.push("MISSING SR.NO");
-    } else if (isNaN(parseInt(srNo))) {
+    // Validate SR.NO (serial number) - only error if provided and not a number
+    if (srNo && isNaN(parseInt(srNo))) {
         record.errors.push("INVALID SR.NO");
     }
 
@@ -378,10 +410,6 @@ const parseShrenoIncoming = (rowData, rowIndex, allBottles, sheetName = null, sh
         record.noOfBox = 0;
         record.qty = 0;
         record.totalQty = !isNaN(parseFloat(incomingQty)) ? parseFloat(incomingQty) : 0;
-
-        if (record.totalQty <= 0) {
-            record.errors.push("OPENING BALANCE QUANTITY MUST BE > 0");
-        }
     } else {
         // Normal challan-based incoming row
         // Note: description in column E is descriptive text for this record
@@ -393,67 +421,41 @@ const parseShrenoIncoming = (rowData, rowIndex, allBottles, sheetName = null, sh
         record.challanNo = challanNo || null;
         record.noOfBox = !isNaN(parseFloat(noOfBox)) ? parseFloat(noOfBox) : 0;
         record.qty = !isNaN(parseFloat(qty)) ? parseFloat(qty) : 0;
-        record.totalQty = !isNaN(parseFloat(incomingQty)) ? parseFloat(incomingQty) : 0;
+        record.totalQty = !isNaN(parseFloat(incomingQty)) ? parseFloat(incomingQty) : (record.noOfBox * record.qty);
 
-        // Validation checks for PO fields
+        // Validation checks for PO fields: optional, only error if provided but invalid
         const poDatRaw = rowData[1];
-        const poNoRaw = rowData[2];
         const poOrderQtyRaw = rowData[3];
 
-        if (poDatRaw === null || poDatRaw === undefined || String(poDatRaw).trim() === '') {
-            record.errors.push("MISSING PO DATE");
-        } else if (!record.poDate || isNaN(record.poDate.getTime())) {
+        if (poDatRaw !== null && poDatRaw !== undefined && String(poDatRaw).trim() !== '' && (!record.poDate || isNaN(record.poDate.getTime()))) {
             record.errors.push("INVALID PO DATE");
         }
 
-        if (!record.poNo) {
-            record.errors.push("MISSING PO NUMBER");
-        }
-
-        if (poOrderQtyRaw === null || poOrderQtyRaw === undefined || String(poOrderQtyRaw).trim() === '') {
-            record.errors.push("MISSING PO QUANTITY");
-        } else if (record.poOrderQty !== null && record.poOrderQty < 0) {
+        if (poOrderQtyRaw !== null && poOrderQtyRaw !== undefined && String(poOrderQtyRaw).trim() !== '' && (isNaN(parseFloat(poOrderQtyRaw)) || parseFloat(poOrderQtyRaw) < 0)) {
             record.errors.push("INVALID PO QUANTITY");
         }
 
-        // Validation checks for incoming date
+        // Validation checks for incoming date: optional, only error if provided but invalid
         const incomingDateRaw = rowData[5];
-        if (incomingDateRaw === null || incomingDateRaw === undefined || String(incomingDateRaw).trim() === '') {
-            record.errors.push("MISSING DATE");
-        } else if (!record.incomingDate || isNaN(record.incomingDate.getTime())) {
+        if (incomingDateRaw !== null && incomingDateRaw !== undefined && String(incomingDateRaw).trim() !== '' && (!record.incomingDate || isNaN(record.incomingDate.getTime()))) {
             record.errors.push("INVALID DATE");
         }
 
-        // Validation check for challan number - CHALLAN IS OPTIONAL (not required)
-        // Removed error checking for missing challan number
-
-        // Validation checks for quantities - distinguish between missing and invalid
+        // Validation checks for quantities: optional, only error if provided and not a valid number
         const boxRaw = rowData[7];
         const qtyRaw = rowData[8];
         const incomingQtyRaw = rowData[9];
 
-        if (boxRaw === null || boxRaw === undefined || String(boxRaw).trim() === '') {
-            record.errors.push("MISSING BOX");
-        } else if (isNaN(parseFloat(boxRaw))) {
+        if (boxRaw !== null && boxRaw !== undefined && String(boxRaw).trim() !== '' && isNaN(parseFloat(boxRaw))) {
             record.errors.push("INVALID BOX");
         }
 
-        if (qtyRaw === null || qtyRaw === undefined || String(qtyRaw).trim() === '') {
-            record.errors.push("MISSING QTY");
-        } else if (isNaN(parseFloat(qtyRaw))) {
+        if (qtyRaw !== null && qtyRaw !== undefined && String(qtyRaw).trim() !== '' && isNaN(parseFloat(qtyRaw))) {
             record.errors.push("INVALID QTY");
         }
 
-        if (incomingQtyRaw === null || incomingQtyRaw === undefined || String(incomingQtyRaw).trim() === '') {
-            record.errors.push("MISSING INCOMING QTY");
-        } else if (isNaN(parseFloat(incomingQtyRaw))) {
+        if (incomingQtyRaw !== null && incomingQtyRaw !== undefined && String(incomingQtyRaw).trim() !== '' && isNaN(parseFloat(incomingQtyRaw))) {
             record.errors.push("INVALID INCOMING QTY");
-        }
-
-        // Check if at least one quantity field is present and valid
-        const hasAnyQuantity = !isNaN(parseFloat(boxRaw)) || !isNaN(parseFloat(qtyRaw)) || !isNaN(parseFloat(incomingQtyRaw));
-        if (!hasAnyQuantity) {
-            record.errors.push("MISSING QUANTITY");
         }
     }
 
@@ -465,7 +467,7 @@ const parseShrenoIncoming = (rowData, rowIndex, allBottles, sheetName = null, sh
  * Import Preview
  */
 exports.importPreview = async (req, res) => {
-    console.log('[INCOMING IMPORTER] importPreview called - incomingImport.js');
+
     try {
         if (!req.file || !req.file.buffer) {
             return res.status(400).json({ success: false, message: 'No file uploaded' });
@@ -475,7 +477,7 @@ exports.importPreview = async (req, res) => {
         const workbook = xlsx.read(fileBuffer, { type: 'buffer' });
 
         const allCompanies = await Company.find({ isDeleted: { $ne: true } }).lean();
-        const allBottles = await BottlePerBox.find({ isDeleted: false }).lean();
+        const rawBottles = await BottlePerBox.find({ isDeleted: false }).lean();
 
         // Pre-detect format from all sheets to determine company
         let hasShrenoFormat = false;
@@ -513,9 +515,11 @@ exports.importPreview = async (req, res) => {
 
         // Override if user explicitly selected company
         if (req.body && req.body.companyId) {
-            const c = allCompanies.find(c => String(c._id) === req.body.companyId);
+            const c = allCompanies.find(c => String(c._id) === String(req.body.companyId));
             if (c) resolvedCompany = { _id: c._id, name: c.name };
         }
+
+        const allBottles = await getCompanyFilteredBottles(resolvedCompany?._id, allCompanies, rawBottles);
 
         const allRecords = [];
 
@@ -536,9 +540,9 @@ exports.importPreview = async (req, res) => {
                 // SHRENO is the only format with its own dedicated column schema
                 if (row1Text.includes('SHRENO')) {
                     sheetFormat = 'SHRENO';
-                    console.log(`[FORMAT DETECTION] Sheet "${sheetName}": Row 1 contains "SHRENO" marker → Using SHRENO schema (10 columns)`);
+
                 } else {
-                    console.log(`[FORMAT DETECTION] Sheet "${sheetName}": No SHRENO marker detected → Using default schema (7 columns) for company "${resolvedCompany.name}"`);
+
                 }
             }
 
@@ -570,7 +574,7 @@ exports.importPreview = async (req, res) => {
             let sheetBottleId = sheetBottleMatch.bottleName;
             let sheetBottleResolutionMethod = 'OUTER';
 
-            console.log(`[SHEET BOTTLE RESOLUTION - START] Sheet: "${sheetName}", Outer match result: ${sheetBottleId}`);
+
 
             // Step 2: If outer (sheet name) didn't match, we need to try inner (row text) fallback
             // First, collect all rows and attempt inner matching for each
@@ -579,7 +583,7 @@ exports.importPreview = async (req, res) => {
             
             if (sheetBottleId === 'MISSING') {
                 // Outer failed - try to match rows individually to understand what bottles are in this sheet
-                console.log(`[INNER LOOP START] Sheet "${sheetName}": Starting to scan rows for inner bottle matching`);
+
                 for (let i = headerRowIndex + 1; i < data.length; i++) {
                     const row = data[i];
                     
@@ -599,7 +603,7 @@ exports.importPreview = async (req, res) => {
                     
                     // Skip skippable rows
                     if (isSkippableRow(row)) {
-                        console.log(`  [INNER LOOP] Row ${i}: SKIPPED (isSkippableRow=true)`);
+
                         continue;
                     }
                     
@@ -614,7 +618,7 @@ exports.importPreview = async (req, res) => {
                         isOldStock: isOldStock,
                         isSkippable: isSkippableRow(row)
                     });
-                    console.log(`  [INNER LOOP] Row ${i}: Added to innerRowResults with bottleText="${bottleNameText}", matched bottleId="${innerBottleId}"`);
+
                     
                     // Track distinct bottles found (excluding MISSING)
                     if (innerBottleId !== 'MISSING' && !isOldStock) {
@@ -624,27 +628,27 @@ exports.importPreview = async (req, res) => {
                 
                 // IMPORTANT: Determine sheet-level bottle once from inner results
                 // If exactly one distinct bottle was found across all rows, use it for the entire sheet
-                console.log(`[SHEET BOTTLE RESOLUTION - INNER PHASE COMPLETE] Sheet: "${sheetName}", distinctBottlesFound size: ${distinctBottlesFound.size}, contents: ${Array.from(distinctBottlesFound).join(', ')}`);
+
                 
                 if (distinctBottlesFound.size === 1) {
                     sheetBottleId = Array.from(distinctBottlesFound)[0];
                     sheetBottleResolutionMethod = 'INNER_FALLBACK_SINGLE';
-                    console.log(`[SHEET BOTTLE RESOLUTION - FINAL] Sheet "${sheetName}": INNER_FALLBACK_SINGLE set sheetBottleId to: ${sheetBottleId}`);
-                    console.log(`[SHEET BOTTLE RESOLUTION] Sheet "${sheetName}": Using single detected bottle for all rows: ${sheetBottleId}`);
+
+
                 } else if (distinctBottlesFound.size > 1) {
                     // Multiple distinct bottles found - this is ambiguous, leave as MISSING
                     // Rows with their own matching text will resolve to their text; others remain MISSING
                     sheetBottleResolutionMethod = 'INNER_AMBIGUOUS';
-                    console.log(`[SHEET BOTTLE RESOLUTION] Sheet "${sheetName}": Found ${distinctBottlesFound.size} different bottles; rows will be evaluated individually`);
+
                 } else {
                     // No bottles found in any row
                     sheetBottleResolutionMethod = 'INNER_NONE';
-                    console.log(`[SHEET BOTTLE RESOLUTION] Sheet "${sheetName}": No bottles found in any row`);
+
                 }
             }
 
             // Parse data rows (starting after header)
-            console.log(`[ROW LOOP START] Sheet: "${sheetName}", About to process ${data.length - (headerRowIndex + 1)} rows, sheetBottleId is currently: ${sheetBottleId}`);
+
             for (let i = headerRowIndex + 1; i < data.length; i++) {
                 const row = data[i];
                 
@@ -657,15 +661,15 @@ exports.importPreview = async (req, res) => {
                     bottleVal = String(row[3] || '').trim();
                 }
                 
-                console.log(`[ROW ITERATION] Sheet: "${sheetName}", Format: ${sheetFormat}, Row index: ${i}, SR.NO: "${srNoVal}", Bottle Text: "${bottleVal}"`);
+
                 
                 // Skip blank padding rows and TOTAL rows
                 if (isSkippableRow(row)) {
-                    console.log(`  → SKIPPED (isSkippableRow returned true)`);
+
                     continue;
                 }
 
-                console.log(`  → PROCESSING as data row`);
+
 
                 // **CRITICAL BOTTLE DETERMINATION PHASE:**
                 // Step 1: If sheet has a pre-resolved bottle (from outer or inner matching), USE IT for all rows
@@ -675,7 +679,7 @@ exports.importPreview = async (req, res) => {
                 let resolvedBottleId = sheetBottleId; // Start with sheet-level resolution
                 let resolutionMethod = sheetBottleId !== 'MISSING' ? 'SHEET_LEVEL' : null;
                 
-                console.log(`  → [BOTTLE DETERMINATION] Initial: sheetBottleId="${sheetBottleId}", will use resolutionMethod="${resolutionMethod || 'per-row fallback'}"`);
+
                 
                 // If sheet-level bottle wasn't resolved, try per-row fallback logic
                 if (sheetBottleId === 'MISSING') {
@@ -686,22 +690,22 @@ exports.importPreview = async (req, res) => {
                         // Row's own bottle text matched
                         resolvedBottleId = rowResult.rowBottleId;
                         resolutionMethod = 'ROW_SELF';
-                        console.log(`  → [BOTTLE FALLBACK] ROW_SELF: Row's bottle text "${rowResult.bottleNameText}" matched to ${resolvedBottleId}`);
+
                     } else if (distinctBottlesFound.size === 1) {
                         // Only one distinct bottle found across entire sheet - all rows inherit it
                         resolvedBottleId = Array.from(distinctBottlesFound)[0];
                         resolutionMethod = 'SHEET_FALLBACK_SINGLE';
-                        console.log(`  → [BOTTLE FALLBACK] SHEET_FALLBACK_SINGLE: Using the one bottle found in sheet: ${resolvedBottleId}`);
+
                     } else if (distinctBottlesFound.size > 1) {
                         // Ambiguous - multiple bottles in sheet, can't pick one for rows with no text
                         resolvedBottleId = 'MISSING';
                         resolutionMethod = 'AMBIGUOUS';
-                        console.log(`  → [BOTTLE FALLBACK] AMBIGUOUS: Sheet has ${distinctBottlesFound.size} different bottles, can't resolve this row`);
+
                     } else {
                         // No bottles found anywhere - remain MISSING
                         resolvedBottleId = 'MISSING';
                         resolutionMethod = 'NO_BOTTLES';
-                        console.log(`  → [BOTTLE FALLBACK] NO_BOTTLES: No bottles found anywhere in sheet`);
+
                     }
                 }
 
@@ -723,15 +727,14 @@ exports.importPreview = async (req, res) => {
                 record.sheetName = sheetName;
 
                 incomingRecords.push(record);
-                console.log(`  → ADDED to incomingRecords (total: ${incomingRecords.length}), Resolution: ${resolutionMethod}, Format: ${sheetFormat}`);
+
             }
 
             if (incomingRecords.length > 0) {
-                console.log(`[EXISTING PLANS CHECK START] Sheet "${sheetName}": ${incomingRecords.length} records to check`);
+
                 
                 // CHECK EXISTING PLANS: For each record, count how many matching records exist in database
                 // This helps users see what duplicates already exist
-                const allBottles = await BottlePerBox.find({ isDeleted: false }).lean();
                 const bottleNameToId = new Map();
                 for (const bottle of allBottles) {
                     bottleNameToId.set(bottle.bottleName, bottle._id);
@@ -750,40 +753,49 @@ exports.importPreview = async (req, res) => {
                         continue;
                     }
 
-                    // Get bottle ID
+                    // Get bottle ID - use bottle master to get bottleName for plan lookup
                     const bottleId = bottleNameToId.get(record.bottleNameRaw);
                     if (!bottleId) {
                         record.existingPlans = '-';
                         continue;
                     }
 
-                    // Build the duplicate query - same logic as commit function
-                    const docDate = record.incomingDate;
-                    const itemQty = record.qty;
+                    // Find the bottle name from master for plan lookup
+                    const bottleMaster = allBottles.find(b => b._id?.toString() === bottleId?.toString());
+                    const bottleNameForPlan = bottleMaster ? (bottleMaster.bottleName || bottleMaster.plainBottleName) : record.bottleNameRaw;
 
-                    const duplicateQuery = {
-                        billToId: new mongoose.Types.ObjectId(record.companyId),
-                        documentDate: docDate,
-                        deliveryNumber: record.challanNo || null,
-                        'items.bottleId': bottleId,
-                        'items.box': record.noOfBox,
-                        'items.qty': itemQty,
-                        'items.totalQty': record.totalQty,
+                    // Check for existing LACQUER PLANS on the same date - not duplicate incoming!
+                    const planDate = record.incomingDate;
+                    const planStartDate = new Date(planDate);
+                    planStartDate.setHours(0, 0, 0, 0);
+                    const planEndDate = new Date(planDate);
+                    planEndDate.setHours(23, 59, 59, 999);
+
+                    // Count LacquerPlan rows for this bottle on this date
+                    const LacquerPlan = require('../models/LacquerPlan');
+                    const lacquerPlans = await LacquerPlan.countDocuments({
+                        companyId: new mongoose.Types.ObjectId(record.companyId),
+                        bottleName: bottleNameForPlan,
+                        planDate: {
+                            $gte: planStartDate,
+                            $lte: planEndDate
+                        },
                         isDeleted: false
-                    };
+                    });
 
-                    // Count matching records
-                    const existingCount = await Incoming.countDocuments(duplicateQuery);
-                    // Only set a value if existing count > 0, otherwise keep as '-'
-                    if (existingCount > 0) {
-                        record.existingPlans = existingCount.toString();
+                    // If Lacquer plans exist, show count
+                    if (lacquerPlans > 0) {
+                        record.existingPlans = lacquerPlans.toString();
+                        foundCount++;
+                    } else {
+                        record.existingPlans = '-';
                     }
+
                     checkedCount++;
-                    if (existingCount > 0) foundCount++;
-                    console.log(`[EXISTING PLANS] Row ${record.excelRowNumber}: bottle=${record.bottleNameRaw}, date=${docDate}, challan=${record.challanNo}, existingCount=${existingCount}, existingPlans="${record.existingPlans}"`);
+
                 }
                 
-                console.log(`[EXISTING PLANS CHECK END] Sheet "${sheetName}": Checked ${checkedCount} records, Found ${foundCount} with existing plans`);
+
 
                 const sheetSummary = {
                     sheetName,
@@ -797,7 +809,7 @@ exports.importPreview = async (req, res) => {
                         if (r.existingPlans && r.existingPlans !== '-') {
                             const count = parseInt(r.existingPlans);
                             if (!isNaN(count)) {
-                                console.log(`[REDUCE] Row ${r.excelRowNumber}: existingPlans="${r.existingPlans}", adding ${count}, sum now = ${sum + count}`);
+
                                 return sum + count;
                             }
                         }
@@ -809,7 +821,7 @@ exports.importPreview = async (req, res) => {
                     bottleResolutionMethod: sheetBottleId !== 'MISSING' ? 'OUTER' : 'INNER_FALLBACK'
                 };
                 
-                console.log(`[SHEET SUMMARY] Sheet "${sheetName}": totalRows=${sheetSummary.totalRows}, validRows=${sheetSummary.validRows}, invalidRows=${sheetSummary.invalidRows}, existingPlansCount=${sheetSummary.existingPlansCount}`);
+
 
                 // If outer bottle matching failed, add suggestions from inner fallback
                 if (sheetBottleId === 'MISSING') {
@@ -875,16 +887,7 @@ exports.importPreview = async (req, res) => {
         }
         const detectedFormatsList = Array.from(detectedFormats).sort();
 
-        console.log('[PREVIEW RESPONSE - BEFORE SEND]', {
-            totalSheets: allRecords.length,
-            sheetsWithExistingPlans: allRecords.map(s => ({
-                sheetName: s.sheetName,
-                existingPlansCount: s.existingPlansCount,
-                totalRows: s.totalRows,
-                validRows: s.validRows,
-                invalidRows: s.invalidRows
-            }))
-        });
+
 
         return res.status(200).json({
             success: true,
@@ -917,7 +920,7 @@ exports.commitImport = async (req, res) => {
             return res.status(400).json({ success: false, message: 'Invalid payload' });
         }
 
-        console.log(`[INCOMING IMPORT COMMIT] Starting commit with ${sheetsToImport.length} sheets`);
+
         
         // CRITICAL: Log the incoming payload structure
         let totalRecordsInPayload = 0;
@@ -926,35 +929,46 @@ exports.commitImport = async (req, res) => {
             const sheetValid = sheet.incomingRecords ? sheet.incomingRecords.filter(r => r.isValid).length : 0;
             totalRecordsInPayload += sheet.incomingRecords ? sheet.incomingRecords.length : 0;
             totalValidRecordsInPayload += sheetValid;
-            console.log(`[INCOMING IMPORT COMMIT PAYLOAD] Sheet "${sheet.sheetName}": ${sheet.incomingRecords ? sheet.incomingRecords.length : 0} total records, ${sheetValid} valid`);
+
         }
-        console.log(`[INCOMING IMPORT COMMIT PAYLOAD] TOTAL: ${totalRecordsInPayload} records, ${totalValidRecordsInPayload} valid`);
+
 
         let totalIncomingImported = 0;
         let totalBottlesUpdated = 0;
         let totalSkipped = 0;
+        let plansCreated = 0;
         const skippedRecords = []; // Track skipped records with reasons
 
         for (const sheetData of sheetsToImport) {
             const { sheetName, incomingRecords } = sheetData;
-            console.log(`[INCOMING IMPORT COMMIT] Processing sheet "${sheetName}" with ${incomingRecords.length} records`);
+
             
             const validRecords = incomingRecords.filter(r => r.isValid);
-            console.log(`[INCOMING IMPORT COMMIT] Sheet "${sheetName}": ${validRecords.length} valid records out of ${incomingRecords.length}`);
+
 
             if (validRecords.length === 0) {
-                console.log(`[INCOMING IMPORT COMMIT] Sheet "${sheetName}": No valid records, skipping`);
+
                 continue;
             }
 
             // Resolve bottle IDs from names
             const bottleNameToId = new Map();
-            const allBottles = await BottlePerBox.find({ isDeleted: false }).lean();
-            console.log(`[INCOMING IMPORT COMMIT] Found ${allBottles.length} bottles in master`);
+            const rawBottles = await BottlePerBox.find({ isDeleted: false }).lean();
+            const allCompanies = await Company.find({ isDeleted: { $ne: true } }).lean();
+            let commitCompanyId = req.body && req.body.companyId ? req.body.companyId : null;
+            if (!commitCompanyId && validRecords.length > 0 && validRecords[0].companyId) {
+                commitCompanyId = validRecords[0].companyId;
+            }
+            const allBottles = await getCompanyFilteredBottles(commitCompanyId, allCompanies, rawBottles);
+
             
             for (const record of validRecords) {
                 if (!bottleNameToId.has(record.bottleNameRaw)) {
-                    const bottle = allBottles.find(b => b.bottleName === record.bottleNameRaw);
+                    const bottle = allBottles.find(b => 
+                        b.bottleName === record.bottleNameRaw ||
+                        b.plainBottleName === record.bottleNameRaw ||
+                        (Array.isArray(b.bottleNames) && b.bottleNames.includes(record.bottleNameRaw))
+                    );
                     if (!bottle) {
                         console.warn(`[INCOMING IMPORT COMMIT] Bottle name "${record.bottleNameRaw}" not found in master. Available bottles:`, allBottles.map(b => b.bottleName));
                     }
@@ -986,7 +1000,7 @@ exports.commitImport = async (req, res) => {
                 rowsToInsert.push({ record, bottleId });
             }
             
-            console.log(`[INCOMING IMPORT COMMIT] Sheet "${sheetName}": ${rowsToInsert.length} rows after bottle ID filtering`);
+
             
             // Second pass: check only against EXISTING database records (not against rows in this batch)
             for (const { record, bottleId } of rowsToInsert) {
@@ -994,7 +1008,7 @@ exports.commitImport = async (req, res) => {
                 const docDate = record.isOpeningBalance ? null : record.incomingDate;
                 const itemQty = record.qty;
                 
-                console.log(`[INCOMING IMPORT COMMIT] Row ${record.excelRowNumber}: Checking for duplicate in DB (company=${record.companyId}, bottle=${record.bottleNameRaw}, date=${docDate}, challan=${record.challanNo || 'BLANK'}, qty=${record.totalQty})`);
+
                 
                 // Query for exact duplicate - CRITICAL: Only check against existing DB records with isDeleted: false
                 const duplicateQuery = {
@@ -1011,7 +1025,7 @@ exports.commitImport = async (req, res) => {
                 const existingDuplicate = await Incoming.findOne(duplicateQuery);
 
                 if (existingDuplicate) {
-                    console.log(`[INCOMING IMPORT DUPLICATE] Row ${record.excelRowNumber}: MATCHED existing DB record ID ${existingDuplicate._id} (isDeleted: ${existingDuplicate.isDeleted})`);
+
                     totalSkipped++;
                     skippedRecords.push({
                         excelRowNumber: record.excelRowNumber,
@@ -1019,22 +1033,23 @@ exports.commitImport = async (req, res) => {
                     });
                     continue;
                 } else {
-                    console.log(`[INCOMING IMPORT COMMIT] Row ${record.excelRowNumber}: No existing duplicate in DB, will insert`);
+
                 }
 
-                // For OLD STOCK records, use today's date as documentDate since no actual date is provided
+                // For records without a date, use today's date as documentDate
+                const effectiveDate = docDate || new Date();
                 const incomingRecord = new Incoming({
-                    date: docDate,
-                    documentDate: docDate,
+                    date: effectiveDate,
+                    documentDate: effectiveDate,
                     deliveryNumber: record.challanNo || null,
                     billToId: new mongoose.Types.ObjectId(record.companyId),
-                    createdBy: req.user._id,
+                    createdBy: req.user?._id || null,
                     items: [
                         {
                             bottleId,
-                            box: record.noOfBox,
-                            qty: itemQty,
-                            totalQty: record.totalQty
+                            box: Number(record.noOfBox) || 0,
+                            qty: Number(itemQty) || 0,
+                            totalQty: Number(record.totalQty) || 0
                         }
                     ]
                 });
@@ -1062,7 +1077,7 @@ exports.commitImport = async (req, res) => {
                 });
             }
 
-            console.log(`[INCOMING IMPORT COMMIT] Sheet "${sheetName}": Ready to save ${incomingDocs.length} documents (from ${validRecords.length} valid records after duplicate/bottle ID filtering)`);
+
 
             // Insert Incoming records
             if (incomingDocs.length > 0) {
@@ -1072,8 +1087,67 @@ exports.commitImport = async (req, res) => {
                         const sourceRecord = docSourceRecordMap[i]; // Use the mapping
                         try {
                             const saved = await doc.save();
-                            console.log(`[INCOMING IMPORT COMMIT] Row ${sourceRecord.excelRowNumber} saved successfully: ${saved._id}`);
+
                             totalIncomingImported++;
+
+                            // NEW: Create dispatch plans from this incoming record
+                            // For each item in the incoming, create a LacquerPlan row
+                            const LacquerPlan = require('../models/LacquerPlan');
+                            for (const item of saved.items) {
+                                try {
+                                    // Find bottle name from BottlePerBox master
+                                    const bottt = await BottlePerBox.findById(item.bottleId);
+                                    if (!bottt) {
+                                        console.warn(`[INCOMING IMPORT COMMIT] Row ${sourceRecord.excelRowNumber}: Bottle master not found for ID ${item.bottleId}`);
+                                        continue;
+                                    }
+
+                                    const bottleNameForPlan = bottt.bottleName || bottt.plainBottleName;
+
+                                    // Check if plan already exists for this bottle on this date
+                                    const planDate = new Date(saved.documentDate);
+                                    const planStartDate = new Date(planDate);
+                                    planStartDate.setHours(0, 0, 0, 0);
+                                    const planEndDate = new Date(planDate);
+                                    planEndDate.setHours(23, 59, 59, 999);
+
+                                    const existingPlan = await LacquerPlan.findOne({
+                                        companyId: saved.billToId,
+                                        bottleName: bottleNameForPlan,
+                                        planDate: {
+                                            $gte: planStartDate,
+                                            $lte: planEndDate
+                                        },
+                                        isDeleted: false
+                                    });
+
+                                    if (existingPlan) {
+
+                                        continue;
+                                    }
+
+                                    // Create new LacquerPlan from incoming
+                                    const newPlan = new LacquerPlan({
+                                        planDate: saved.documentDate,
+                                        bottleName: bottleNameForPlan,
+                                        companyId: saved.billToId,
+                                        orderQty: item.totalQty || 0,
+                                        coatingCompletedQty: 0,
+                                        balanceToMake: item.totalQty || 0,
+                                        status: true,
+                                        remarks: `Created from incoming: ${saved.deliveryNumber || 'No challan'}`,
+                                        plainStock: item.totalQty || 0,
+                                        importGroupId: null,
+                                        isEditedAfterImport: false
+                                    });
+
+                                    await newPlan.save();
+                                    plansCreated++;
+
+                                } catch (planErr) {
+                                    console.error(`[INCOMING IMPORT COMMIT] Row ${sourceRecord.excelRowNumber}: Error creating plan: ${planErr.message}`);
+                                }
+                            }
                         } catch (docErr) {
                             console.error(`[INCOMING IMPORT COMMIT] FAILED to save Row ${sourceRecord.excelRowNumber}: ${docErr.message}`, docErr);
                             totalSkipped++;
@@ -1093,7 +1167,7 @@ exports.commitImport = async (req, res) => {
                 try {
                     await PlainBottleStock.bulkWrite(stockBulkOps);
                     totalBottlesUpdated += stockBulkOps.length;
-                    console.log(`[INCOMING IMPORT COMMIT] Stock updated for ${stockBulkOps.length} bottles`);
+
                 } catch (err) {
                     console.warn(`[INCOMING IMPORT COMMIT] Error updating stock: ${err.message}`);
                 }
@@ -1105,15 +1179,19 @@ exports.commitImport = async (req, res) => {
         if (totalSkipped > 0) {
             message += `, Skipped ${totalSkipped} duplicate(s)`;
         }
+        if (plansCreated > 0) {
+            message += `, Created ${plansCreated} dispatch plan(s)`;
+        }
 
-        console.log(`[INCOMING IMPORT COMMIT] Complete: ${message}`);
-        console.log(`[INCOMING IMPORT COMMIT] RECONCILIATION: Payload had ${totalValidRecordsInPayload} valid rows → Imported ${totalIncomingImported} + Skipped ${totalSkipped} = ${totalIncomingImported + totalSkipped} accounted for, LOST: ${totalValidRecordsInPayload - (totalIncomingImported + totalSkipped)}`);
+
+
 
         return res.status(200).json({
             success: true,
             message: message,
             data: {
                 incomingImported: totalIncomingImported,
+                plansCreated: plansCreated,
                 bottlesUpdated: totalBottlesUpdated,
                 skipped: totalSkipped,
                 validRowsReceived: totalValidRecordsInPayload,

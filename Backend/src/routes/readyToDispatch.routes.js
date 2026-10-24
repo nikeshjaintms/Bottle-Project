@@ -3,6 +3,10 @@ const router = express.Router();
 const readyToDispatchController = require("../controllers/readyToDispatch.controller");
 const { auth } = require("../middleware/auth.middleware");
 
+router.post("/from-plan", auth, readyToDispatchController.createFromPlan);
+router.get("/companies-summary", auth, readyToDispatchController.getCompaniesSummary);
+router.get("/options/plain-bottles", auth, readyToDispatchController.getPlainBottleOptions);
+router.get("/options/variants", auth, readyToDispatchController.getVariantOptions);
 router.get("/", auth, readyToDispatchController.getAllReadyToDispatch);
 router.get("/:id", auth, readyToDispatchController.getReadyToDispatchById);
 router.post("/", auth, readyToDispatchController.createReadyToDispatch);

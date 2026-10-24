@@ -9,7 +9,12 @@
  */
 const normalizeBottleForMatching = (str) => {
     if (!str) return '';
-    return String(str).trim().replace(/\s+/g, ' ').toUpperCase();
+    return String(str)
+        .trim()
+        .replace(/\s+/g, ' ')
+        .toUpperCase()
+        .replace(/\bROLL\s+ON\b/g, 'ROLLON')
+        .replace(/\bROLL-ON\b/g, 'ROLLON');
 };
 
 /**
@@ -75,40 +80,56 @@ const matchBottleNameFromMaster = (excelText, allBottles) => {
     const searchText = String(excelText).trim();
     const normalizedSearch = normalizeBottleForMatching(searchText);
     const strictNormSearch = normalizeBottle(searchText);
-    
-    // Stage 1: Exact matches after normalization (trim + collapse spaces + case-insensitive)
-    for (const bottle of allBottles) {
-        const namesToCheck = (bottle.bottleNames && bottle.bottleNames.length > 0)
-            ? bottle.bottleNames
-            : [bottle.bottleName, bottle.plainBottleName].filter(Boolean);
-        
-        for (const name of namesToCheck) {
-            const normalizedName = normalizeBottleForMatching(name);
-            if (normalizedName === normalizedSearch) {
-                return { 
-                    bottleName: bottle.bottleName, 
-                    unmatched: false, 
-                    suggestedBottles: [], 
-                    suggestion: null 
-                };
-            }
+    const searchVariants = [searchText];
+    if (searchText.includes('(')) {
+        const withoutParen = searchText.replace(/\s*\(.*?\)\s*/g, ' ').trim();
+        if (withoutParen && !searchVariants.includes(withoutParen)) {
+            searchVariants.push(withoutParen);
+        }
+        const insideParen = (searchText.match(/\((.*?)\)/) || [])[1]?.trim();
+        if (insideParen && !searchVariants.includes(insideParen)) {
+            searchVariants.push(insideParen);
         }
     }
     
-    // Stage 2: Strict normalized exact matches (alphanumeric only)
-    for (const bottle of allBottles) {
-        const namesToCheck = (bottle.bottleNames && bottle.bottleNames.length > 0)
-            ? bottle.bottleNames
-            : [bottle.bottleName, bottle.plainBottleName].filter(Boolean);
+    for (const currentSearch of searchVariants) {
+        const normalizedSearch = normalizeBottleForMatching(currentSearch);
+        const strictNormSearch = normalizeBottle(currentSearch);
         
-        for (const name of namesToCheck) {
-            if (normalizeBottle(name) === strictNormSearch) {
-                return { 
-                    bottleName: bottle.bottleName, 
-                    unmatched: false, 
-                    suggestedBottles: [], 
-                    suggestion: null 
-                };
+        // Stage 1: Exact matches after normalization (trim + collapse spaces + case-insensitive)
+        for (const bottle of allBottles) {
+            const namesToCheck = (bottle.bottleNames && bottle.bottleNames.length > 0)
+                ? bottle.bottleNames
+                : [bottle.bottleName, bottle.plainBottleName].filter(Boolean);
+            
+            for (const name of namesToCheck) {
+                const normalizedName = normalizeBottleForMatching(name);
+                if (normalizedName === normalizedSearch) {
+                    return { 
+                        bottleName: bottle.bottleName, 
+                        unmatched: false, 
+                        suggestedBottles: [], 
+                        suggestion: null 
+                    };
+                }
+            }
+        }
+        
+        // Stage 2: Strict normalized exact matches (alphanumeric only)
+        for (const bottle of allBottles) {
+            const namesToCheck = (bottle.bottleNames && bottle.bottleNames.length > 0)
+                ? bottle.bottleNames
+                : [bottle.bottleName, bottle.plainBottleName].filter(Boolean);
+            
+            for (const name of namesToCheck) {
+                if (normalizeBottle(name) === strictNormSearch) {
+                    return { 
+                        bottleName: bottle.bottleName, 
+                        unmatched: false, 
+                        suggestedBottles: [], 
+                        suggestion: null 
+                    };
+                }
             }
         }
     }

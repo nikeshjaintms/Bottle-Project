@@ -78,6 +78,11 @@ export default function EditLacquerPlan() {
   const [missingSpecData, setMissingSpecData] = useState({
      bottleName: '', brandId: '', companyName: '', brandName: '', bottlePerBox: '', code: '', printingTypeId: '', printingColorId: '', rowIndex: null
   });
+
+  const [showMissingPlainBottleModal, setShowMissingPlainBottleModal] = useState(false);
+  const [missingPlainBottleData, setMissingPlainBottleData] = useState({
+     bottleName: '', brandId: '', companyId: '', companyName: '', brandName: '', bottlePerBox: '', printingTypeId: '', printingColorId: '', status: true
+  });
   const [creatingSpec, setCreatingSpec] = useState(false);
 
   // Compute shared plain stock pool stats across EVERY row in the entire form (all sections)
@@ -245,25 +250,34 @@ export default function EditLacquerPlan() {
   }, [location.state]);
 
   const addEntryRow = (groupId) => {
-    const groupRows = rows.filter(r => r.sharedGroupId === groupId || r.sharedGroupId === undefined);
-    const lastRow = groupRows.length > 0 ? groupRows[groupRows.length - 1] : null;
-    const lastIndex = rows.findLastIndex(r => r.sharedGroupId === groupId || r.sharedGroupId === undefined);
-    
+    // New row starts with empty bottle name (don't copy from previous)
     const newRow = {
       sharedGroupId: groupId,
-      companyId: lastRow ? lastRow.companyId : '',
-      brandId: lastRow ? lastRow.brandId : '',
-      bottleName: lastRow ? lastRow.bottleName : '',
-      process: lastRow ? lastRow.process : 'C',
-      plainStock: lastRow ? lastRow.plainStock : 0,
-      boxQty: lastRow ? lastRow.boxQty : '',
-      variantId: [], colour: '', orderQty: '', coatedQty: '',
-      balanceToMake: '', dispatchBalance: 0, soldQty: 0, noOfBoxes: '', remarks: ''
+      companyId: '',
+      brandId: '',
+      bottleName: '',  // Empty, not copied
+      plainBottle: '',  // Empty, not copied
+      variantId: [],
+      colour: '',
+      coatingShade: '',
+      textColor: '',
+      process: 'C',
+      plainStock: 0,
+      plainBottleStock: 0,
+      boxQty: '',
+      orderQty: '',
+      coatedQty: '',
+      producedQty: 0,
+      balanceToMake: '',
+      dispatchBalance: 0,
+      soldQty: 0,
+      noOfBoxes: '',
+      readyBoxes: '',
+      remarks: '',
+      components: {}
     };
     
-    const newRows = [...rows];
-    newRows.splice(lastIndex !== -1 ? lastIndex + 1 : rows.length, 0, newRow);
-    setRows(newRows);
+    setRows([...rows, newRow]);
   };
 
   const addNewSection = () => {
@@ -333,42 +347,87 @@ export default function EditLacquerPlan() {
     currentRow[field] = value;
 
     const syncAndSetRows = (rowsArray) => {
-       if (currentRow.sharedGroupId) {
-          rowsArray.forEach(r => {
-             if (r.sharedGroupId === currentRow.sharedGroupId && r !== currentRow) {
-                r.bottleName = currentRow.bottleName;
-                // Process is per-shade: only sync to rows with the same coating shade
-                if (r.colour === currentRow.colour) {
-                  r.process = currentRow.process;
-                }
-                r.plainStock = currentRow.plainStock;
-                r.boxQty = currentRow.boxQty;
-             }
-          });
-       }
+       // Don't sync bottle-related fields - each row should be independent
        setRows(rowsArray);
     };
 
-    if (field === 'bottleName' || field === 'plainBottle') {
-       const valStr = (value || '').trim();
-       currentRow.bottleName = valStr;
-       currentRow.plainBottle = valStr;
+    if (field === 'bottleName' || field === 'plainBottle' || field === 'plainBottleId') {
+       // Handle both old string-based selection and new ID-based selection
+       let valStr = '';
+       let plainBottleId = '';
+       
+       if (field === 'plainBottleId') {
+         // New flow: plainBottleId selected, get name from plainBottleOptions
+         plainBottleId = value;
+         const selectedOption = plainBottleOptions.find(opt => opt.value === value);
+         if (selectedOption) {
+           valStr = selectedOption.plainBottleName || selectedOption.label;
+           currentRow.plainBottleId = plainBottleId;
+           currentRow.bottleName = valStr;
+           currentRow.plainBottle = valStr;
+           
+           // Fetch printing type and color from BottleSpec
+           try {
+             const bottleSpecRes = await API.get('/bottle-specs', {
+               params: { 
+                 bottleName: valStr,
+                 brandId: currentRow.brandId,
+                 fields: 'printingTypeId,printingColorId'
+               }
+             });
+             if (bottleSpecRes.data?.success && bottleSpecRes.data.data && bottleSpecRes.data.data.length > 0) {
+               const spec = bottleSpecRes.data.data[0];
+               if (spec.printingTypeId) {
+                 currentRow.printingTypeId = spec.printingTypeId._id || spec.printingTypeId;
+               }
+               if (spec.printingColorId) {
+                 currentRow.printingColorId = spec.printingColorId._id || spec.printingColorId;
+               }
+             }
+           } catch (err) {
+             console.error('Failed to fetch printing info from BottleSpec', err);
+           }
+           
+           // SYNC TO GROUP: If this row has a sharedGroupId, sync plain bottle to all rows in the group
+           const groupId = currentRow.sharedGroupId;
+           if (groupId) {
+             newRows.forEach(r => {
+               if (r.sharedGroupId === groupId) {
+                 r.plainBottleId = plainBottleId;
+                 r.bottleName = valStr;
+                 r.plainBottle = valStr;
+                 r.printingTypeId = currentRow.printingTypeId;
+                 r.printingColorId = currentRow.printingColorId;
+               }
+             });
+           }
+         } else {
+           currentRow.plainBottleId = '';
+           currentRow.bottleName = '';
+           currentRow.plainBottle = '';
+           currentRow.printingTypeId = '';
+           currentRow.printingColorId = '';
+           currentRow.boxQty = '';
+           currentRow.plainStock = 0;
+           currentRow.variantId = [];
+           currentRow.colour = '';
+           syncAndSetRows(newRows);
+           return;
+         }
+       } else {
+         // Old flow: bottleName/plainBottle string selected
+         valStr = (value || '').trim();
+         currentRow.bottleName = valStr;
+         currentRow.plainBottle = valStr;
+       }
 
        if (!valStr) {
           currentRow.boxQty = '';
           currentRow.plainStock = 0;
           currentRow.variantId = [];
           currentRow.colour = '';
-          if (currentRow.sharedGroupId) {
-             newRows.forEach(r => {
-                if (r.sharedGroupId === currentRow.sharedGroupId && r !== currentRow) {
-                   r.bottleName = '';
-                   r.plainBottle = '';
-                   r.boxQty = '';
-                   r.plainStock = 0;
-                }
-             });
-          }
+          currentRow.printingTypeId = '';
+          currentRow.printingColorId = '';
           syncAndSetRows(newRows);
           return;
        }
@@ -391,7 +450,6 @@ export default function EditLacquerPlan() {
        if (existingRow && existingRow.sharedGroupId) {
            const oldGroupId = currentRow.sharedGroupId;
            currentRow.sharedGroupId = existingRow.sharedGroupId;
-           currentRow.process = existingRow.process;
            currentRow.plainStock = existingRow.plainStock;
            currentRow.boxQty = existingRow.boxQty;
 
@@ -399,7 +457,6 @@ export default function EditLacquerPlan() {
                newRows.forEach(r => {
                    if (r.sharedGroupId === oldGroupId) {
                        r.sharedGroupId = existingRow.sharedGroupId;
-                       r.process = existingRow.process;
                        r.plainStock = existingRow.plainStock;
                        r.boxQty = existingRow.boxQty;
                        r.bottleName = valStr;
@@ -453,10 +510,10 @@ export default function EditLacquerPlan() {
       }
 
       if (currentRow.sharedGroupId) {
+        // SYNC plainStock and boxQty to all rows in the same group
         newRows.forEach(r => {
-          if (r.sharedGroupId === currentRow.sharedGroupId && r !== currentRow) {
-            r.bottleName = currentRow.bottleName;
-            r.plainBottle = currentRow.bottleName;
+          if (r.sharedGroupId === currentRow.sharedGroupId) {
+            r.plainStock = currentRow.plainStock;
             r.boxQty = currentRow.boxQty;
           }
         });
@@ -476,13 +533,6 @@ export default function EditLacquerPlan() {
             }));
           }
           currentRow.plainStock = fetchedStock;
-          if (currentRow.sharedGroupId) {
-            newRows.forEach(r => {
-              if (r.sharedGroupId === currentRow.sharedGroupId) {
-                r.plainStock = fetchedStock;
-              }
-            });
-          }
 
           // Insufficient-stock warning on bottle change: warn only when that row's own Order Qty > opening stock of the pool
           if (pk && checkRowStockWarning(currentRow.orderQty, fetchedStock)) {
@@ -816,6 +866,56 @@ export default function EditLacquerPlan() {
      }
   };
 
+  const handleSaveMissingPlainBottle = async () => {
+     if (!missingPlainBottleData.bottleName) return;
+     setCreatingSpec(true);
+     try {
+        // Create plain bottle entry
+        await API.post('/plain-bottle', {
+           bottleName: missingPlainBottleData.bottleName.toUpperCase(),
+           companyId: missingPlainBottleData.companyId,
+           status: true
+        });
+        
+        // Create bottle-per-box entry if provided
+        if (missingPlainBottleData.bottlePerBox) {
+           await API.post('/bottle-per-box', {
+              bottleName: missingPlainBottleData.bottleName.toUpperCase(),
+              bottlePerBox: missingPlainBottleData.bottlePerBox,
+              status: true
+           });
+        }
+        
+        // Refresh plain bottles list
+        try {
+           const res = await API.get('/plain-bottle');
+           if (res.data?.success) {
+              setPlainBottles(res.data.data);
+           }
+        } catch (err) {
+           console.error('Error fetching plain bottles:', err);
+        }
+        
+        Swal.fire({
+           icon: 'success',
+           title: 'Plain Bottle Created',
+           text: `"${missingPlainBottleData.bottleName}" created for ${missingPlainBottleData.companyName}!`,
+           showConfirmButton: false,
+           timer: 3000,
+           toast: true,
+           position: 'top-end',
+        });
+        
+        setShowMissingPlainBottleModal(false);
+        
+     } catch (error) {
+        console.error('Error creating plain bottle:', error);
+        Swal.fire({ icon: 'error', title: 'Error', text: error.response?.data?.message || 'Failed to create plain bottle' });
+     } finally {
+        setCreatingSpec(false);
+     }
+  };
+
   const handleAddVariantClick = (bottleName, brandId, rowIndex, colour) => {
       let existingSpec = (bottleSpecs || []).find(bs => bs.bottleName === bottleName && (bs.brandId?._id || bs.brandId)?.toString() === brandId?.toString());
       
@@ -1030,8 +1130,14 @@ export default function EditLacquerPlan() {
     const unique = new Map();
     bottlePerBoxes.forEach(b => {
       const name = (b.plainBottleName || b.bottleName || '').trim();
-      if (name && !unique.has(name)) {
-        unique.set(name, { value: name, label: name });
+      const id = b._id?.toString() || name;
+      if (name && !unique.has(id)) {
+        unique.set(id, { 
+          value: id,  // Store the BottlePerBox ID
+          label: name,
+          plainBottleName: name,
+          bottlePerBoxData: b  // Store full object for reference
+        });
       }
     });
     return Array.from(unique.values()).sort((a, b) => a.label.localeCompare(b.label));
@@ -1040,8 +1146,8 @@ export default function EditLacquerPlan() {
 
 
   return (
-    <div className="page-content">
-      <div className="d-flex justify-content-between align-items-end mb-4">
+    <div className="page-content lacquer-plan-page lacquer-plan-form-page">
+      <div className="d-flex justify-content-between align-items-end mb-4 lacquer-plan-form-header">
         <div className="d-flex align-items-center gap-3">
           <button type="button" onClick={() => navigate(-1)} className="btn-ghost border-0 shadow-sm" style={{ width: 40, height: 40, borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <i className="bi bi-arrow-left fs-5" />
@@ -1060,10 +1166,10 @@ export default function EditLacquerPlan() {
 
       <div className="row justify-content-center">
         <div className="col-xl-12 col-lg-12">
-          <div className="dash-card border-0 shadow-sm p-4">
+          <div className="dash-card border-0 shadow-sm p-4 lacquer-plan-form-card">
             {error && <div className="alert alert-danger">{error}</div>}
 
-            <form onSubmit={handleSubmit}>
+            <form onSubmit={handleSubmit} className="lacquer-plan-form">
               <div className="row g-3 mb-4 pb-4 border-bottom align-items-center">
                 <div className="col-md-3">
                   <label className="form-label fw-bold small">Common Plan Date <span className="text-danger">*</span></label>
@@ -1072,7 +1178,7 @@ export default function EditLacquerPlan() {
                 </div>
               </div>
 
-              <div className="bg-white border border-light-subtle rounded-3 p-4 mb-4 shadow-sm position-relative">
+              <div className="bg-white border border-light-subtle rounded-3 p-4 mb-4 shadow-sm position-relative lacquer-plan-section">
 
 
                 {(() => {
@@ -1110,7 +1216,8 @@ export default function EditLacquerPlan() {
                       const matchingBottleNames = new Set(matchingSpecs.map(s => (s.bottleName || '').trim().toUpperCase()).filter(Boolean));
 
                       filteredBottleOptions = plainBottleOptions.filter(opt => {
-                        const optName = opt.value.trim().toUpperCase();
+                        // Now opt.value is an ID, opt.label is the name
+                        const optName = (opt.label || opt.plainBottleName || '').trim().toUpperCase();
                         if (matchingBottleNames.has(optName)) return true;
                         const matchedBox = (bottlePerBoxes || []).find(b => 
                           (b.plainBottleName || b.bottleName || '').trim().toUpperCase() === optName
@@ -1162,13 +1269,14 @@ export default function EditLacquerPlan() {
                           </div>
                         </div>
 
-                        <div className="d-flex justify-content-between align-items-center mb-3 pb-2 border-bottom">
+                        <div className="d-flex justify-content-between align-items-center mb-3 pb-2 border-bottom lacquer-plan-group-toolbar">
                           {(() => {
-                            const sectionBottleName = group.items.find(r => r.bottleName)?.bottleName || group.bottleName;
+                            const companyName = gCompanyName || `Company ${groupIndex}`;
+                            const brandName = (brandOptions.find(o => o.value === gBrandId)?.label) || `Brand ${groupIndex}`;
                             return (
                               <h5 className="mb-0 text-primary fw-bold">
                                 <i className="bi bi-box-seam me-2"></i>
-                                {sectionBottleName ? sectionBottleName : `Plan Section ${groupIndex + 1}`}
+                                {`${companyName} - ${brandName}`}
                               </h5>
                             );
                           })()}
@@ -1179,7 +1287,7 @@ export default function EditLacquerPlan() {
                           )}
                         </div>
 
-                        <div className="table-responsive mb-3">
+                        <div className="table-responsive mb-3 lacquer-plan-entry-table">
                           <table className="table table-bordered align-middle table-sm" style={{ minWidth: '2400px' }}>
                             <thead className="table-light">
                               <tr>
@@ -1201,49 +1309,58 @@ export default function EditLacquerPlan() {
                               </tr>
                             </thead>
                             <tbody className="border-top-0">
-                              {group.items.map((rowItem, localIndex) => {
-                                const index = rowItem.originalIndex;
-                                const row = rowItem;
+                              {(() => {
+                                // Calculate rowSpans for grouped cells
+                                const visibleGroupSpans = {};
+                                group.items.forEach(r => {
+                                  if (r.sharedGroupId) {
+                                    visibleGroupSpans[r.sharedGroupId] = (visibleGroupSpans[r.sharedGroupId] || 0) + 1;
+                                  }
+                                });
+                                const renderedGroups = new Set();
+                                
+                                return group.items.map((rowItem, localIndex) => {
+                                  const index = rowItem.originalIndex;
+                                  const row = rowItem;
 
-                                const rowPoolKey = getPoolKey(row.companyId, row.bottleName, bottlePerBoxes);
-                                const poolInfo = (rowPoolKey && poolDerivedStats[rowPoolKey]) || { openingStock: 0, totalCoated: 0, totalOrder: 0, shownStock: 0 };
-                                const currentShownStock = rowPoolKey ? poolInfo.shownStock : (parseFloat(row.plainStock) || 0);
-                                const rowIsExceeding = checkRowStockWarning(row.orderQty, poolInfo.openingStock);
+                                  const rowPoolKey = getPoolKey(row.companyId, row.bottleName, bottlePerBoxes);
+                                  const poolInfo = (rowPoolKey && poolDerivedStats[rowPoolKey]) || { openingStock: 0, totalCoated: 0, totalOrder: 0, shownStock: 0 };
+                                  const currentShownStock = rowPoolKey ? poolInfo.shownStock : (parseFloat(row.plainStock) || 0);
+                                  const rowIsExceeding = checkRowStockWarning(row.orderQty, poolInfo.openingStock);
 
-                                const isGrouped = !!row.sharedGroupId;
-                                const isFirstInGroup = isGrouped && !renderedGroups.has(row.sharedGroupId);
-                                if (isFirstInGroup) renderedGroups.add(row.sharedGroupId);
-                                const rowSpan = isGrouped ? visibleGroupSpans[row.sharedGroupId] : 1;
-                                const renderGroupCell = !isGrouped || isFirstInGroup;
-
-                                let renderShadeGroupCell = true;
-                                let shadeRowSpan = 1;
-                                if (isGrouped) {
-                                    const prevRow = localIndex > 0 ? group.items[localIndex - 1] : null;
-                                    if (prevRow && prevRow.sharedGroupId === row.sharedGroupId && prevRow.colour === row.colour) {
-                                        renderShadeGroupCell = false;
-                                    } else {
-                                        let count = 1;
-                                        for (let i = localIndex + 1; i < group.items.length; i++) {
-                                            if (group.items[i].sharedGroupId === row.sharedGroupId && group.items[i].colour === row.colour) {
-                                                count++;
-                                            } else {
-                                                break;
-                                            }
-                                        }
-                                        shadeRowSpan = count;
-                                    }
-                                }
-
-                                // Process spans the same rows as the shade cell — one process per (shade, group)
-                                const renderProcessCell = renderShadeGroupCell;
-                                const processRowSpan = shadeRowSpan;
+                                  // Calculate rowSpans for grouped cells (matching AddLacquerPlan logic)
+                                  const isGrouped = !!row.sharedGroupId;
+                                  const isFirstInGroup = isGrouped && !renderedGroups.has(row.sharedGroupId);
+                                  if (isFirstInGroup) renderedGroups.add(row.sharedGroupId);
+                                  const rowSpan = isGrouped ? visibleGroupSpans[row.sharedGroupId] : 1;
+                                  
+                                  // Only render grouped cells on first row of group
+                                  const renderGroupCell = !isGrouped || isFirstInGroup;
+                                  const renderShadeGroupCell = true;
+                                  const renderProcessCell = true;
 
                                 // Determine available plain bottle options for this row/section
                                 const currentPlainVal = row.plainBottle || row.bottleName;
                                 let availablePlainBottleOptions = filteredBottleOptions;
                                 
-                                // If a variant is selected on this row, show ALL plain bottles related to that variant NAME
+                                // Get all bottle names already used in OTHER GROUPS (in this section)
+                                // Allow same bottle in same group (sharedGroupId)
+                                const usedBottleNamesInOtherGroups = new Set(
+                                  group.items
+                                    .filter((r, i) => i !== localIndex && r.sharedGroupId !== row.sharedGroupId && (r.plainBottle || r.bottleName))
+                                    .map(r => (r.plainBottle || r.bottleName).trim().toUpperCase())
+                                );
+                                
+                                // Add ALL plain bottles as options (not just brand-specific ones)
+                                const allPlainBottleOptions = (plainBottleOptions || [])
+                                  .filter(pb => !filteredBottleOptions.some(opt => opt.value === pb.value))
+                                  .map(pb => ({ value: pb.value, label: pb.label }));
+                                
+                                // Combine: brand bottles first, then all other bottles
+                                availablePlainBottleOptions = [...filteredBottleOptions, ...allPlainBottleOptions];
+                                
+                                // Build variant-related bottles set (for use in filterOption)
+                                let bottleNamesForCurrentVariant = null;
                                 const currentVarId = (row.variantId && row.variantId.length > 0) ? row.variantId[0] : null;
                                 if (currentVarId) {
                                   const currentVar = (variants || []).find(v => v._id === currentVarId);
@@ -1259,33 +1376,24 @@ export default function EditLacquerPlan() {
                                     const bottleSpecIds = new Set(allVariantsWithSameName.map(v => (v.bottleSpecId?._id || v.bottleSpecId)?.toString()).filter(Boolean));
                                     
                                     // Get all bottle names from these specs
-                                    const bottleNamesForVariants = new Set((bottleSpecs || [])
+                                    bottleNamesForCurrentVariant = new Set((bottleSpecs || [])
                                       .filter(bs => bottleSpecIds.has(bs._id?.toString()))
                                       .map(bs => bs.bottleName?.trim().toUpperCase())
                                       .filter(Boolean)
                                     );
-                                    
-                                    // Filter plain bottle options to only those linked to this variant
-                                    availablePlainBottleOptions = plainBottleOptions.filter(opt => {
-                                      const optUpper = opt.label.trim().toUpperCase();
-                                      if (bottleNamesForVariants.has(optUpper)) return true;
-                                      const matchedBox = (bottlePerBoxes || []).find(b => 
-                                        (b.plainBottleName || b.bottleName || '').trim().toUpperCase() === optUpper
-                                      );
-                                      if (matchedBox) {
-                                        const names = (Array.isArray(matchedBox.bottleNames) && matchedBox.bottleNames.length > 0)
-                                          ? matchedBox.bottleNames
-                                          : [matchedBox.bottleName || matchedBox.plainBottleName].filter(Boolean);
-                                        return names.some(n => bottleNamesForVariants.has(n.trim().toUpperCase()));
-                                      }
-                                      return false;
-                                    });
                                   }
                                 }
 
                                 if (currentPlainVal && !availablePlainBottleOptions.some(o => o.value === currentPlainVal)) {
                                   availablePlainBottleOptions = [{ value: currentPlainVal, label: currentPlainVal }, ...availablePlainBottleOptions];
                                 }
+                                
+                                // Filter out bottles already used in this section (unless it's the current row's bottle)
+                                // Filter out bottles already used in OTHER GROUPS (unless it's the current row's bottle)
+                                availablePlainBottleOptions = availablePlainBottleOptions.filter(opt => {
+                                  const optUpper = opt.label.trim().toUpperCase();
+                                  return !usedBottleNamesInOtherGroups.has(optUpper) || optUpper === (currentPlainVal || '').trim().toUpperCase();
+                                });
 
                                 const selectedPlain = (currentPlainVal || '').trim();
                                 let groupedBottleNames = new Set();
@@ -1318,7 +1426,7 @@ export default function EditLacquerPlan() {
 
                                 const selectedSiblingVariantNames = new Set(
                                   group.items
-                                    .filter((r, i) => i !== localIndex && (r.bottleName || '') === (row.bottleName || ''))
+                                    .filter((r, i) => i !== localIndex && r.sharedGroupId === row.sharedGroupId)
                                     .flatMap(r => r.variantId || [])
                                     .map(vid => (variants || []).find(v => v._id === vid)?.variantName?.trim().toUpperCase())
                                     .filter(Boolean)
@@ -1362,15 +1470,60 @@ export default function EditLacquerPlan() {
                                     <td className="text-center text-muted">{localIndex + 1}</td>
                                     {renderGroupCell && (
                                     <td rowSpan={rowSpan} className="align-middle" style={{ backgroundColor: isGrouped ? '#f8f9fa' : 'inherit' }}>
-                                      <Select
+                                      <CreatableSelect
                                         options={availablePlainBottleOptions}
-                                        value={availablePlainBottleOptions.find(opt => opt.value === currentPlainVal) || (currentPlainVal ? { value: currentPlainVal, label: currentPlainVal } : null)}
-                                        onChange={(selected) => handleRowChange(index, 'bottleName', selected?.value || '')}
-                                        placeholder={gBrandId ? "Select Plain Bottle..." : "Select brand first..."}
+                                        value={availablePlainBottleOptions.find(opt => opt.value === (row.plainBottleId || currentPlainVal)) || (currentPlainVal ? { value: currentPlainVal, label: currentPlainVal } : null)}
+                                        onChange={(selected) => {
+                                          if (!selected) {
+                                            handleRowChange(index, 'plainBottleId', '');
+                                          } else {
+                                            // Use the new plainBottleId flow
+                                            handleRowChange(index, 'plainBottleId', selected.value);
+                                          }
+                                        }}
+                                        onCreateOption={(inputValue) => {
+                                          // Open modal to create new plain bottle
+                                          setMissingPlainBottleData({
+                                            bottleName: inputValue.trim(),
+                                            companyId: gCompanyId || '',
+                                            brandId: gBrandId || '',
+                                            companyName: companies.find(c => c._id === gCompanyId)?.name || '',
+                                            brandName: brands.find(b => b._id === gBrandId)?.name || '',
+                                            bottlePerBox: '',
+                                            status: true
+                                          });
+                                          setShowMissingPlainBottleModal(true);
+                                        }}
+                                        filterOption={(option, rawInput) => {
+                                          if (!rawInput) {
+                                            // No search input - show ONLY brand-specific bottles
+                                            return filteredBottleOptions.some(opt => opt.value === option.value);
+                                          }
+                                          
+                                          // User is searching
+                                          const searchUpper = rawInput.trim().toUpperCase();
+                                          const optionUpper = option.label.toUpperCase();
+                                          
+                                          // Must match the search text
+                                          if (!optionUpper.includes(searchUpper)) {
+                                            return false;
+                                          }
+                                          
+                                          // If a variant is selected, only show bottles related to that variant
+                                          if (bottleNamesForCurrentVariant && bottleNamesForCurrentVariant.size > 0) {
+                                            return bottleNamesForCurrentVariant.has(optionUpper);
+                                          }
+                                          
+                                          // Otherwise show all matching bottles
+                                          return true;
+                                        }}
+                                        placeholder={gBrandId ? "Select or type new Plain Bottle..." : "Select brand first..."}
                                         isDisabled={!gBrandId}
                                         isClearable
                                         menuPortalTarget={document.body}
                                         styles={{ menuPortal: base => ({ ...base, zIndex: 9999 }) }}
+                                        isSearchable
+                                        allowCreateWhileLoading={true}
                                       />
                                     </td>
                                     )}
@@ -1399,29 +1552,12 @@ export default function EditLacquerPlan() {
                                       )}
                                     </td>
                                     {renderShadeGroupCell && (
-                                    <td rowSpan={shadeRowSpan} className="align-middle" style={{ backgroundColor: (isGrouped && shadeRowSpan > 1) ? '#f8f9fa' : 'inherit' }}>
+                                    <td className="align-middle">
                                       <CreatableSelect
                                         options={uniqueCoatingShades}
                                         value={row.colour ? { value: row.colour, label: row.colour } : null}
                                         onChange={(selected) => {
-                                           if (isGrouped && shadeRowSpan > 1) {
-                                              const updatedRows = [...rows];
-                                              for (let i = index; i < index + shadeRowSpan; i++) {
-                                                 updatedRows[i].colour = selected ? selected.value : '';
-                                              }
-                                              handleRowChange(index, 'colour', selected ? selected.value : '');
-                                              setTimeout(() => {
-                                                  setRows(currentRows => {
-                                                      const newR = [...currentRows];
-                                                      for (let i = index; i < index + shadeRowSpan; i++) {
-                                                          if (i !== index) newR[i].colour = selected ? selected.value : '';
-                                                      }
-                                                      return newR;
-                                                  });
-                                              }, 0);
-                                           } else {
-                                              handleRowChange(index, 'colour', selected ? selected.value : '');
-                                           }
+                                           handleRowChange(index, 'colour', selected ? selected.value : '');
                                         }}
                                         placeholder="Shade..."
                                         isClearable
@@ -1438,7 +1574,7 @@ export default function EditLacquerPlan() {
                                     </td>
                                     )}
                                     {renderProcessCell && (
-                                    <td rowSpan={processRowSpan} className="align-middle" style={{ backgroundColor: (isGrouped && processRowSpan > 1) ? '#f8f9fa' : 'inherit' }}>
+                                    <td className="align-middle">
                                       <select className="form-select form-select-sm shadow-none" value={row.process} onChange={(e) => handleRowChange(index, 'process', e.target.value)} required>
                                         <option value="C">C</option>
                                         <option value="P">P</option>
@@ -1453,7 +1589,7 @@ export default function EditLacquerPlan() {
                                     )}
                                     {renderGroupCell && (() => {
                                       const groupHasWarning = isGrouped
-                                        ? group.items.some(r => r.sharedGroupId === row.sharedGroupId && checkRowStockWarning(r.orderQty, poolInfo.openingStock))
+                                        ? group.items.some(r => r.sharedGroupId === row.sharedGroupId && checkRowStockWarning(r.orderQty, poolInfo?.openingStock ?? 0))
                                         : rowIsExceeding;
                                       return (
                                         <td rowSpan={rowSpan} className="align-middle" style={{ backgroundColor: groupHasWarning ? '#fff3cd' : (isGrouped ? '#f8f9fa' : 'inherit') }}>
@@ -1486,7 +1622,12 @@ export default function EditLacquerPlan() {
                                       />
                                     </td>
                                     <td>
-                                      <input type="number" className="form-control form-control-sm shadow-none text-center" value={row.coatedQty} onChange={(e) => handleRowChange(index, 'coatedQty', e.target.value)} />
+                                      <input type="number" className={`form-control form-control-sm shadow-none text-center ${rowIsExceeding ? 'bg-warning bg-opacity-25 border-warning text-dark fw-bold' : ''}`} value={row.coatedQty} onChange={(e) => handleRowChange(index, 'coatedQty', e.target.value)} title={rowIsExceeding ? 'Coated Qty exceeds Plain Stock' : ''} />
+                                      {rowIsExceeding && (
+                                        <div className="text-warning fw-bold text-center" style={{ fontSize: '0.65rem' }}>
+                                          <i className="bi bi-exclamation-triangle-fill me-1"></i>Exceeds Stock
+                                        </div>
+                                      )}
                                     </td>
                                     <td>
                                       <input type="number" className="form-control form-control-sm shadow-none text-center" value={row.balanceToMake} onChange={(e) => handleRowChange(index, 'balanceToMake', e.target.value)} />
@@ -1523,7 +1664,8 @@ export default function EditLacquerPlan() {
                                     </td>
                                   </tr>
                                 );
-                              })}
+                              });
+                              })()}
                             </tbody>
                           </table>
                         </div>
@@ -1657,6 +1799,94 @@ export default function EditLacquerPlan() {
                      <><span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span> Saving...</>
                   ) : (
                      <><i className="bi bi-save me-2"></i> Save Spec</>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showMissingPlainBottleModal && (
+        <div className="modal fade show d-block" style={{ backgroundColor: 'rgba(0,0,0,0.4)', zIndex: 1050, backdropFilter: 'blur(4px)' }}>
+          <div className="modal-dialog modal-dialog-centered">
+            <div className="modal-content border-0 shadow-lg rounded-4 overflow-hidden">
+              <div className="modal-header bg-white border-bottom p-4">
+                <h5 className="modal-title fw-bold text-dark mb-0 d-flex align-items-center">
+                  <div className="bg-primary bg-opacity-10 text-primary p-2 rounded-3 me-3 d-flex align-items-center justify-content-center">
+                    <i className="bi bi-plus-circle-fill"></i>
+                  </div>
+                  Add Plain Bottle
+                </h5>
+                <button type="button" className="btn-close shadow-none" onClick={() => setShowMissingPlainBottleModal(false)}></button>
+              </div>
+              <div className="modal-body p-4 bg-light bg-opacity-50">
+                <div className="alert alert-info py-3 small mb-4 rounded-3 border-0 bg-info bg-opacity-10 text-info-emphasis d-flex gap-2 align-items-start">
+                   <i className="bi bi-info-circle-fill mt-1"></i>
+                   <div>Plain Bottle <strong>{missingPlainBottleData.bottleName}</strong> doesn't exist for <strong>{missingPlainBottleData.companyName}</strong>. Please create it to continue.</div>
+                </div>
+                <div className="row g-4 mb-4">
+                   <div className="col-md-6">
+                      <label className="form-label text-uppercase small fw-bold text-muted mb-1">Company</label>
+                      <input type="text" className="form-control shadow-none bg-white border-light-subtle rounded-3 py-2 fw-500" value={missingPlainBottleData.companyName} disabled />
+                   </div>
+                   <div className="col-md-6">
+                      <label className="form-label text-uppercase small fw-bold text-muted mb-1">Brand</label>
+                      <input type="text" className="form-control shadow-none bg-white border-light-subtle rounded-3 py-2 fw-500 text-accent" value={missingPlainBottleData.brandName} disabled />
+                   </div>
+                </div>
+                <div className="mb-4">
+                  <label className="form-label text-uppercase small fw-bold text-muted mb-1">Plain Bottle Name</label>
+                  <input 
+                    type="text" 
+                    className="form-control shadow-none bg-white border-light-subtle rounded-3 py-2 fw-bold text-dark" 
+                    value={missingPlainBottleData.bottleName} 
+                    disabled
+                  />
+                </div>
+
+                <div className="mb-4">
+                  <label className="form-label text-uppercase small fw-bold text-muted mb-1">Bottle Per Box</label>
+                  <input 
+                    type="number" 
+                    className="form-control shadow-none bg-white border-light-subtle rounded-3 py-2" 
+                    value={missingPlainBottleData.bottlePerBox} 
+                    onChange={(e) => setMissingPlainBottleData({...missingPlainBottleData, bottlePerBox: e.target.value})}
+                    placeholder="Enter quantity per box"
+                    min="1"
+                  />
+                </div>
+
+                <div className="row g-4">
+                   <div className="col-md-6">
+                      <label className="form-label text-uppercase small fw-bold text-muted mb-1">Printing Type</label>
+                      <input 
+                        type="text" 
+                        className="form-control shadow-none bg-white border-light-subtle rounded-3 py-2" 
+                        value={missingPlainBottleData.printingTypeId || ''}
+                        onChange={(e) => setMissingPlainBottleData({...missingPlainBottleData, printingTypeId: e.target.value})}
+                        placeholder="Enter printing type"
+                      />
+                   </div>
+                   <div className="col-md-6">
+                      <label className="form-label text-uppercase small fw-bold text-muted mb-1">Printing Color</label>
+                      <input 
+                        type="text" 
+                        className="form-control shadow-none bg-white border-light-subtle rounded-3 py-2" 
+                        value={missingPlainBottleData.printingColorId || ''}
+                        onChange={(e) => setMissingPlainBottleData({...missingPlainBottleData, printingColorId: e.target.value})}
+                        placeholder="Enter printing color"
+                      />
+                   </div>
+                </div>
+              </div>
+              <div className="modal-footer bg-white border-top p-4 d-flex justify-content-end gap-2">
+                <button type="button" className="btn btn-light px-4 py-2 fw-500 rounded-3" onClick={() => setShowMissingPlainBottleModal(false)}>Cancel</button>
+                <button type="button" className="btn btn-primary px-4 py-2 fw-500 rounded-3 d-flex align-items-center" onClick={handleSaveMissingPlainBottle} disabled={creatingSpec}>
+                  {creatingSpec ? (
+                     <><span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span> Saving...</>
+                  ) : (
+                     <><i className="bi bi-save me-2"></i> Create Plain Bottle</>
                   )}
                 </button>
               </div>

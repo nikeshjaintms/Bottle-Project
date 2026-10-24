@@ -26,7 +26,7 @@ export default function ViewIncoming() {
   const grandTotal = items.reduce((sum, item) => sum + (item.totalQty || 0), 0);
 
   return (
-    <div className="page-content">
+    <div className="page-content incoming-module-page incoming-module-view">
       <div className="d-flex align-items-center mb-4 gap-3">
         <button onClick={() => navigate(-1)} className="btn-ghost shadow-sm border-0" style={{ width: 40, height: 40, borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <i className="bi bi-arrow-left fs-5" />

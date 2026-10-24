@@ -109,6 +109,17 @@ const printingPlanSchema = new mongoose.Schema({
   originalImportedValues: {
     type: mongoose.Schema.Types.Mixed,
     default: null
+  },
+  // Mark indicating row has been sent to Ready To Dispatch
+  // Contains reference to the dispatch sheet and line, plus timestamp of send action
+  readyToDispatch: {
+    type: Object,
+    default: null,
+    properties: {
+      sheetId: mongoose.Schema.Types.ObjectId,
+      lineId: mongoose.Schema.Types.ObjectId,
+      sentAt: Date
+    }
   }
 }, { timestamps: true });
 

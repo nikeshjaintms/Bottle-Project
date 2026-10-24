@@ -4,6 +4,7 @@ import { useDispatch, useSelector } from 'react-redux';
 import { fetchDeliveryChallanById } from '../../../redux/slices/deliveryChallanSlice';
 import API from '../../../services/api';
 import Swal from 'sweetalert2';
+import logo from '../../../assets/hero.png';
 
 export default function ViewMcnoreChallan() {
   const { id } = useParams();
@@ -110,15 +111,18 @@ export default function ViewMcnoreChallan() {
   let srCounter = 1;
 
   return (
-    <div className="page-content mcnore-view-page">
+    <div className="page-content mcnore-view-page delivery-challan-view-page">
       {/* Top Action Bar (hidden on print) */}
       <div className="d-flex align-items-center justify-content-between mb-4 flex-wrap gap-2 no-print">
         <div className="d-flex align-items-center gap-3">
           <Link
             to="/delivery-challan/mcnore"
-            className="btn btn-sm btn-outline-secondary d-flex align-items-center gap-1"
+            className="btn-ghost border-0 shadow-sm"
+            style={{ width: 40, height: 40, borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+            title="Back to Mcnore Challans"
+            aria-label="Back to Mcnore Challans"
           >
-            <i className="bi bi-arrow-left" /> Back to Mcnore List
+            <i className="bi bi-arrow-left fs-5" />
           </Link>
           <span className="badge bg-light text-dark border fs-6 px-3 py-2">
             Mcnore Challan #{c.challanNo} &nbsp;
@@ -133,39 +137,40 @@ export default function ViewMcnoreChallan() {
         <div className="d-flex align-items-center gap-2">
           <Link
             to={`/delivery-challan/mcnore/edit/${c._id}`}
-            className="btn btn-sm btn-outline-secondary d-flex align-items-center gap-1"
+            className="btn btn-outline-primary shadow-sm px-4 py-2 rounded-3"
           >
-            <i className="bi bi-pencil" /> Edit Challan
+            <i className="bi bi-pencil-fill me-2" /> Edit Challan
           </Link>
           <button
             type="button"
-            className="btn btn-sm btn-outline-info d-flex align-items-center gap-2 px-3 shadow-sm"
+            className="btn btn-outline-primary shadow-sm px-4 py-2 rounded-3"
             onClick={handleOpenHtmlPreview}
             title="Open pure Backend HTML template in new tab"
           >
-            <i className="bi bi-filetype-html fs-6" /> HTML Preview
+            <i className="bi bi-filetype-html me-2" /> HTML Preview
           </button>
           <button
             type="button"
-            className="btn btn-sm btn-outline-primary d-flex align-items-center gap-2 px-3 shadow-sm"
+            className="btn btn-outline-primary shadow-sm px-4 py-2 rounded-3"
             onClick={handleDownloadPDF}
             disabled={downloadingPdf}
           >
-            <i className={`bi ${downloadingPdf ? 'bi-hourglass-split' : 'bi-file-earmark-pdf-fill'} fs-6 text-danger`} />
+            <i className={`bi ${downloadingPdf ? 'bi-hourglass-split' : 'bi-file-earmark-pdf-fill'} me-2 text-danger`} />
             {downloadingPdf ? 'Generating PDF...' : 'Download PDF'}
           </button>
           <button
             type="button"
-            className="btn btn-sm btn-accent d-flex align-items-center gap-2 px-3 shadow-sm"
+            className="btn btn-accent shadow-sm px-4 py-2 rounded-3"
+            style={{ color: 'white', textDecoration: 'none' }}
             onClick={handlePrint}
           >
-            <i className="bi bi-printer-fill fs-6" /> Print
+            <i className="bi bi-printer-fill me-2" /> Print
           </button>
         </div>
       </div>
 
       {/* Main Printable Challan Sheet */}
-      <div className="d-flex justify-content-center">
+      <div className="challan-print-wrapper d-flex justify-content-center">
         <div
           className="mcnore-challan-sheet bg-white p-0 shadow"
           style={{
@@ -182,12 +187,17 @@ export default function ViewMcnoreChallan() {
           }}
         >
           {/* Header */}
-          <div className="text-center p-2 border-bottom border-dark border-2">
+          <div className="text-center p-2 border-bottom border-dark border-2" style={{ position: 'relative' }}>
+            <img
+              src={logo}
+              alt="Shayona Glass Decor logo"
+              style={{ position: 'absolute', top: 5, left: 10, width: 140, height: 92, objectFit: 'contain' }}
+            />
             <div
               style={{
                 fontSize: '20px',
                 fontWeight: 'bold',
-                color: '#1a56db',
+                color: '#00b2ff',
                 letterSpacing: '0.5px',
               }}
             >

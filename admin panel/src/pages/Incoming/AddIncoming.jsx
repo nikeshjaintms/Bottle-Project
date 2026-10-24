@@ -350,7 +350,7 @@ export default function AddIncoming() {
   const grandTotal = items.reduce((acc, curr) => acc + (Number(curr.totalQty) || 0), 0);
 
   return (
-    <div className="page-content">
+    <div className="page-content incoming-module-page incoming-module-form">
       <div className="page-header d-flex align-items-center justify-content-between user-form-page-header">
         <div className="d-flex align-items-center gap-3">
           <button onClick={() => navigate(-1)} className="btn btn-light border-0 shadow-sm rounded-circle d-flex align-items-center justify-content-center" style={{ width: 40, height: 40 }}>
@@ -505,7 +505,7 @@ export default function AddIncoming() {
             </div>
           ) : (
             <div className="dash-card border-0 shadow-sm p-4">
-        <form onSubmit={handleSubmit}>
+        <form onSubmit={handleSubmit} className="incoming-entry-form">
           {/* Header Details */}
           
           {isPoRequired && (
@@ -593,7 +593,7 @@ export default function AddIncoming() {
             <h6 className="fw-bold text-primary mb-0">BOTTLE ENTRIES</h6>
           </div>
 
-          <div className="table-responsive mb-3">
+          <div className="table-responsive mb-3 incoming-entry-table">
             <table className="table table-bordered align-middle">
               <thead className="table-light">
                 <tr>

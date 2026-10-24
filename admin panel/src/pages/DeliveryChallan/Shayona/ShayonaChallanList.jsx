@@ -136,25 +136,25 @@ export default function ShayonaChallanList() {
               <div className="d-flex justify-content-end gap-2 pt-2 border-top">
                 <Link
                   to={`/delivery-challan/shayoona/view/${c._id}`}
-                  className="btn btn-sm btn-outline-info rounded-2 px-2"
+                  className="btn btn-sm btn-outline-info border-0 rounded-3 shadow-none p-2"
                   title="View / Print"
                 >
-                  <i className="bi bi-printer me-1" /> View / Print
+                  <i className="bi bi-eye fs-6" />
                 </Link>
                 <Link
                   to={`/delivery-challan/shayoona/edit/${c._id}`}
-                  className="btn btn-sm btn-outline-primary rounded-2 px-2"
+                  className="btn btn-sm btn-outline-primary border-0 rounded-3 shadow-none p-2"
                   title="Edit"
                 >
-                  <i className="bi bi-pencil-square" />
+                  <i className="bi bi-pencil-square fs-6" />
                 </Link>
                 <button
                   type="button"
                   onClick={() => handleDelete(c._id, c.challanNo)}
-                  className="btn btn-sm btn-outline-danger rounded-2 px-2"
+                  className="btn btn-sm btn-outline-danger border-0 rounded-3 shadow-none p-2"
                   title="Delete"
                 >
-                  <i className="bi bi-trash" />
+                  <i className="bi bi-trash fs-6" />
                 </button>
               </div>
             </div>
@@ -169,19 +169,19 @@ export default function ShayonaChallanList() {
           <table className="data-table mb-0 w-100">
             <thead>
               <tr>
-                <th className="py-3 text-uppercase small fw-bold text-muted ps-4" style={{ width: 80 }}>
+                <th className="py-3 text-uppercase small fw-bold text-muted ps-5 text-start" style={{ width: 80 }}>
                   Sr No
                 </th>
-                <th className="py-3 text-uppercase small fw-bold text-muted" style={{ width: 140 }}>
+                <th className="py-3 text-uppercase small fw-bold text-muted text-center" style={{ width: 140 }}>
                   Challan No
                 </th>
-                <th className="py-3 text-uppercase small fw-bold text-muted" style={{ width: 130 }}>
+                <th className="py-3 text-uppercase small fw-bold text-muted text-center" style={{ width: 130 }}>
                   Date & Time
                 </th>
-                <th className="py-3 text-uppercase small fw-bold text-muted" style={{ minWidth: 200 }}>
+                <th className="py-3 text-uppercase small fw-bold text-muted text-center" style={{ minWidth: 200 }}>
                   Company Name
                 </th>
-                <th className="py-3 text-uppercase small fw-bold text-muted" style={{ minWidth: 150 }}>
+                <th className="py-3 text-uppercase small fw-bold text-muted text-center" style={{ minWidth: 150 }}>
                   Vehicle / Transport
                 </th>
                 <th className="py-3 text-uppercase small fw-bold text-muted text-center" style={{ width: 110 }}>
@@ -261,19 +261,19 @@ export default function ShayonaChallanList() {
                   {/* Actions */}
                   <td className="py-3 text-center">
                     <div className="d-flex gap-2 justify-content-center">
-                      <Link
-                        to={`/delivery-challan/shayoona/view/${c._id}`}
-                        className="btn btn-sm btn-outline-info border-0 rounded-3 shadow-none p-2"
-                        title="View & Print Challan"
-                      >
-                        <i className="bi bi-printer fs-6" />
-                      </Link>
+                          <Link
+                            to={`/delivery-challan/shayoona/view/${c._id}`}
+                            className="btn btn-sm btn-outline-info border-0 rounded-3 shadow-none p-2"
+                            title="View / Print"
+                          >
+                            <i className="bi bi-eye fs-6" />
+                          </Link>
                       <Link
                         to={`/delivery-challan/shayoona/edit/${c._id}`}
                         className="btn btn-sm btn-outline-primary border-0 rounded-3 shadow-none p-2"
                         title="Edit Challan"
                       >
-                        <i className="bi bi-pencil-square fs-6" />
+                            <i className="bi bi-pencil-square fs-6" />
                       </Link>
                       <button
                         type="button"
@@ -281,7 +281,7 @@ export default function ShayonaChallanList() {
                         className="btn btn-sm btn-outline-danger border-0 rounded-3 shadow-none p-2"
                         title="Delete Challan"
                       >
-                        <i className="bi bi-trash fs-6" />
+                            <i className="bi bi-trash fs-6" />
                       </button>
                     </div>
                   </td>
@@ -294,9 +294,15 @@ export default function ShayonaChallanList() {
                     <div className="d-flex flex-column align-items-center justify-content-center gap-2">
                       <i className="bi bi-receipt-cutoff text-muted" style={{ fontSize: 36 }} />
                       <span className="fs-6">No delivery challans recorded yet</span>
-                      <Link to="/delivery-challan/shayoona/add" className="btn btn-sm btn-primary mt-2">
-                        <i className="bi bi-plus-circle me-1" /> Create First Challan
-                      </Link>
+                      <div className="mt-2" style={{ width: 260 }}>
+                        <Link
+                          to="/delivery-challan/shayoona/add"
+                          className="btn btn-accent py-2 w-100 d-flex align-items-center justify-content-center"
+                          style={{ borderRadius: 8, whiteSpace: 'nowrap' }}
+                        >
+                          <i className="bi bi-plus-circle me-2" /> Create First Challan
+                        </Link>
+                      </div>
                     </div>
                   </td>
                 </tr>

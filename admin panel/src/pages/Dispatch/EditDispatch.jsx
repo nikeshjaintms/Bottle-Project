@@ -336,12 +336,13 @@ export default function EditDispatch() {
       return Swal.fire('Error', 'Please fill required fields (Dispatch Date, G. Pass No., Company)', 'error');
     }
     
-    const validItems = items.filter(i => i.bottleId && i.qty > 0);
+    // Allow at least one item with bottleId, OR allow items with null bottleId if productName is set
+    const validItems = items.filter(i => (i.bottleId || i.productName) && i.qty > 0);
     if (validItems.length === 0) {
-      return Swal.fire('Error', 'Please add at least one valid item with quantity > 0', 'error');
+      return Swal.fire('Error', 'Please add at least one valid item with quantity > 0 and either a bottle name or product name', 'error');
     }
 
-    const bottleNames = validItems.map(i => i.bottleId).filter(Boolean);
+    const bottleNames = validItems.filter(i => i.bottleId).map(i => i.bottleId).filter(Boolean);
     const uniqueBottles = new Set(bottleNames);
     if (uniqueBottles.size !== bottleNames.length) {
       return Swal.fire('Error', 'Duplicate bottles found! You cannot add the same bottle multiple times in a single dispatch.', 'error');
@@ -353,14 +354,21 @@ export default function EditDispatch() {
       companyId: formData.companyId,
       remarks: formData.remarks,
       items: validItems.map(item => ({
-        bottleId: item.bottleId,
+        bottleId: item.bottleId || null,
         coatingShade: item.coatingShade || null,
         variantId: item.variantId || null,
         detectedTextColor: item.detectedTextColor || 'Not Detected',
         printingTypeId: item.printingTypeId || null,
         box: Number(item.box) || 0,
         qty: Number(item.qty),
-        totalQty: parseFloat((Number(item.box) * Number(item.qty)).toFixed(2))
+        totalQty: parseFloat((Number(item.box) * Number(item.qty)).toFixed(2)),
+        // Keep old fields for backward compatibility (unmapped entries)
+        productName: item.productName,
+        printing: item.printing,
+        foil: item.foil,
+        organic: item.organic,
+        additionalBox: Number(item.additionalBox) || 0,
+        remarks: item.remarks
       }))
     };
 
@@ -386,7 +394,7 @@ export default function EditDispatch() {
   }
 
   return (
-    <div className="page-content">
+    <div className="page-content dispatch-module-page dispatch-module-form">
       <div className="page-header d-flex align-items-center justify-content-between user-form-page-header">
         <div className="d-flex align-items-center gap-3">
           <button onClick={() => navigate(-1)} className="btn btn-light border-0 shadow-sm rounded-circle d-flex align-items-center justify-content-center" style={{ width: 40, height: 40 }}>
@@ -402,7 +410,7 @@ export default function EditDispatch() {
       <div className="row justify-content-center">
         <div className="col-xl-12 col-lg-12">
           <div className="dash-card border-0 shadow-sm p-4">
-            <form onSubmit={handleSubmit}>
+            <form onSubmit={handleSubmit} className="dispatch-entry-form">
               <div className="row g-4 mb-4">
                 <div className="col-md-3">
                   <label className="form-label fw-bold small">Dispatch Date <span className="text-danger">*</span></label>
@@ -467,7 +475,7 @@ export default function EditDispatch() {
                 <h6 className="fw-bold text-primary mb-0">BOTTLE ENTRIES</h6>
               </div>
 
-              <div className="table-responsive mb-3">
+              <div className="table-responsive mb-3 dispatch-entry-table">
                 <table className="table table-bordered align-middle">
                   <thead className="table-light">
                     <tr>
@@ -487,23 +495,30 @@ export default function EditDispatch() {
                       <tr key={index}>
                         <td className="text-center text-muted small">{index + 1}</td>
                         <td>
-                          <Select
-                            options={bottleOptions}
-                            value={
-                              item.bottleId
-                                ? (bottleOptions.find(opt => opt.value === item.bottleId) || 
-                                   { value: item.bottleId, label: bottlePerBoxes?.find(b => b._id === item.bottleId)?.bottleName || item.bottleId })
-                                : null
-                            }
-                            onChange={(selected) => handleItemChange(index, 'bottleId', selected?.value || '')}
-                            placeholder="Select Bottle"
-                            isClearable
-                            menuPortalTarget={document.body}
-                            styles={{
-                              menuPortal: base => ({ ...base, zIndex: 9999 }),
-                              control: (base) => ({ ...base, borderRadius: '8px', backgroundColor: 'var(--bs-light)', borderColor: 'var(--bs-border-color-translucent)' })
-                            }}
-                          />
+                          <div className="position-relative">
+                            <Select
+                              options={bottleOptions}
+                              value={
+                                item.bottleId
+                                  ? (bottleOptions.find(opt => opt.value === item.bottleId) || 
+                                     { value: item.bottleId, label: bottlePerBoxes?.find(b => b._id === item.bottleId)?.bottleName || item.bottleId })
+                                  : null
+                              }
+                              onChange={(selected) => handleItemChange(index, 'bottleId', selected?.value || '')}
+                              placeholder="Select Bottle"
+                              isClearable
+                              menuPortalTarget={document.body}
+                              styles={{
+                                menuPortal: base => ({ ...base, zIndex: 9999 }),
+                                control: (base) => ({ ...base, borderRadius: '8px', backgroundColor: 'var(--bs-light)', borderColor: 'var(--bs-border-color-translucent)' })
+                              }}
+                            />
+                            {!item.bottleId && item.productName && (
+                              <small className="text-muted d-block mt-1">
+                                Stored: {item.productName}
+                              </small>
+                            )}
+                          </div>
                         </td>
                         <td>
                           <Select
@@ -551,7 +566,7 @@ export default function EditDispatch() {
                             placeholder="1"
                             value={item.box}
                             onChange={(e) => handleItemChange(index, 'box', e.target.value)}
-                            min="1"
+                            min="0"
                           />
                         </td>
                         <td>
@@ -561,7 +576,7 @@ export default function EditDispatch() {
                             placeholder="1"
                             value={item.qty}
                             onChange={(e) => handleItemChange(index, 'qty', e.target.value)}
-                            min="1"
+                            min="0"
                           />
                         </td>
                         <td>

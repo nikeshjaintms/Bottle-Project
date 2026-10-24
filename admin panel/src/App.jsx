@@ -126,10 +126,6 @@ import PrintingPlan from './pages/PrintingPlan/PrintingPlan';
 import AddPrintingPlan from './pages/PrintingPlan/AddPrintingPlan';
 import EditPrintingPlan from './pages/PrintingPlan/EditPrintingPlan';
 import ViewPrintingPlan from './pages/PrintingPlan/ViewPrintingPlan';
-import PendingSheet from './pages/PendingSheet/PendingSheet';
-import AddPendingSheet from './pages/PendingSheet/AddPendingSheet';
-import EditPendingSheet from './pages/PendingSheet/EditPendingSheet';
-import ViewPendingSheet from './pages/PendingSheet/ViewPendingSheet';
 import DispatchCompanies from './pages/Dispatch/DispatchCompanies';
 import DispatchList from './pages/Dispatch/DispatchList';
 import AddDispatch from './pages/Dispatch/AddDispatch';
@@ -137,6 +133,7 @@ import EditDispatch from './pages/Dispatch/EditDispatch';
 import ViewDispatch from './pages/Dispatch/ViewDispatch';
 import SummaryCompanies from './pages/Summary/SummaryCompanies';
 import CompanySummary from './pages/Summary/CompanySummary';
+import ReadyToDispatchCompanies from './pages/ReadyToDispatch/ReadyToDispatchCompanies';
 import ReadyToDispatchList from './pages/ReadyToDispatch/ReadyToDispatchList';
 import AddReadyToDispatch from './pages/ReadyToDispatch/AddReadyToDispatch';
 import EditReadyToDispatch from './pages/ReadyToDispatch/EditReadyToDispatch';
@@ -249,18 +246,14 @@ export default function App() {
               <Route path="/printing-plan/edit/:id" element={<EditPrintingPlan />} />
               <Route path="/printing-plan/view/:id" element={<ViewPrintingPlan />} />
 
-              <Route path="/pending-sheet" element={<PendingSheet />} />
-              <Route path="/pending-sheet/add" element={<AddPendingSheet />} />
-              <Route path="/pending-sheet/edit/:id" element={<EditPendingSheet />} />
-              <Route path="/pending-sheet/view/:id" element={<ViewPendingSheet />} />
-
               <Route path="/dispatch" element={<DispatchCompanies />} />
               <Route path="/dispatch/company/:companyId" element={<DispatchList />} />
               <Route path="/dispatch/add" element={<AddDispatch />} />
               <Route path="/dispatch/edit/:id" element={<EditDispatch />} />
               <Route path="/dispatch/view/:id" element={<ViewDispatch />} />
 
-              <Route path="/ready-to-dispatch" element={<ReadyToDispatchList />} />
+              <Route path="/ready-to-dispatch" element={<ReadyToDispatchCompanies />} />
+              <Route path="/ready-to-dispatch/company/:companyId" element={<ReadyToDispatchList />} />
               <Route path="/ready-to-dispatch/add" element={<AddReadyToDispatch />} />
               <Route path="/ready-to-dispatch/edit/:id" element={<EditReadyToDispatch />} />
               <Route path="/ready-to-dispatch/view/:id" element={<ViewReadyToDispatch />} />

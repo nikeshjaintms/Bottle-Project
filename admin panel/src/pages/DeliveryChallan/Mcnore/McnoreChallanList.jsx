@@ -143,17 +143,17 @@ export default function McnoreChallanList() {
 
         {/* Table Body */}
         <div className="table-responsive">
-          <table className="table table-hover align-middle mb-0 companies-table">
-            <thead className="table-light text-muted small text-uppercase">
+          <table className="data-table mb-0 w-100">
+            <thead>
               <tr>
-                <th className="ps-3 py-3">DC No.</th>
-                <th>Mode</th>
-                <th>Dis Date &amp; Time</th>
-                <th>PO / Invoice Ref</th>
-                <th>Vehicle No</th>
-                <th className="text-center">Total Boxes</th>
-                <th className="text-end">Total Qty</th>
-                <th className="text-end pe-4">Actions</th>
+                <th className="py-3 text-uppercase small fw-bold text-muted ps-5 text-start">DC No.</th>
+                <th className="py-3 text-uppercase small fw-bold text-muted text-center">Mode</th>
+                <th className="py-3 text-uppercase small fw-bold text-muted text-center">Dis Date &amp; Time</th>
+                <th className="py-3 text-uppercase small fw-bold text-muted text-center">PO / Invoice Ref</th>
+                <th className="py-3 text-uppercase small fw-bold text-muted text-center">Vehicle No</th>
+                <th className="py-3 text-uppercase small fw-bold text-muted text-center">Total Boxes</th>
+                <th className="py-3 text-uppercase small fw-bold text-muted text-center">Total Qty</th>
+                <th className="py-3 text-uppercase small fw-bold text-muted text-center">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -170,9 +170,15 @@ export default function McnoreChallanList() {
                     <i className="bi bi-file-earmark-text fs-1 d-block mb-2 text-secondary opacity-50" />
                     No Mcnore delivery challans found.
                     <div className="mt-2">
-                      <Link to="/delivery-challan/mcnore/add" className="btn btn-sm btn-outline-primary">
-                        <i className="bi bi-plus-lg me-1" /> Create Your First Challan
-                      </Link>
+                      <div style={{ width: 260, margin: '0 auto' }}>
+                        <Link
+                          to="/delivery-challan/mcnore/add"
+                          className="btn btn-accent py-2 w-100 d-flex align-items-center justify-content-center"
+                          style={{ borderRadius: 8, whiteSpace: 'nowrap' }}
+                        >
+                          <i className="bi bi-plus-circle me-2" /> Create Your First Challan
+                        </Link>
+                      </div>
                     </div>
                   </td>
                 </tr>
@@ -180,8 +186,8 @@ export default function McnoreChallanList() {
                 challans.map((c) => {
                   const isWithPo = c.poMode === 'with_po';
                   return (
-                    <tr key={c._id} className="cursor-pointer">
-                      <td className="ps-3 py-3">
+                    <tr key={c._id} className="align-middle border-bottom transition-all hover-bg-light">
+                      <td className="py-3 ps-5 text-start">
                         <Link
                           to={`/delivery-challan/mcnore/view/${c._id}`}
                           className="fw-bold text-decoration-none text-dark hover-primary"
@@ -190,7 +196,7 @@ export default function McnoreChallanList() {
                           #{c.challanNo}
                         </Link>
                       </td>
-                      <td>
+                      <td className="py-3 text-center">
                         {isWithPo ? (
                           <span className="badge bg-success-subtle text-success border border-success-subtle px-2 py-1">
                             <i className="bi bi-patch-check-fill me-1" /> With PO
@@ -201,11 +207,11 @@ export default function McnoreChallanList() {
                           </span>
                         )}
                       </td>
-                      <td>
+                      <td className="py-3 text-center">
                         <div className="fw-500 text-dark">{formatDate(c.challanDate)}</div>
                         <div className="small text-muted">{c.challanTime || '-'}</div>
                       </td>
-                      <td>
+                      <td className="py-3 text-center">
                         {isWithPo ? (
                           <div>
                             <span className="fw-bold text-primary">PO: </span>
@@ -224,47 +230,47 @@ export default function McnoreChallanList() {
                           </div>
                         )}
                       </td>
-                      <td>
+                      <td className="py-3 text-center">
                         <span className="badge bg-light text-dark border">
                           {c.vehicleNo || '-'}
                         </span>
                       </td>
-                      <td className="text-center fw-bold">{c.totalBoxes || 0}</td>
-                      <td className="text-end fw-bold text-dark">
+                      <td className="py-3 text-center fw-bold">{c.totalBoxes || 0}</td>
+                      <td className="py-3 text-center fw-bold text-dark">
                         {Number(c.totalQuantity || 0).toLocaleString('en-IN')}
                       </td>
-                      <td className="text-end pe-3">
-                        <div className="d-flex align-items-center justify-content-end gap-1">
+                      <td className="py-3 text-center">
+                        <div className="d-flex align-items-center justify-content-center gap-2">
                           <Link
                             to={`/delivery-challan/mcnore/view/${c._id}`}
-                            className="btn btn-sm btn-light border text-primary action-btn-hover"
+                            className="btn btn-sm btn-outline-info border-0 rounded-3 shadow-none p-2"
                             title="View & Print Challan"
                           >
-                            <i className="bi bi-eye-fill" />
+                            <i className="bi bi-eye fs-6" />
                           </Link>
                           <button
                             type="button"
-                            className="btn btn-sm btn-light border text-danger action-btn-hover"
+                            className="btn btn-sm btn-outline-danger border-0 rounded-3 shadow-none p-2"
                             title="Download PDF"
                             onClick={() => handleDownloadPdf(c._id, c.challanNo)}
                             disabled={downloadingId === c._id}
                           >
-                            <i className={`bi ${downloadingId === c._id ? 'bi-hourglass-split' : 'bi-file-earmark-pdf-fill'}`} />
+                            <i className={`bi ${downloadingId === c._id ? 'bi-hourglass-split' : 'bi-file-earmark-pdf-fill'} fs-6`} />
                           </button>
                           <Link
                             to={`/delivery-challan/mcnore/edit/${c._id}`}
-                            className="btn btn-sm btn-light border text-secondary action-btn-hover"
+                            className="btn btn-sm btn-outline-primary border-0 rounded-3 shadow-none p-2"
                             title="Edit Challan"
                           >
-                            <i className="bi bi-pencil-fill" />
+                            <i className="bi bi-pencil-square fs-6" />
                           </Link>
                           <button
                             type="button"
-                            className="btn btn-sm btn-light border text-danger action-btn-hover"
+                            className="btn btn-sm btn-outline-danger border-0 rounded-3 shadow-none p-2"
                             title="Delete Challan"
                             onClick={() => handleDelete(c._id, c.challanNo)}
                           >
-                            <i className="bi bi-trash-fill" />
+                            <i className="bi bi-trash fs-6" />
                           </button>
                         </div>
                       </td>

@@ -6,6 +6,8 @@ import { fetchCompanies } from '../../redux/slices/companySlice';
 import { fetchBrands } from '../../redux/slices/brandSlice';
 import { fetchVariants } from '../../redux/slices/variantSlice';
 import { fetchBottleSpecs } from '../../redux/slices/bottleSpecSlice';
+import { useAbility } from '@casl/react';
+import { AbilityContext } from '../../context/AbilityContext';
 import API from '../../services/api';
 import Swal from 'sweetalert2';
 import Select from 'react-select';
@@ -14,7 +16,7 @@ import { usePrintingPlanLanguage } from '../../hooks/usePrintingPlanLanguage';
 import { sortPrintingPlans } from '../../utils/printingPlanSort';
 import { buildContiguousGroups, buildMultipleContiguousGroups } from '../../utils/tableGrouping';
 import ZoomControl from '../../components/ZoomControl';
-import * as XLSX from 'xlsx';
+import { downloadPrintingPlanExcel } from '../../utils/printingPlanExport';
 const DoubleScrollContainer = ({ children }) => {
   const topScrollRef = React.useRef(null);
   const bottomScrollRef = React.useRef(null);
@@ -70,7 +72,7 @@ const DoubleScrollContainer = ({ children }) => {
   }, [children]);
 
   return (
-    <div>
+    <div className="printing-plan-double-scroll">
       <div 
         ref={topScrollRef} 
         onScroll={handleTopScroll} 
@@ -83,7 +85,7 @@ const DoubleScrollContainer = ({ children }) => {
         ref={bottomScrollRef} 
         onScroll={handleBottomScroll} 
         style={{ overflowX: 'auto', overflowY: 'auto', maxHeight: 'calc(100vh - 240px)' }}
-        className="companies-list-desktop"
+        className="companies-list-desktop printing-plan-main-scroll"
       >
         <div ref={contentRef} style={{ display: 'inline-block', minWidth: '100%' }}>
           {children}
@@ -96,6 +98,7 @@ const DoubleScrollContainer = ({ children }) => {
 export default function PrintingPlan() {
   const dispatch = useDispatch();
   const navigate = useNavigate();
+  const ability = useAbility(AbilityContext);
   const { plans, loading } = useSelector((state) => state.printingPlans);
   const { companies } = useSelector((state) => state.companies || { companies: [] });
   const { brands } = useSelector((state) => state.brands || { brands: [] });
@@ -261,6 +264,79 @@ export default function PrintingPlan() {
     });
   };
 
+  const handleSendToReadyToDispatch = async (plan) => {
+    try {
+      // Send to API (idempotent endpoint)
+      const response = await API.post('/ready-to-dispatch/from-plan', {
+        source: 'printing',
+        planId: plan._id
+      });
+
+      if (response.data.success) {
+        const { sheetId, lineId, isExisting, warnings = [] } = response.data.data;
+        
+        // Refresh the list to get the updated mark
+        fetchPlans();
+        
+        if (isExisting) {
+          // Already sent: show info toast and open View page focused
+          Swal.fire({
+            icon: 'info',
+            title: 'Already sent',
+            toast: true,
+            position: 'top-end',
+            timer: 3000,
+            showConfirmButton: false
+          });
+        } else {
+          // New send: show success toast
+          Swal.fire({
+            icon: 'success',
+            title: 'Added to Ready To Dispatch',
+            toast: true,
+            position: 'top-end',
+            timer: 3000,
+            showConfirmButton: false
+          });
+        }
+
+        // Show warning toasts if any
+        if (warnings && warnings.length > 0) {
+          setTimeout(() => {
+            warnings.forEach((warning, idx) => {
+              setTimeout(() => {
+                Swal.fire({
+                  icon: 'warning',
+                  title: 'Warning',
+                  text: warning,
+                  toast: true,
+                  position: 'top-end',
+                  timer: 5000,
+                  showConfirmButton: false
+                });
+              }, idx * 1200);
+            });
+          }, 800);
+        }
+
+        // Navigate to the sheet's View page with focus
+        const focusQuery = lineId ? `?focus=${lineId}${!isExisting ? '&new=true' : ''}` : '';
+        navigate(`/ready-to-dispatch/view/${sheetId}${focusQuery}`);
+      }
+    } catch (error) {
+      console.error('Error sending to Ready To Dispatch:', error);
+      Swal.fire({
+        icon: 'error',
+        title: 'Error',
+        text: error.response?.data?.message || 'Failed to send to Ready To Dispatch',
+        toast: true,
+        position: 'top-end',
+        timer: 4000,
+        showConfirmButton: false
+      });
+    }
+  };
+
   const handleImportPrevious = async () => {
     try {
       const defaultPrevDate = new Date(selectedDate);
@@ -350,94 +426,22 @@ export default function PrintingPlan() {
     }
   };
 
-  const handleExport = () => {
+  const handleExport = async () => {
     try {
       if (filteredPlans.length === 0) {
         Swal.fire('No Data', 'There is no data to export for the selected filters.', 'info');
         return;
       }
-      
-      const isShrenoExport = filteredPlans.length > 0 && (filteredPlans[0].companyId?.name || filteredPlans[0].company?.name || filteredPlans[0].companyName || '').toUpperCase().includes('SHRENO');
-
-      let exportedData = [];
-      
-      const comps = Array.from(new Set(filteredPlans.map(p => (p.companyId?.name || p.companyName || p.company?.name || p.brandId?.companyId?.name || p.brandId?.company?.name || 'UNASSIGNED'))));
-      
-      comps.forEach(comp => {
-         const compPlans = filteredPlans.filter(p => (p.companyId?.name || p.companyName || p.company?.name || p.brandId?.companyId?.name || p.brandId?.company?.name || 'UNASSIGNED') === comp);
-         const sortedCompPlans = [...compPlans].sort(sortPrintingPlans);
-         
-         sortedCompPlans.forEach((p, index) => {
-            if (isShrenoExport) {
-                exportedData.push({
-                  'Sr No': index + 1,
-                  'Company': comp,
-                  'Date': p.planDate ? new Date(p.planDate).toLocaleDateString() : 'N/A',
-                  'Bottle Name': p.bottleName || 'N/A',
-                  'Coating Shade': p.coatingShade || 'N/A',
-                  'Printing To Be Done': p.printingToBeDone || 'N/A',
-                  'Text Color': p.textColor || 'N/A',
-                  'Plain/Coloured Stock': p.plainBottleStock ?? '',
-                  'Order Qty': p.orderQty ?? '',
-                  'Balance To Make': p.balanceToMake ?? '',
-                  'Bottle Per Box': p.boxQty ?? '',
-                  'No. Of Order Boxes': p.noOfBoxes ?? '',
-                  'Ready Printed Qty': p.producedQty ?? 0,
-                  'Balance To Be Dispatched': p.dispatchBalance ?? '',
-                  'Sold Qty': p.soldQty ?? '',
-                  'Ready Boxes': p.readyBoxes ?? '',
-                  'Remarks': p.remarks || ''
-                });
-            } else {
-                exportedData.push({
-                  'Sr No': index + 1,
-                  'Company': comp,
-                  'Brand': p.brandId?.name || p.brandName || 'N/A',
-                  'Date': p.planDate ? new Date(p.planDate).toLocaleDateString() : 'N/A',
-                  'Bottle Name': p.bottleName || 'N/A',
-                  'Coating Shade': p.coatingShade || 'N/A',
-                  'Printing To Be Done': p.printingToBeDone || 'N/A',
-                  'Plain/Coloured Stock': p.plainBottleStock ?? '',
-                  'Order Qty': p.orderQty ?? '',
-                  'Balance To Make': p.balanceToMake ?? '',
-                  'Bottle Per Box': p.boxQty ?? '',
-                  'No. Of Order Boxes': p.noOfBoxes ?? '',
-                  'Ready Printed Qty': p.producedQty ?? 0,
-                  'Balance To Be Dispatched': p.dispatchBalance ?? '',
-                  'Sold Qty': p.soldQty ?? '',
-                  'Ready Boxes': p.readyBoxes ?? '',
-                  'Remarks': p.remarks || ''
-                });
-            }
-         });
+      await downloadPrintingPlanExcel({
+        plans: filteredPlans,
+        date: (!fromDate && !toDate) ? selectedDate : '',
+        fromDate,
+        toDate,
+        companies
       });
-
-      const worksheet = XLSX.utils.json_to_sheet(exportedData);
-      
-      const colWidths = isShrenoExport ? [
-        { wch: 5 }, { wch: 15 }, { wch: 12 }, { wch: 20 }, { wch: 20 }, { wch: 25 }, { wch: 15 },
-        { wch: 20 }, { wch: 10 }, { wch: 15 }, { wch: 15 }, { wch: 18 }, { wch: 18 }, { wch: 22 },
-        { wch: 10 }, { wch: 12 }, { wch: 20 }
-      ] : [
-        { wch: 5 }, { wch: 15 }, { wch: 15 }, { wch: 12 }, { wch: 20 }, { wch: 20 }, { wch: 25 },
-        { wch: 20 }, { wch: 10 }, { wch: 15 }, { wch: 15 }, { wch: 18 }, { wch: 18 }, { wch: 22 },
-        { wch: 10 }, { wch: 12 }, { wch: 20 }
-      ];
-      worksheet['!cols'] = colWidths;
-
-      const workbook = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(workbook, worksheet, `Printing Plan`);
-
-      let filename = `Printing_Plan`;
-      if (selectedDate) filename += `_${selectedDate}`;
-      if (fromDate) filename += `_from_${fromDate}`;
-      if (toDate) filename += `_to_${toDate}`;
-      filename += ".xlsx";
-
-      XLSX.writeFile(workbook, filename);
     } catch (err) {
       console.error(err);
-      Swal.fire('Export Failed', 'An error occurred while generating the export.', 'error');
+      Swal.fire('Export Failed', err.message || 'An error occurred while generating the export.', 'error');
     }
   };
 
@@ -701,6 +705,19 @@ export default function PrintingPlan() {
                   >
                     <i className="bi bi-pencil-square fs-6"></i>
                   </Link>
+                  {ability && ability.can('dispatch', 'ready-to-dispatch') && (
+                    <button 
+                      onClick={() => handleSendToReadyToDispatch(plan)} 
+                      className={`btn btn-sm border-0 rounded-3 shadow-none p-2 ${
+                        plan.readyToDispatch && plan.readyToDispatch.sheetId 
+                          ? 'btn-success' 
+                          : 'btn-outline-success'
+                      }`} 
+                      title={plan.readyToDispatch && plan.readyToDispatch.sheetId ? 'Sent – open in Ready To Dispatch' : 'Send to Ready To Dispatch'}
+                    >
+                      <i className={`bi ${plan.readyToDispatch && plan.readyToDispatch.sheetId ? 'bi-send-fill text-success' : 'bi-send'} fs-6`}></i>
+                    </button>
+                  )}
                   <button onClick={() => handleDelete(plan._id)} className="btn btn-sm btn-outline-danger border-0 rounded-3 shadow-none p-2" title="Delete">
                     <i className="bi bi-trash fs-6"></i>
                   </button>
@@ -719,7 +736,7 @@ export default function PrintingPlan() {
   };
 
   return (
-    <div className="page-content">
+    <div className="page-content printing-plan-page printing-plan-list">
       <style>{`
         tr.bottle-group-divider > td {
           border-top: 2px solid #adb5bd !important;
@@ -761,12 +778,12 @@ export default function PrintingPlan() {
           font-size: calc(16px * var(--z)) !important;
         }
       `}</style>
-      <div className="page-header d-flex align-items-center justify-content-between companies-page-header">
+      <div className="page-header d-flex align-items-center justify-content-between companies-page-header printing-plan-list-header">
         <div>
           <h1 className="page-title mb-0">Printing Plan</h1>
           <p className="page-subtitle mb-0">Manage and track your printing plans</p>
         </div>
-        <div className="d-flex align-items-center gap-3 productions-page-actions">
+        <div className="d-flex align-items-center gap-3 productions-page-actions printing-plan-list-actions">
           <button onClick={toggleLanguage} className="btn btn-outline-secondary shadow-sm px-3 py-2 rounded-3 fw-bold">
             {language === 'en' ? 'ગુજરાતી' : 'English'}
           </button>
@@ -889,7 +906,7 @@ export default function PrintingPlan() {
               </button>
             </div>
             {/* Zoom Control */}
-            <div className="col-12 col-md-auto ms-md-auto d-flex align-items-end justify-content-end mt-3 mt-md-0">
+            <div className="col-12 col-md-auto ms-md-auto d-flex align-items-end justify-content-end mt-3 mt-md-0 printing-plan-zoom-wrapper">
                <ZoomControl value={zoom} onChange={setZoom} />
             </div>
           </div>
@@ -904,20 +921,20 @@ export default function PrintingPlan() {
               </div>
             </div>
           ) : (!filteredPlans || filteredPlans.length === 0) ? (
-            <div className="text-center py-5" style={{ minHeight: '400px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
+            <div className="text-center py-5 printing-plan-empty-state" style={{ minHeight: '400px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
               <div className="bg-light rounded-circle d-flex align-items-center justify-content-center mb-4" style={{ width: '80px', height: '80px' }}>
                 <i className="bi bi-calendar-x text-muted" style={{ fontSize: '2rem' }}></i>
               </div>
               <h4 className="text-dark fw-bold mb-2">No Printing Plan Found</h4>
               
-              <div className="d-flex gap-3 align-items-center justify-content-center">
-                <div style={{ width: '260px' }}>
+              <div className="d-flex gap-3 align-items-center justify-content-center printing-plan-empty-actions">
+                <div className="printing-plan-empty-action">
                   <Link to={`/printing-plan/add?date=${selectedDate}`} className="btn btn-accent py-2 w-100 d-flex align-items-center justify-content-center" style={{ borderRadius: '8px', whiteSpace: 'nowrap' }}>
                     <i className="bi bi-plus-circle me-2"></i> Create New Plan
                   </Link>
                 </div>
                 {(!fromDate && !toDate) && (
-                  <div style={{ width: '260px' }}>
+                  <div className="printing-plan-empty-action">
                     <button 
                       onClick={handleImportPrevious} 
                       className="btn btn-outline-secondary py-2 w-100 d-flex align-items-center justify-content-center" 

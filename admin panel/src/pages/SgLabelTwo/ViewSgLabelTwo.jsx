@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
 import { fetchSgLabels } from '../../redux/slices/sgLabelSlice';
@@ -14,6 +14,28 @@ export default function ViewSgLabelTwo() {
   const [template, setTemplate] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const previewContainerRef = useRef(null);
+  const [previewScale, setPreviewScale] = useState(1);
+  const canvasWidth = template?.canvasWidth || 284;
+  const canvasHeight = template?.canvasHeight || 95;
+
+  useEffect(() => {
+    const container = previewContainerRef.current;
+    if (!container) return undefined;
+
+    const updatePreviewScale = () => {
+      const availableWidth = container.clientWidth;
+      if (availableWidth > 0) {
+        setPreviewScale(Math.min(1.5, availableWidth / canvasWidth));
+      }
+    };
+
+    const resizeObserver = new ResizeObserver(updatePreviewScale);
+    resizeObserver.observe(container);
+    updatePreviewScale();
+
+    return () => resizeObserver.disconnect();
+  }, [canvasWidth]);
 
   useEffect(() => {
     dispatch(fetchSgLabels({ page: 1, limit: 1000 }));
@@ -144,15 +166,15 @@ export default function ViewSgLabelTwo() {
   }
 
   return (
-    <div className="page-content">
-      <div className="page-header d-flex justify-content-between align-items-center mb-4">
+    <div className="page-content sg-label-two-view-page">
+      <div className="page-header d-flex justify-content-between align-items-center mb-4 sg-label-two-view-header">
         <div className="d-flex align-items-center gap-3">
           <Link to="/sg-labels-2" className="btn-ghost" style={{ width: 40, height: 40, borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <i className="bi bi-arrow-left" style={{ fontSize: 20 }} />
           </Link>
           <h1 className="page-title mb-0">Template Detailed</h1>
         </div>
-        <div className="d-flex gap-2">
+        <div className="d-flex gap-2 sg-label-two-view-header-actions">
           <button onClick={() => handlePrint('print')} className="btn btn-primary shadow-sm">
             <i className="bi bi-printer me-2"></i> Print Template
           </button>
@@ -160,20 +182,28 @@ export default function ViewSgLabelTwo() {
       </div>
 
       <div className="row mt-4 justify-content-center">
-        <div className="col-lg-6 col-md-8 mb-4">
-          <div className="dash-card">
-            <div className="dash-card-body text-center d-flex flex-column align-items-center justify-content-center p-5">
-              <div 
-                className="bg-white shadow-sm position-relative overflow-hidden mb-4 print-area" 
-                style={{ 
-                  width: template.canvasWidth || 284, 
-                  height: template.canvasHeight || 95, 
-                  border: '1px solid #d1d5db',
-                  transform: 'scale(1.5)', 
-                  transformOrigin: 'center center',
-                  marginTop: '20px'
-                }}
-              >
+        <div className="col-12 col-md-8 col-lg-6 mb-4">
+          <div className="dash-card sg-label-two-view-card">
+            <div className="dash-card-body text-center d-flex flex-column align-items-center justify-content-center p-5 sg-label-two-view-card-body">
+              <div ref={previewContainerRef} className="sg-label-two-preview-container">
+                <div
+                  className="sg-label-two-preview-stage"
+                  style={{
+                    width: canvasWidth * previewScale,
+                    height: canvasHeight * previewScale
+                  }}
+                >
+                  <div
+                    className="bg-white shadow-sm position-relative print-area"
+                    style={{
+                      width: canvasWidth,
+                      height: canvasHeight,
+                      border: '1px solid #d1d5db',
+                      transform: `scale(${previewScale})`,
+                      transformOrigin: 'top left',
+                      overflow: 'visible'
+                    }}
+                  >
                 {template.elements.map((el) => (
                   <div
                     key={el.id}
@@ -194,7 +224,7 @@ export default function ViewSgLabelTwo() {
                       alignItems: 'center',
                       justifyContent: el.textAlign === 'center' ? 'center' : el.textAlign === 'right' ? 'flex-end' : 'flex-start',
                       transform: `rotate(${el.rotation || 0}deg)`,
-                      overflow: 'hidden',
+                      overflow: el.type === 'barcode' ? 'hidden' : 'visible',
                       zIndex: el.zIndex,
                     }}
                   >
@@ -205,16 +235,18 @@ export default function ViewSgLabelTwo() {
                     )}
                   </div>
                 ))}
+                  </div>
+                </div>
               </div>
               
-              <p className="text-muted fw-bold text-uppercase mt-4 mb-0 fs-5">{template.name}</p>
+              <p className="text-muted fw-bold text-uppercase mt-4 mb-0 fs-5 sg-label-two-view-name">{template.name}</p>
               
               <div className="mt-4 d-flex gap-2 justify-content-center">
                 <span className={`badge-status badge-${template.status ? 'active' : 'inactive'} px-3 py-2`} style={{ fontSize: 13 }}>
                   {template.status ? 'ACTIVE' : 'INACTIVE'}
                 </span>
                 <span className="badge bg-soft-info text-info px-4 py-2 border rounded-pill" style={{ fontSize: 13 }}>
-                  {template.canvasWidth}px × {template.canvasHeight}px
+                  {canvasWidth}px × {canvasHeight}px
                 </span>
               </div>
             </div>

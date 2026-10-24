@@ -1,7 +1,7 @@
 import { createSlice, createAsyncThunk } from '@reduxjs/toolkit';
 import API from '../../services/api';
 
-export const fetchLacquerPlans = createAsyncThunk('lacquerPlans/fetchLacquerPlans', async ({ date = '', month = '', fromDate = '', toDate = '', search = '', companyId = '', brandId = '' } = {}, { rejectWithValue }) => {
+export const fetchLacquerPlans = createAsyncThunk('lacquerPlans/fetchLacquerPlans', async ({ date = '', month = '', fromDate = '', toDate = '', search = '', companyId = '', brandId = '', pagination = 'false' } = {}, { rejectWithValue }) => {
   try {
     const params = new URLSearchParams();
     if (date) params.append('date', date);
@@ -11,6 +11,7 @@ export const fetchLacquerPlans = createAsyncThunk('lacquerPlans/fetchLacquerPlan
     if (search) params.append('search', search);
     if (companyId) params.append('companyId', companyId);
     if (brandId) params.append('brandId', brandId);
+    if (pagination) params.append('pagination', pagination);
     
     const response = await API.get(`/lacquer-plan?${params.toString()}`);
     return response.data;

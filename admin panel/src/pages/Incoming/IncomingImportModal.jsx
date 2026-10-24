@@ -1,10 +1,13 @@
 import React, { useState, useRef } from 'react';
+import { useParams } from 'react-router-dom';
 import API from '../../services/api';
 import Swal from 'sweetalert2';
 import { useSelector } from 'react-redux';
 import AddBottleModal from '../../components/AddBottleModal';
 
-export default function IncomingImportModal({ show, onClose, onImportComplete }) {
+export default function IncomingImportModal({ show, onClose, onImportComplete, companyId: propCompanyId }) {
+  const { companyId: routeCompanyId } = useParams();
+  const effectiveCompanyId = propCompanyId || routeCompanyId || '';
   const { companies } = useSelector((state) => state.companies);
   const [selectedCompanyId, setSelectedCompanyId] = useState('');
   const [file, setFile] = useState(null);
@@ -49,8 +52,9 @@ export default function IncomingImportModal({ show, onClose, onImportComplete })
     try {
       const formData = new FormData();
       formData.append('file', file);
-      if (selectedCompanyId) {
-        formData.append('companyId', selectedCompanyId);
+      const activeCompId = effectiveCompanyId || selectedCompanyId;
+      if (activeCompId) {
+        formData.append('companyId', activeCompId);
       }
       const res = await API.post('/incoming/import/preview', formData);
       if (res.data.success) {
@@ -74,8 +78,9 @@ export default function IncomingImportModal({ show, onClose, onImportComplete })
 
     const formData = new FormData();
     formData.append('file', file);
-    if (selectedCompanyId) {
-      formData.append('companyId', selectedCompanyId);
+    const activeCompId = effectiveCompanyId || selectedCompanyId;
+    if (activeCompId) {
+      formData.append('companyId', activeCompId);
     }
 
     setLoading(true);
@@ -123,7 +128,8 @@ export default function IncomingImportModal({ show, onClose, onImportComplete })
       setLoading(true);
       try {
         const res = await API.post('/incoming/import/commit', { 
-          sheetsToImport: previewData.sheets
+          sheetsToImport: previewData.sheets,
+          companyId: previewData.companyId || effectiveCompanyId || selectedCompanyId
         });
         if (res.data.success) {
           console.log('[INCOMING IMPORT RESPONSE]', res.data.data);
@@ -179,7 +185,7 @@ export default function IncomingImportModal({ show, onClose, onImportComplete })
 
     return (
       <div className="d-flex flex-column h-100">
-        <div className="d-flex justify-content-between align-items-center mb-4 pb-2 border-bottom">
+        <div className="d-flex justify-content-between align-items-center mb-4 pb-2 border-bottom incoming-import-detail-toolbar">
           <div className="d-flex align-items-center gap-3">
             <button 
               type="button" 
@@ -227,7 +233,7 @@ export default function IncomingImportModal({ show, onClose, onImportComplete })
           </div>
         </div>
 
-        <div className="d-flex justify-content-between align-items-center mb-3">
+        <div className="d-flex justify-content-between align-items-center mb-3 incoming-import-detail-filters">
           <div className="btn-group shadow-sm">
             <button 
               className={`btn btn-sm ${filterTab === 'ALL' ? 'btn-primary' : 'btn-outline-primary'}`}
@@ -255,7 +261,7 @@ export default function IncomingImportModal({ show, onClose, onImportComplete })
           </div>
         </div>
 
-        <div className="table-responsive border rounded flex-grow-1" style={{ maxHeight: '400px' }}>
+        <div className="table-responsive border rounded flex-grow-1 incoming-import-detail-table" style={{ maxHeight: '400px' }}>
           <table className="table table-sm table-hover mb-0 align-middle" style={{ fontSize: '13px' }}>
             <thead className="table-light sticky-top">
               <tr>
@@ -353,8 +359,8 @@ export default function IncomingImportModal({ show, onClose, onImportComplete })
 
   return (
     <>
-      <div className="modal show d-block" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
-        <div className="modal-dialog modal-xl modal-dialog-scrollable">
+      <div className="modal show d-block incoming-import-modal" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+        <div className="modal-dialog modal-xl modal-dialog-scrollable incoming-import-dialog">
           <div className="modal-content border-0 shadow">
             <div className="modal-header border-bottom-0" style={{ background: 'linear-gradient(135deg, var(--accent), #8b5cf6)', color: 'white' }}>
               <h5 className="modal-title fw-bold">
@@ -362,12 +368,12 @@ export default function IncomingImportModal({ show, onClose, onImportComplete })
               </h5>
             </div>
 
-            <div className="modal-body p-4 bg-white" style={{ minHeight: '500px' }}>
+            <div className="modal-body p-4 bg-white incoming-import-modal-body" style={{ minHeight: '500px' }}>
               {!previewData ? (
                 <div className="d-flex flex-column justify-content-center align-items-center h-100 w-100" style={{ minHeight: '450px' }}>
                   <div className="text-center px-4 mx-auto w-100" style={{ maxWidth: '600px' }}>
                     <div 
-                      className="rounded-4 p-5 mb-3 position-relative"
+                      className="rounded-4 p-5 mb-3 position-relative import-upload-panel"
                       style={{ border: '2px dashed #cbd5e1', backgroundColor: '#f8fafc', transition: 'all 0.3s ease', cursor: 'pointer' }}
                       onClick={() => fileInputRef.current?.click()}
                       onMouseOver={(e) => e.currentTarget.style.backgroundColor = '#f1f5f9'}
@@ -396,8 +402,8 @@ export default function IncomingImportModal({ show, onClose, onImportComplete })
                       </div>
                     </div>
                     {file && (
-                      <div className="mt-3 animated fadeIn">
-                        <span className="badge bg-success bg-opacity-10 text-success px-4 py-2 rounded-pill border border-success border-opacity-25 shadow-sm" style={{ fontSize: '0.95rem' }}>
+                      <div className="mt-3 animated fadeIn import-selected-file-wrap">
+                        <span className="badge bg-success bg-opacity-10 text-success px-4 py-2 rounded-pill border border-success border-opacity-25 shadow-sm import-selected-file" style={{ fontSize: '0.95rem' }}>
                           <i className="bi bi-check-circle-fill me-2"></i> {file.name}
                         </span>
                       </div>
@@ -455,7 +461,7 @@ export default function IncomingImportModal({ show, onClose, onImportComplete })
 
                   <h5 className="fw-bold mb-4 border-bottom pb-2 text-dark" style={{ letterSpacing: '0.5px' }}>Sheet Details</h5>
 
-                  <div className="table-responsive mb-4 border-0 shadow-sm rounded-4 overflow-hidden">
+                  <div className="table-responsive mb-4 border-0 shadow-sm rounded-4 incoming-import-preview-table">
                     <table className="table table-hover mb-0 align-middle bg-white">
                       <thead style={{ background: '#f8fafc' }}>
                         <tr>
@@ -511,7 +517,7 @@ export default function IncomingImportModal({ show, onClose, onImportComplete })
               )}
             </div>
 
-            <div className="modal-footer bg-white border-top-0 pt-0 pb-4 px-4">
+            <div className="modal-footer bg-white border-top-0 pt-0 pb-4 px-4 incoming-import-modal-footer">
               <button type="button" className="btn btn-light shadow-sm px-4 py-2 rounded-pill fw-bold text-secondary" style={{ border: '1px solid #e2e8f0' }} onClick={onClose} disabled={loading}>
                 Close
               </button>

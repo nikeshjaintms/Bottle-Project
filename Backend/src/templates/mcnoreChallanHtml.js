@@ -2,6 +2,7 @@
  * Generates official Mcnore (Mcnroe) Delivery Challan HTML document with multi-page pagination support.
  * Supports both "without_po" (Format 1) and "with_po" (Format 2) modes.
  */
+const { getChallanLogoDataUri } = require("./challanLogo");
 
 function escapeHtml(str) {
   if (str === null || str === undefined) return '';
@@ -33,6 +34,7 @@ function formatCurrency(val) {
 function buildHeaderHtml() {
   return `
     <div class="challan-header">
+      <img class="challan-logo" src="${getChallanLogoDataUri()}" alt="Shayona Glass Decor logo">
       <div class="company-name">SHAYONA GLASS DECOR PVT. LTD.</div>
       <div class="company-sub">Plot.no-128,At &amp; Post Vavli, Ta. Jambusar, Dist : Bharuch, 392150</div>
       <div class="company-gst">GSTIN NO:-24AAUCS9498K1Z5</div>
@@ -442,15 +444,25 @@ function generateMcnoreChallanHtml(challan) {
 
         /* HEADER */
         .challan-header {
+          position: relative;
           text-align: center;
           padding: 8px 12px 6px;
           border-bottom: 2px solid #000;
         }
 
+        .challan-logo {
+          position: absolute;
+          top: 5px;
+          left: 10px;
+          width: 140px;
+          height: 92px;
+          object-fit: contain;
+        }
+
         .company-name {
           font-size: 20px;
           font-weight: bold;
-          color: #1a56db;
+          color: #00b2ff;
           letter-spacing: 0.5px;
         }
 

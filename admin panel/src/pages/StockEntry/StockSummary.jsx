@@ -132,13 +132,13 @@ export default function StockSummary() {
   };
 
   return (
-    <div className="page-content">
-      <div className="page-header d-flex flex-column flex-md-row justify-content-between align-items-start align-items-md-center gap-3 companies-page-header">
+    <div className="page-content stock-entry-page stock-entry-summary">
+      <div className="page-header d-flex flex-column flex-md-row justify-content-between align-items-start align-items-md-center gap-3 companies-page-header stock-entry-header">
         <div className="flex-grow-1">
           <h1 className="page-title">Stock Summary</h1>
           <p className="page-subtitle">Overview of all raw material stock balances</p>
         </div>
-        <div className="d-flex flex-wrap justify-content-start justify-content-md-end align-items-center gap-3 ms-md-auto">
+        <div className="d-flex flex-wrap justify-content-start justify-content-md-end align-items-center gap-3 ms-md-auto stock-entry-header-actions">
           <div className="d-flex align-items-center gap-2">
             <label className="fw-bold text-muted mb-0 text-nowrap">Balance Date:</label>
             <input 
@@ -156,8 +156,8 @@ export default function StockSummary() {
         </div>
       </div>
 
-      <div className="dash-card p-0">
-        <div className="dash-card-header d-flex flex-column flex-md-row align-items-start align-items-md-center justify-content-between px-4 pt-3 border-bottom bg-white companies-dash-toolbar gap-3">
+      <div className="dash-card p-0 stock-entry-card">
+        <div className="dash-card-header d-flex flex-column flex-md-row align-items-start align-items-md-center justify-content-between px-4 pt-3 border-bottom bg-white companies-dash-toolbar gap-3 stock-entry-tabs">
           <ul className="nav nav-tabs border-0 flex-row flex-nowrap w-100 overflow-auto gap-4 pb-1" style={{ marginBottom: '-1px', WebkitOverflowScrolling: 'touch', whiteSpace: 'nowrap' }}>
             <Can I="read" a="stock_entry">
               <li className="nav-item flex-shrink-0">
@@ -185,7 +185,7 @@ export default function StockSummary() {
         </div>
         
         {/* Toolbar */}
-        <div className="d-flex flex-wrap align-items-center justify-content-end p-3 border-bottom bg-white">
+        <div className="d-flex flex-wrap align-items-center justify-content-end p-3 border-bottom bg-white stock-entry-toolbar">
           <div className="search-input-wrapper position-relative companies-search-wrap">
             <i className="bi bi-search text-muted position-absolute top-50 start-0 translate-middle-y ms-3" style={{ pointerEvents: 'none' }} />
             <input

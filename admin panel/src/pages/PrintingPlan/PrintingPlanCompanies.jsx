@@ -31,13 +31,13 @@ export default function PrintingPlanCompanies() {
   ];
 
   return (
-    <div className="page-content">
-      <div className="page-header d-flex align-items-center justify-content-between companies-page-header">
+    <div className="page-content printing-plan-page printing-plan-companies-page">
+      <div className="page-header d-flex align-items-center justify-content-between companies-page-header printing-plan-list-header">
         <div>
           <h1 className="page-title">Printing Plan</h1>
           <p className="page-subtitle">Select a company to view their printing plans</p>
         </div>
-        <div className="d-flex align-items-center gap-3 productions-page-actions">
+        <div className="d-flex align-items-center gap-3 productions-page-actions printing-plan-list-actions">
           <button onClick={() => setShowImportModal(true)} className="btn btn-outline-success shadow-sm px-4 py-2 rounded-3">
             <i className="bi bi-file-earmark-excel-fill me-2" /> Import Excel
           </button>

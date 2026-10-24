@@ -30,7 +30,7 @@ export default function ViewDispatch() {
   const totalQty = items?.reduce((acc, item) => acc + (Number(item.totalQty) || 0), 0) || 0;
 
   return (
-    <div className="page-content">
+    <div className="page-content dispatch-module-page dispatch-module-view">
       <div className="page-header d-flex align-items-center justify-content-between mb-4">
         <div className="d-flex align-items-center gap-3">
           <button onClick={() => navigate(-1)} className="btn btn-light border-0 shadow-sm rounded-circle d-flex align-items-center justify-content-center" style={{ width: 40, height: 40 }}>
@@ -81,12 +81,12 @@ export default function ViewDispatch() {
               <h5 className="mb-0">Dispatch Items</h5>
             </div>
             <div className="dash-card-body p-0">
-              <div className="table-responsive">
+              <div className="table-responsive dispatch-view-table">
                 <table className="table table-hover mb-0">
                   <thead className="bg-light">
                     <tr>
                       <th className="py-3 px-4 text-muted small fw-bold">Sr.</th>
-                      <th className="py-3 px-4 text-muted small fw-bold">Bottle Name</th>
+                      <th className="py-3 px-4 text-muted small fw-bold">Plain Bottle</th>
                       <th className="py-3 px-3 text-muted small fw-bold">Variant</th>
                       <th className="py-3 px-3 text-muted small fw-bold">Coating Shade</th>
                       <th className="py-3 px-3 text-muted small fw-bold">Text Color</th>
@@ -99,13 +99,13 @@ export default function ViewDispatch() {
                     {items?.map((item, index) => (
                       <tr key={index} className="align-middle">
                         <td className="ps-4 text-muted small">{index + 1}</td>
-                        <td className="fw-500">{typeof item.bottleId === 'string' ? item.bottleId : (item.bottleId?.plainBottleName || item.bottleId?.bottleName || item.bottleId || '-')}</td>
-                        <td>{item.variantId?.variantName || '-'}</td>
+                        <td className="fw-500">{item.plainBottleName || 'Unmapped'}</td>
+                        <td>{item.variantName || '-'}</td>
                         <td>{item.coatingShade || '-'}</td>
                         <td>{item.detectedTextColor || '-'}</td>
-                        <td className="text-end fw-500">{item.box}</td>
-                        <td className="text-end fw-500">{item.qty}</td>
-                        <td className="text-end fw-bold text-primary">{item.totalQty}</td>
+                        <td className="text-end fw-500">{item.box || 0}</td>
+                        <td className="text-end fw-500">{item.qty || 0}</td>
+                        <td className="text-end fw-bold text-primary">{item.totalQty || 0}</td>
                       </tr>
                     ))}
                   </tbody>

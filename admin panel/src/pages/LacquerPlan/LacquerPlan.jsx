@@ -1,9 +1,11 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { fetchLacquerPlans, deleteLacquerPlan } from '../../redux/slices/lacquerPlanSlice';
 import { fetchCompanies } from '../../redux/slices/companySlice';
 import { fetchBrands } from '../../redux/slices/brandSlice';
+import { useAbility } from '@casl/react';
+import { AbilityContext } from '../../context/AbilityContext';
 import API from '../../services/api';
 import Swal from 'sweetalert2';
 import Select from 'react-select';
@@ -14,7 +16,7 @@ import { sortLacquerPlans } from '../../utils/lacquerPlanSort';
 import { buildContiguousGroups, buildMultipleContiguousGroups } from '../../utils/tableGrouping';
 import { isPlanRowCompleted, checkRowStockWarning } from '../../utils/lacquerPlanUtils';
 import ZoomControl from '../../components/ZoomControl';
-import * as XLSX from 'xlsx';
+import { downloadLacquerPlanExcel } from '../../utils/lacquerPlanExport';
 
 const DoubleScrollContainer = ({ children }) => {
   const topScrollRef = React.useRef(null);
@@ -49,42 +51,42 @@ const DoubleScrollContainer = ({ children }) => {
 
   React.useEffect(() => {
     if (!bottomScrollRef.current) return;
-    
+
     const updateWidth = () => {
       if (bottomScrollRef.current) {
         setContentWidth(bottomScrollRef.current.scrollWidth);
       }
     };
-    
+
     const resizeObserver = new ResizeObserver(() => {
       updateWidth();
     });
-    
+
     resizeObserver.observe(bottomScrollRef.current);
     if (bottomScrollRef.current.firstElementChild) {
       resizeObserver.observe(bottomScrollRef.current.firstElementChild);
     }
-    
+
     updateWidth();
-    
+
     return () => resizeObserver.disconnect();
   }, [children]);
 
   return (
-    <div>
-      <div 
-        ref={topScrollRef} 
-        onScroll={handleTopScroll} 
+    <div className="lacquer-plan-double-scroll">
+      <div
+        ref={topScrollRef}
+        onScroll={handleTopScroll}
         style={{ overflowX: 'auto', marginBottom: '4px', height: '14px' }}
         className="top-scrollbar"
       >
         <div style={{ width: contentWidth > 0 ? contentWidth : '100%', height: '1px' }}></div>
       </div>
-      <div 
-        ref={bottomScrollRef} 
-        onScroll={handleBottomScroll} 
-        style={{ overflowX: 'auto', overflowY: 'auto', maxHeight: 'calc(100vh - 240px)' }}
-        className="companies-list-desktop"
+      <div
+        ref={bottomScrollRef}
+        onScroll={handleBottomScroll}
+        style={{ overflowX: 'auto', overflowY: 'auto', maxHeight: 'calc(100vh - 220px)', minHeight: '500px' }}
+        className="companies-list-desktop lacquer-plan-main-scroll"
       >
         <div ref={contentRef} style={{ display: 'inline-block', minWidth: '100%' }}>
           {children}
@@ -96,15 +98,19 @@ const DoubleScrollContainer = ({ children }) => {
 
 export default function LacquerPlan() {
   const dispatch = useDispatch();
+  const navigate = useNavigate();
+  const ability = useAbility(AbilityContext);
   const { plans, loading } = useSelector((state) => state.lacquerPlans);
   const { companies } = useSelector((state) => state.companies || { companies: [] });
   const { brands } = useSelector((state) => state.brands || { brands: [] });
   const { labels, toggleLanguage, language } = useLacquerPlanLanguage();
-  
+
+  const [allCompaniesList, setAllCompaniesList] = useState([]);
+
   const today = new Date();
   const [selectedDate, setSelectedDate] = useState(today.toISOString().split('T')[0]);
   const [showImportModal, setShowImportModal] = useState(false);
-  
+
   const firstDay = new Date(today.getFullYear(), today.getMonth(), 1);
   const lastDay = new Date(today.getFullYear(), today.getMonth() + 1, 0);
 
@@ -121,7 +127,7 @@ export default function LacquerPlan() {
   const [search, setSearch] = useState('');
   const [selectedCompanyId, setSelectedCompanyId] = useState('');
   const [selectedBrandId, setSelectedBrandId] = useState('');
-  
+
   const [importing, setImporting] = useState(false);
 
   const [zoom, setZoom] = useState(() => {
@@ -140,15 +146,28 @@ export default function LacquerPlan() {
       toDate,
       search,
       companyId: selectedCompanyId,
-      brandId: selectedBrandId
+      brandId: selectedBrandId,
+      pagination: 'false'
     }));
   };
 
   useEffect(() => {
+    let isMounted = true;
+    API.get('/company?pagination=false')
+      .then(res => {
+        if (isMounted && res.data?.data) {
+          const sorted = [...res.data.data].sort((a, b) =>
+            (a.name || '').localeCompare(b.name || '', undefined, { numeric: true, sensitivity: 'base' })
+          );
+          setAllCompaniesList(sorted);
+        }
+      })
+      .catch(err => console.error('Failed to load all companies:', err));
+
     dispatch(fetchCompanies({ pagination: 'false' }));
     dispatch(fetchBrands({ pagination: 'false' }));
+    return () => { isMounted = false; };
   }, [dispatch]);
-
 
   // Keep API sync but allow instant frontend UI updates
   useEffect(() => {
@@ -164,51 +183,76 @@ export default function LacquerPlan() {
       // Check if selected brand belongs to the newly selected company
       const brandObj = brands?.find(b => b._id === selectedBrandId);
       if (brandObj) {
-         const bCompId = (brandObj.companyId?._id || brandObj.companyId)?.toString();
-         const bComp = (brandObj.company?._id || brandObj.company)?.toString();
-         if (bCompId !== companyId?.toString() && bComp !== companyId?.toString()) {
-            setSelectedBrandId(''); // Reset if invalid combo
-         }
+        const bCompId = (brandObj.companyId?._id || brandObj.companyId)?.toString();
+        const bComp = (brandObj.company?._id || brandObj.company)?.toString();
+        if (bCompId !== companyId?.toString() && bComp !== companyId?.toString()) {
+          setSelectedBrandId(''); // Reset if invalid combo
+        }
       }
     }
   };
 
   const handleReset = () => {
     const todayStr = new Date().toISOString().split('T')[0];
-    
+
     setSelectedDate(todayStr);
     setFromDate('');
     setToDate('');
     setSearch('');
     setSelectedCompanyId('');
     setSelectedBrandId('');
-    dispatch(fetchLacquerPlans({ date: todayStr }));
+    dispatch(fetchLacquerPlans({ date: todayStr, pagination: 'false' }));
   };
+
+  const companySelectOptions = useMemo(() => {
+    const list = allCompaniesList.length > 0 ? allCompaniesList : (companies || []);
+    const sorted = [...list].sort((a, b) =>
+      (a.name || '').localeCompare(b.name || '', undefined, { numeric: true, sensitivity: 'base' })
+    );
+    return [
+      { value: '', label: 'All Companies' },
+      ...sorted.map(c => ({ value: c._id, label: c.name })),
+      { value: 'UNASSIGNED', label: 'UNASSIGNED' }
+    ];
+  }, [allCompaniesList, companies]);
+
+  const activeCompanySummaries = useMemo(() => {
+    const map = new Map();
+    (plans || []).forEach(plan => {
+      const cid = (plan.canonicalCompanyId || (plan.companyId?._id || plan.companyId) || 'UNASSIGNED').toString();
+      const cname = plan.companyName || (cid === 'UNASSIGNED' ? 'UNASSIGNED' : 'Unknown');
+      if (!map.has(cid)) {
+        map.set(cid, { id: cid, name: cname, count: 0 });
+      }
+      map.get(cid).count++;
+    });
+    return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
+  }, [plans]);
 
   const filteredPlans = useMemo(() => {
     let result = plans || [];
-    
+
     if (selectedCompanyId) {
       if (selectedCompanyId === 'UNASSIGNED') {
-         result = result.filter(p => !p.companyId || (p.canonicalCompanyId === 'UNASSIGNED'));
+        result = result.filter(p => !p.companyId || (p.canonicalCompanyId === 'UNASSIGNED'));
       } else {
-         result = result.filter(p => {
-            const pCompanyId = (p.companyId?._id || p.companyId)?.toString();
-            return pCompanyId === selectedCompanyId?.toString();
-         });
+        result = result.filter(p => {
+          const pCompanyId = (p.canonicalCompanyId || p.companyId?._id || p.companyId)?.toString();
+          return pCompanyId === selectedCompanyId?.toString();
+        });
       }
     }
-    
+
     if (selectedBrandId) {
       result = result.filter(p => {
-         const pBrandId = (p.brandId?._id || p.brandId)?.toString();
-         return pBrandId === selectedBrandId?.toString();
+        const pBrandId = (p.brandId?._id || p.brandId)?.toString();
+        return pBrandId === selectedBrandId?.toString();
       });
     }
-    
+
     if (search) {
       const s = search.toLowerCase();
-      result = result.filter(p => 
+      result = result.filter(p =>
         (p.bottleName?.toLowerCase().includes(s)) ||
         (p.brandId?.name?.toLowerCase().includes(s)) ||
         (p.brandName?.toLowerCase().includes(s)) ||
@@ -265,12 +309,85 @@ export default function LacquerPlan() {
     });
   };
 
+  const handleSendToReadyToDispatch = async (plan) => {
+    try {
+      // Send to API (idempotent endpoint)
+      const response = await API.post('/ready-to-dispatch/from-plan', {
+        source: 'lacquer',
+        planId: plan._id
+      });
+
+      if (response.data.success) {
+        const { sheetId, lineId, isExisting, warnings = [] } = response.data.data;
+
+        // Refresh the list to get the updated mark
+        fetchPlans();
+
+        if (isExisting) {
+          // Already sent: show info toast and open View page focused
+          Swal.fire({
+            icon: 'info',
+            title: 'Already sent',
+            toast: true,
+            position: 'top-end',
+            timer: 3000,
+            showConfirmButton: false
+          });
+        } else {
+          // New send: show success toast
+          Swal.fire({
+            icon: 'success',
+            title: 'Added to Ready To Dispatch',
+            toast: true,
+            position: 'top-end',
+            timer: 3000,
+            showConfirmButton: false
+          });
+        }
+
+        // Show warning toasts if any
+        if (warnings && warnings.length > 0) {
+          setTimeout(() => {
+            warnings.forEach((warning, idx) => {
+              setTimeout(() => {
+                Swal.fire({
+                  icon: 'warning',
+                  title: 'Warning',
+                  text: warning,
+                  toast: true,
+                  position: 'top-end',
+                  timer: 5000,
+                  showConfirmButton: false
+                });
+              }, idx * 1200);
+            });
+          }, 800);
+        }
+
+        // Navigate to the sheet's View page with focus
+        const focusQuery = lineId ? `?focus=${lineId}${!isExisting ? '&new=true' : ''}` : '';
+        navigate(`/ready-to-dispatch/view/${sheetId}${focusQuery}`);
+      }
+    } catch (error) {
+      console.error('Error sending to Ready To Dispatch:', error);
+      Swal.fire({
+        icon: 'error',
+        title: 'Error',
+        text: error.response?.data?.message || 'Failed to send to Ready To Dispatch',
+        toast: true,
+        position: 'top-end',
+        timer: 4000,
+        showConfirmButton: false
+      });
+    }
+  };
+
   const handleImportPrevious = async () => {
     try {
       const defaultPrevDate = new Date(selectedDate);
       defaultPrevDate.setDate(defaultPrevDate.getDate() - 1);
       const defaultPrevDateStr = defaultPrevDate.toISOString().split('T')[0];
-      
+
       const result = await Swal.fire({
         title: labels.importPreviousPlan || 'Import Previous Plan?',
         html: `
@@ -296,16 +413,16 @@ export default function LacquerPlan() {
       });
 
       if (!result.isConfirmed) {
-         return;
+        return;
       }
-      
+
       const sourceDate = result.value;
 
       setImporting(true);
-      
+
       // First call: check if confirmation needed
       const checkRes = await API.post('/lacquer-plan/import-previous', { targetDate: selectedDate, sourceDate });
-      
+
       if (checkRes.data.requiresConfirmation && checkRes.data.hasExistingImport) {
         // Show import mode choice dialog
         const modeResult = await Swal.fire({
@@ -319,7 +436,7 @@ export default function LacquerPlan() {
           denyButtonText: 'Cancel',
           reverseButtons: true
         });
-        
+
         let importMode = null;
         if (modeResult.isConfirmed) {
           importMode = 'with_changes';
@@ -329,10 +446,10 @@ export default function LacquerPlan() {
         } else if (!modeResult.isDismissed) {
           importMode = 'without_changes';
         }
-        
+
         if (importMode) {
-          const res = await API.post('/lacquer-plan/import-previous', { 
-            targetDate: selectedDate, 
+          const res = await API.post('/lacquer-plan/import-previous', {
+            targetDate: selectedDate,
             sourceDate,
             importMode
           });
@@ -346,68 +463,26 @@ export default function LacquerPlan() {
         dispatch(fetchLacquerPlans({ date: selectedDate }));
         Swal.fire('Imported!', 'Previous plan imported successfully.', 'success');
       }
-    } catch(err) {
+    } catch (err) {
       Swal.fire('Error', err.response?.data?.message || 'Failed to import previous day', 'error');
     } finally {
       setImporting(false);
     }
   };
 
-  const handleExport = () => {
+  const handleExport = async () => {
     try {
       if (filteredPlans.length === 0) {
         Swal.fire('No Data', 'There is no data to export for the selected filters.', 'info');
         return;
       }
 
-      let exportedData = [];
-      
-      const comps = Array.from(new Set(filteredPlans.map(p => (p.companyId?.name || p.companyName || p.company?.name || p.brandId?.companyId?.name || p.brandId?.company?.name || 'UNASSIGNED'))));
-      
-      comps.forEach(comp => {
-         const compPlans = filteredPlans.filter(p => (p.companyId?.name || p.companyName || p.company?.name || p.brandId?.companyId?.name || p.brandId?.company?.name || 'UNASSIGNED') === comp);
-         const sortedCompPlans = [...compPlans].sort(sortLacquerPlans);
-         
-         sortedCompPlans.forEach((p, index) => {
-            exportedData.push({
-              'Sr No': index + 1,
-              'Company': comp,
-              'Brand': p.brandId?.name || p.brandName || 'N/A',
-              'Date': p.planDate ? new Date(p.planDate).toLocaleDateString() : 'N/A',
-              'Bottle Name': p.bottleName || 'N/A',
-              'Coating Shade': p.coatingShade || 'N/A',
-              'Plain/Coloured Stock': p.plainBottleStock ?? '',
-              'Order Qty': p.orderQty ?? '',
-              'Balance To Make': p.balanceToMake ?? '',
-              'Bottle Per Box': p.boxQty ?? '',
-              'No. Of Order Boxes': p.noOfBoxes ?? '',
-              'Ready Coated Qty': p.producedQty ?? 0,
-              'Balance To Be Dispatched': p.dispatchBalance ?? '',
-              'Sold Qty': p.soldQty ?? '',
-              'Ready Boxes': p.readyBoxes ?? '',
-              'Remarks': p.remarks || ''
-            });
-         });
+      await downloadLacquerPlanExcel(filteredPlans, {
+        selectedDate: (!fromDate && !toDate) ? selectedDate : '',
+        fromDate,
+        toDate,
+        companies: companies || []
       });
-
-      const worksheet = XLSX.utils.json_to_sheet(exportedData);
-      
-      worksheet['!cols'] = [
-        { wch: 5 }, { wch: 15 }, { wch: 15 }, { wch: 12 }, { wch: 20 }, { wch: 20 }, { wch: 25 },
-        { wch: 20 }, { wch: 10 }, { wch: 15 }, { wch: 15 }, { wch: 18 }, { wch: 18 }, { wch: 22 },
-        { wch: 10 }, { wch: 12 }, { wch: 20 }
-      ];
-
-      const workbook = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(workbook, worksheet, `Lacquer Plan`);
-
-      let filename = `Lacquer_Plan`;
-      if (selectedDate) filename += `_${selectedDate}`;
-      if (fromDate) filename += `_from_${fromDate}`;
-      if (toDate) filename += `_to_${toDate}`;
-      filename += ".xlsx";
-
-      XLSX.writeFile(workbook, filename);
     } catch (err) {
       console.error(err);
       Swal.fire('Export Failed', 'An error occurred while generating the export.', 'error');
@@ -420,42 +495,98 @@ export default function LacquerPlan() {
     }
     const groupedByCompany = {};
     planList.forEach(plan => {
-      const compId = plan.canonicalCompanyId || 'UNASSIGNED';
-      const compName = plan.companyName || 'Unassigned';
+      const compId = (plan.canonicalCompanyId || (plan.companyId?._id || plan.companyId) || 'UNASSIGNED').toString();
+      const compName = plan.companyName || (compId === 'UNASSIGNED' ? 'UNASSIGNED' : 'Unassigned');
       if (!groupedByCompany[compId]) {
-         groupedByCompany[compId] = { name: compId === 'UNASSIGNED' ? 'UNASSIGNED' : compName, plans: [] };
+        groupedByCompany[compId] = { id: compId, name: compId === 'UNASSIGNED' ? 'UNASSIGNED' : compName, plans: [] };
       }
       groupedByCompany[compId].plans.push(plan);
     });
 
+    const companyColors = [
+      'linear-gradient(135deg, #00aeef, #008ecc)',
+      'linear-gradient(135deg, #007236, #008b45)',
+      'linear-gradient(135deg, #6366f1, #8b5cf6)',
+      'linear-gradient(135deg, #f59e0b, #d97706)',
+      'linear-gradient(135deg, #ec4899, #be185d)'
+    ];
+
     let currentSrNo = 0;
-    return Object.keys(groupedByCompany).map(compId => {
+    const sortedCompIds = Object.keys(groupedByCompany).sort((a, b) =>
+      groupedByCompany[a].name.localeCompare(groupedByCompany[b].name, undefined, { numeric: true, sensitivity: 'base' })
+    );
+
+    return sortedCompIds.map((compId, idx) => {
       const groupData = groupedByCompany[compId];
       const startSrNo = currentSrNo;
       currentSrNo += groupData.plans.length;
+
+      const totalOrder = groupData.plans.reduce((sum, p) => sum + (parseFloat(p.orderQty) || 0), 0);
+      const totalCoated = groupData.plans.reduce((sum, p) => sum + (parseFloat(p.coatingCompletedQty || p.coatedQty) || 0), 0);
+      const avatarBg = companyColors[idx % companyColors.length];
+
       return (
-        <div key={compId} className="mb-4">
-          <h5 className="text-center py-3 bg-light border-top border-bottom text-uppercase fw-bold text-dark tracking-wide mb-0" style={{ letterSpacing: '2px' }}>
-            {groupData.name}
-          </h5>
+        <div key={compId} className="mb-4 bg-white border border-light-subtle rounded-3 shadow-sm overflow-hidden">
+          <div
+            className="p-3 d-flex align-items-center justify-content-between flex-wrap gap-3"
+            style={{
+              background: '#f8fafc',
+              borderBottom: '2px solid #e2e8f0',
+              position: 'sticky',
+              left: 0,
+              zIndex: 12
+            }}
+          >
+            <div className="d-flex align-items-center gap-3">
+              <div
+                className="d-flex align-items-center justify-content-center text-white fw-bold shadow-sm"
+                style={{ width: 44, height: 44, borderRadius: '12px', background: avatarBg, fontSize: '1.2rem' }}
+              >
+                {groupData.name.charAt(0).toUpperCase()}
+              </div>
+              <div>
+                <div className="d-flex align-items-center gap-2">
+                  <h4 className="fw-bold text-dark mb-0" style={{ fontSize: '1.15rem' }}>
+                    {groupData.name}
+                  </h4>
+                  <span className="badge bg-soft-primary text-primary px-3 py-1 rounded-pill fw-semibold" style={{ fontSize: '12px' }}>
+                    {groupData.plans.length} {groupData.plans.length === 1 ? 'Plan' : 'Plans'}
+                  </span>
+                </div>
+                <div className="small text-muted mt-1">
+                  Total Order: <b className="text-dark">{totalOrder.toLocaleString()}</b> &nbsp;|&nbsp; Coated: <b className="text-dark">{totalCoated.toLocaleString()}</b>
+                </div>
+              </div>
+            </div>
+
+            <div className="d-flex align-items-center gap-2">
+              <Link
+                to={`/lacquer-plan/add?date=${selectedDate}&companyId=${compId !== 'UNASSIGNED' ? compId : ''}`}
+                className="btn btn-sm btn-outline-primary rounded-pill px-3 py-1 shadow-none fw-semibold"
+                title={`Add Plan for ${groupData.name}`}
+              >
+                <i className="bi bi-plus-lg me-1" /> Add Plan
+              </Link>
+            </div>
+          </div>
           {renderDailyTable(groupData.plans.sort(sortLacquerPlans), showDate, startSrNo)}
         </div>
-      )
+      );
     });
   };
 
   const renderDailyTable = (planList, showDate = false, startSrNo = 0) => {
-    
+
     // Calculate dynamic rowspans for groups based on contiguous sorted elements
-    const { contiguousList: initialContiguousList, visibleGroupSpans } = buildContiguousGroups(planList, r => 
+    const { contiguousList: initialContiguousList, visibleGroupSpans } = buildContiguousGroups(planList, r =>
       r.importGroupId || `manual-${r.bottleName}-${r.brandId?._id || r.brandId || r.brandName}-${r.process}-${r.plainStock}-${r.boxQty ?? r.bottlePerBox}-${r.orderQty}`
     );
 
     const { contiguousList: contiguousPlanList, groupSpans: multiSpans } = buildMultipleContiguousGroups(initialContiguousList, [
-        {
-            idKey: '_bottleVisualId',
-            keySelector: r => `${r.bottleName}-${r.plainStock}-${r.boxQty ?? r.bottlePerBox}`
-        }
+      {
+        idKey: '_bottleVisualId',
+        keySelector: r => `${r.bottleName}-${r.plainStock}-${r.boxQty ?? r.bottlePerBox}`
+      }
     ]);
 
     const renderedGroups = new Set();
@@ -499,140 +630,152 @@ export default function LacquerPlan() {
         </thead>
         <tbody>
           {contiguousPlanList.length > 0 ? contiguousPlanList.map((plan, index) => {
-            
+
             const isFirstInGroup = plan._contiguousId && !renderedGroups.has(plan._contiguousId);
             if (isFirstInGroup) {
-                renderedGroups.add(plan._contiguousId);
+              renderedGroups.add(plan._contiguousId);
             }
-            
+
             const isFirstInBottleVisualGroup = plan._bottleVisualId && !renderedBottleVisualGroups.has(plan._bottleVisualId);
             if (isFirstInBottleVisualGroup) {
-                renderedBottleVisualGroups.add(plan._bottleVisualId);
+              renderedBottleVisualGroups.add(plan._bottleVisualId);
             }
 
             const bottleVisualRowSpan = plan._bottleVisualId ? multiSpans['_bottleVisualId'][plan._bottleVisualId] : 1;
-            
+
             let renderShadeGroupCell = true;
             let shadeRowSpan = 1;
             if (plan._contiguousId) {
-                const prevPlan = index > 0 ? contiguousPlanList[index - 1] : null;
-                const currentShade = plan.coatingShade || plan.colour;
-                const prevShade = prevPlan ? (prevPlan.coatingShade || prevPlan.colour) : null;
-                
-                if (prevPlan && prevPlan._contiguousId === plan._contiguousId && prevShade === currentShade) {
-                    renderShadeGroupCell = false;
-                } else {
-                    let count = 1;
-                    for (let i = index + 1; i < contiguousPlanList.length; i++) {
-                        const nextPlan = contiguousPlanList[i];
-                        const nextShade = nextPlan.coatingShade || nextPlan.colour;
-                        if (nextPlan._contiguousId === plan._contiguousId && nextShade === currentShade) {
-                            count++;
-                        } else {
-                            break;
-                        }
-                    }
-                    shadeRowSpan = count;
+              const prevPlan = index > 0 ? contiguousPlanList[index - 1] : null;
+              const currentShade = plan.coatingShade || plan.colour;
+              const prevShade = prevPlan ? (prevPlan.coatingShade || prevPlan.colour) : null;
+
+              if (prevPlan && prevPlan._contiguousId === plan._contiguousId && prevShade === currentShade) {
+                renderShadeGroupCell = false;
+              } else {
+                let count = 1;
+                for (let i = index + 1; i < contiguousPlanList.length; i++) {
+                  const nextPlan = contiguousPlanList[i];
+                  const nextShade = nextPlan.coatingShade || nextPlan.colour;
+                  if (nextPlan._contiguousId === plan._contiguousId && nextShade === currentShade) {
+                    count++;
+                  } else {
+                    break;
+                  }
                 }
+                shadeRowSpan = count;
+              }
             }
-            
+
             const isFirstInBottleGroup = index === 0 || contiguousPlanList[index - 1].bottleName !== plan.bottleName;
-            
+
             const rowClasses = [
-                'align-middle',
-                'transition-all',
-                'hover-bg-light',
-                isFirstInBottleGroup && index !== 0 ? 'bottle-group-divider' : '',
-                isFirstInGroup ? 'border-top' : 'border-bottom'
+              'align-middle',
+              'transition-all',
+              'hover-bg-light',
+              isFirstInBottleGroup && index !== 0 ? 'bottle-group-divider' : '',
+              isFirstInGroup ? 'border-top' : 'border-bottom'
             ].filter(Boolean).join(' ');
 
             return (
-            <tr key={plan._id || index} className={rowClasses}>
-              <td className="py-3 ps-4 text-start">
-                <span className="text-muted fw-bold" style={{ fontSize: 13 }}>{(startSrNo + index + 1).toString().padStart(2, '0')}</span>
-              </td>
-              {showDate && <td className="py-3 text-center">{new Date(plan.planDate).toLocaleDateString()}</td>}
-              
-              {(!plan._bottleVisualId || isFirstInBottleVisualGroup) && (
-                <td className="py-3 text-center fw-600 text-dark align-middle" style={{ fontSize: 13 }} rowSpan={bottleVisualRowSpan}>{plan.bottleName || '*'}</td>
-              )}
-              
-              <td className="py-3 text-center">
-                <span className="badge bg-soft-primary text-primary px-2 py-1" style={{ fontSize: 11 }}>{plan.variantId?.variantName || plan.variantName || '-'}</span>
-              </td>
-              {renderShadeGroupCell && (
-              <td className="py-3 text-center align-middle" rowSpan={shadeRowSpan}>
-                {(plan.coatingShade || plan.colour) ? (
-                  <span className="badge bg-soft-warning text-warning-accent px-2 py-1" style={{ fontSize: 10 }}>{plan.coatingShade || plan.colour}</span>
-                ) : '-'}
-              </td>
-              )}
-              <td className="py-3 text-center text-accent fw-500">{plan.brandId?.name || plan.brandName || '-'}</td>
-              
-              {(!plan._contiguousId || isFirstInGroup) && (
-                <td className="py-3 text-center align-middle" rowSpan={plan._contiguousId ? visibleGroupSpans[plan._contiguousId] : 1}>
-                  <span className="badge bg-light text-dark border px-2 py-1" style={{ fontSize: 11 }}>{plan.process}</span>
+              <tr key={plan._id || index} className={rowClasses}>
+                <td className="py-3 ps-4 text-start">
+                  <span className="text-muted fw-bold" style={{ fontSize: 13 }}>{(startSrNo + index + 1).toString().padStart(2, '0')}</span>
                 </td>
-              )}
-              
-              {(!plan._bottleVisualId || isFirstInBottleVisualGroup) && (() => {
-                const compId = plan.canonicalCompanyId || (plan.companyId?._id || plan.companyId || '').toString();
-                const bottle = (plan.bottleName || '').toUpperCase();
-                const day = plan.planDate ? new Date(plan.planDate).toISOString().split('T')[0] : '';
-                const poolKey = `${compId}::${bottle}::${day}`;
-                const openingStock = poolOpeningStocks.get(poolKey) ?? 0;
-                const isExceeding = plan._bottleVisualId
-                  ? bottleVisualWarningSet.has(plan._bottleVisualId)
-                  : checkRowStockWarning(plan.orderQty, openingStock);
-                return (
-                  <td className={`py-3 text-center align-middle ${isExceeding ? 'bg-warning' : ''}`} rowSpan={bottleVisualRowSpan}>{plan.plainStock !== null && plan.plainStock !== undefined ? plan.plainStock : 0}</td>
-                );
-              })()}
+                {showDate && <td className="py-3 text-center">{new Date(plan.planDate).toLocaleDateString()}</td>}
 
-              {(() => {
-                const compId = plan.canonicalCompanyId || (plan.companyId?._id || plan.companyId || '').toString();
-                const bottle = (plan.bottleName || '').toUpperCase();
-                const day = plan.planDate ? new Date(plan.planDate).toISOString().split('T')[0] : '';
-                const poolKey = `${compId}::${bottle}::${day}`;
-                const openingStock = poolOpeningStocks.get(poolKey) ?? 0;
-                const isExceeding = checkRowStockWarning(plan.orderQty, openingStock);
-                return (
-                  <td className={`py-3 text-center fw-bold ${isExceeding ? 'bg-warning' : ''}`}>{plan.orderQty !== null && plan.orderQty !== undefined ? plan.orderQty : '-'}</td>
-                );
-              })()}
-              <td className="py-3 text-center">{plan.coatingCompletedQty !== null && plan.coatingCompletedQty !== undefined ? plan.coatingCompletedQty : (plan.coatedQty || 0)}</td>
-              <td className={`py-3 text-center fw-bold ${plan.balanceToMake >= 0 ? 'text-success' : 'text-danger'}`}>
-                {plan.balanceToMake !== null && plan.balanceToMake !== undefined ? plan.balanceToMake : '-'}
-                {isPlanRowCompleted(plan) && <span className="d-block mt-1 badge bg-success" style={{ fontSize: 10 }}>COMPLETED</span>}
-              </td>
-              <td className="py-3 text-center">{plan.dispatchPendingQty !== null && plan.dispatchPendingQty !== undefined ? plan.dispatchPendingQty : (plan.dispatchBalance || 0)}</td>
-              <td className="py-3 text-center">{plan.soldQty || 0}</td>
-              
-              {(!plan._bottleVisualId || isFirstInBottleVisualGroup) && (
-                <td className="py-3 text-center align-middle" rowSpan={bottleVisualRowSpan}>{plan.boxQty !== null && plan.boxQty !== undefined && plan.boxQty > 0 ? plan.boxQty : '-'}</td>
-              )}
-              <td className="py-3 text-center">{plan.noOfBoxes !== null && plan.noOfBoxes !== undefined ? plan.noOfBoxes : '-'}</td>
-              <td className="py-3 text-center small text-muted">{plan.remarks || '-'}</td>
-              <td className="py-3 text-center">
-                <div className="d-flex gap-2 justify-content-center">
-                  <Link to={`/lacquer-plan/view/${plan._id}`} className="btn btn-sm btn-outline-info border-0 rounded-3 shadow-none p-2" title="View">
-                    <i className="bi bi-eye fs-6"></i>
-                  </Link>
-                  <Link 
-                     to={`/lacquer-plan/edit/${contiguousPlanList.filter(p => plan._contiguousId ? p._contiguousId === plan._contiguousId : p._id === plan._id).map(p => p._id).join(',')}`} 
-                     state={{ groupVariantIds: contiguousPlanList.filter(p => plan._contiguousId ? p._contiguousId === plan._contiguousId : p._id === plan._id).map(p => p.variantId?._id || p.variantId) }}
-                     className="btn btn-sm btn-outline-primary border-0 rounded-3 shadow-none p-2" 
-                     title="Edit Group"
-                  >
-                    <i className="bi bi-pencil-square fs-6"></i>
-                  </Link>
-                  <button onClick={() => handleDelete(plan._id)} className="btn btn-sm btn-outline-danger border-0 rounded-3 shadow-none p-2" title="Delete">
-                    <i className="bi bi-trash fs-6"></i>
-                  </button>
-                </div>
-              </td>
-            </tr>
-          );
+                {(!plan._bottleVisualId || isFirstInBottleVisualGroup) && (
+                  <td className="py-3 text-center fw-600 text-dark align-middle" style={{ fontSize: 13 }} rowSpan={bottleVisualRowSpan}>{plan.bottleName || '*'}</td>
+                )}
+
+                <td className="py-3 text-center">
+                  <span className="badge bg-soft-primary text-primary px-2 py-1" style={{ fontSize: 11 }}>{plan.variantId?.variantName || plan.variantName || '-'}</span>
+                </td>
+                {renderShadeGroupCell && (
+                  <td className="py-3 text-center align-middle" rowSpan={shadeRowSpan}>
+                    {(plan.coatingShade || plan.colour) ? (
+                      <span className="badge bg-soft-warning text-warning-accent px-2 py-1" style={{ fontSize: 10 }}>{plan.coatingShade || plan.colour}</span>
+                    ) : '-'}
+                  </td>
+                )}
+                <td className="py-3 text-center text-accent fw-500">{plan.brandId?.name || plan.brandName || '-'}</td>
+
+                {(!plan._contiguousId || isFirstInGroup) && (
+                  <td className="py-3 text-center align-middle" rowSpan={plan._contiguousId ? visibleGroupSpans[plan._contiguousId] : 1}>
+                    <span className="badge bg-light text-dark border px-2 py-1" style={{ fontSize: 11 }}>{plan.process}</span>
+                  </td>
+                )}
+
+                {(!plan._bottleVisualId || isFirstInBottleVisualGroup) && (() => {
+                  const compId = plan.canonicalCompanyId || (plan.companyId?._id || plan.companyId || '').toString();
+                  const bottle = (plan.bottleName || '').toUpperCase();
+                  const day = plan.planDate ? new Date(plan.planDate).toISOString().split('T')[0] : '';
+                  const poolKey = `${compId}::${bottle}::${day}`;
+                  const openingStock = poolOpeningStocks.get(poolKey) ?? 0;
+                  const isExceeding = plan._bottleVisualId
+                    ? bottleVisualWarningSet.has(plan._bottleVisualId)
+                    : checkRowStockWarning(plan.orderQty, openingStock);
+                  return (
+                    <td className={`py-3 text-center align-middle ${isExceeding ? 'bg-warning' : ''}`} rowSpan={bottleVisualRowSpan}>{plan.plainStock !== null && plan.plainStock !== undefined ? plan.plainStock : 0}</td>
+                  );
+                })()}
+
+                {(() => {
+                  const compId = plan.canonicalCompanyId || (plan.companyId?._id || plan.companyId || '').toString();
+                  const bottle = (plan.bottleName || '').toUpperCase();
+                  const day = plan.planDate ? new Date(plan.planDate).toISOString().split('T')[0] : '';
+                  const poolKey = `${compId}::${bottle}::${day}`;
+                  const openingStock = poolOpeningStocks.get(poolKey) ?? 0;
+                  const isExceeding = checkRowStockWarning(plan.orderQty, openingStock);
+                  return (
+                    <td className={`py-3 text-center fw-bold ${isExceeding ? 'bg-warning' : ''}`}>{plan.orderQty !== null && plan.orderQty !== undefined ? plan.orderQty : '-'}</td>
+                  );
+                })()}
+                <td className="py-3 text-center">{plan.coatingCompletedQty !== null && plan.coatingCompletedQty !== undefined ? plan.coatingCompletedQty : (plan.coatedQty || 0)}</td>
+                <td className={`py-3 text-center fw-bold ${plan.balanceToMake >= 0 ? 'text-success' : 'text-danger'}`}>
+                  {plan.balanceToMake !== null && plan.balanceToMake !== undefined ? plan.balanceToMake : '-'}
+                  {isPlanRowCompleted(plan) && <span className="d-block mt-1 badge bg-success" style={{ fontSize: 10 }}>COMPLETED</span>}
+                </td>
+                <td className="py-3 text-center">{plan.dispatchPendingQty !== null && plan.dispatchPendingQty !== undefined ? plan.dispatchPendingQty : (plan.dispatchBalance || 0)}</td>
+                <td className="py-3 text-center">{plan.soldQty || 0}</td>
+
+                {(!plan._bottleVisualId || isFirstInBottleVisualGroup) && (
+                  <td className="py-3 text-center align-middle" rowSpan={bottleVisualRowSpan}>{plan.boxQty !== null && plan.boxQty !== undefined && plan.boxQty > 0 ? plan.boxQty : '-'}</td>
+                )}
+                <td className="py-3 text-center">{plan.noOfBoxes !== null && plan.noOfBoxes !== undefined ? plan.noOfBoxes : '-'}</td>
+                <td className="py-3 text-center small text-muted">{plan.remarks || '-'}</td>
+                <td className="py-3 text-center">
+                  <div className="d-flex gap-2 justify-content-center">
+                    <Link to={`/lacquer-plan/view/${plan._id}`} className="btn btn-sm btn-outline-info border-0 rounded-3 shadow-none p-2" title="View">
+                      <i className="bi bi-eye fs-6"></i>
+                    </Link>
+                    <Link
+                      to={`/lacquer-plan/edit/${contiguousPlanList.filter(p => plan._contiguousId ? p._contiguousId === plan._contiguousId : p._id === plan._id).map(p => p._id).join(',')}`}
+                      state={{ groupVariantIds: contiguousPlanList.filter(p => plan._contiguousId ? p._contiguousId === plan._contiguousId : p._id === plan._id).map(p => p.variantId?._id || p.variantId) }}
+                      className="btn btn-sm btn-outline-primary border-0 rounded-3 shadow-none p-2"
+                      title="Edit Group"
+                    >
+                      <i className="bi bi-pencil-square fs-6"></i>
+                    </Link>
+                    {ability && ability.can('dispatch', 'ready-to-dispatch') && (
+                      <button
+                        onClick={() => handleSendToReadyToDispatch(plan)}
+                        className={`btn btn-sm border-0 rounded-3 shadow-none p-2 ${plan.readyToDispatch && plan.readyToDispatch.sheetId
+                            ? 'btn-success'
+                            : 'btn-outline-success'
+                          }`}
+                        title={plan.readyToDispatch && plan.readyToDispatch.sheetId ? 'Sent – open in Ready To Dispatch' : 'Send to Ready To Dispatch'}
+                      >
+                        <i className={`bi ${plan.readyToDispatch && plan.readyToDispatch.sheetId ? 'bi-send-fill text-success' : 'bi-send'} fs-6`}></i>
+                      </button>
+                    )}
+                    <button onClick={() => handleDelete(plan._id)} className="btn btn-sm btn-outline-danger border-0 rounded-3 shadow-none p-2" title="Delete">
+                      <i className="bi bi-trash fs-6"></i>
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            );
           }) : (
             <tr>
               <td colSpan={showDate ? "17" : "16"} className="text-center py-5 text-muted">No plans found</td>
@@ -645,8 +788,8 @@ export default function LacquerPlan() {
 
   return (
     <>
-    <div className="page-content">
-      <style>{`
+      <div className="page-content lacquer-plan-page lacquer-plan-list">
+        <style>{`
         tr.bottle-group-divider > td {
           border-top: 2px solid #adb5bd !important;
         }
@@ -688,198 +831,198 @@ export default function LacquerPlan() {
           font-size: calc(16px * var(--z)) !important;
         }
       `}</style>
-      <div className="page-header d-flex align-items-center justify-content-between companies-page-header">
-        <div>
-          <h1 className="page-title">Lacquer Plan</h1>
-          <p className="page-subtitle">Manage and track your lacquer plans</p>
-        </div>
-        <div className="d-flex align-items-center gap-3 productions-page-actions">
-          <button onClick={toggleLanguage} className="btn btn-outline-secondary shadow-sm px-3 py-2 rounded-3 fw-bold">
-            {language === 'en' ? 'ગુજરાતી' : 'English'}
-          </button>
-          <button onClick={handleExport} className="btn btn-outline-primary shadow-sm px-4 py-2 rounded-3">
-            <i className="bi bi-file-earmark-excel-fill me-2" /> Export Excel
-          </button>
-          <button onClick={() => setShowImportModal(true)} className="btn btn-outline-success shadow-sm px-4 py-2 rounded-3">
-            <i className="bi bi-file-earmark-excel-fill me-2" /> {labels.importExcel}
-          </button>
-          <Link to={`/lacquer-plan/add?date=${selectedDate}`} className="btn-accent shadow-sm px-4 py-2 rounded-3">
-            <i className="bi bi-plus-lg me-2" /> {labels.addPlan}
-          </Link>
-        </div>
-      </div>
-
-      <div className="dash-card mb-4">
-        <div className="dash-card-body p-3 border-bottom bg-white companies-dash-toolbar">
-          <div className="row g-3 align-items-end productions-filters-panel">
-            {/* Date Filter */}
-            <div className="col-12 col-sm-6 col-md-4 col-lg-2">
-              <label className="small text-muted fw-bold mb-1 d-block">{labels.date}</label>
-              <input 
-                type="date" 
-                className="form-control form-control-sm border-light-subtle bg-light shadow-none w-100" 
-                value={selectedDate} 
-                onChange={(e) => {
-                  setSelectedDate(e.target.value);
-                  setFromDate('');
-                  setToDate('');
-                }} 
-                style={{ borderRadius: 10, height: 38 }} 
-              />
-            </div>
-
-            {/* From Date Filter */}
-            <div className="col-12 col-sm-6 col-md-4 col-lg-2">
-              <label className="small text-muted fw-bold mb-1 d-block">{labels.fromDate}</label>
-              <input 
-                type="date" 
-                className="form-control form-control-sm border-light-subtle bg-light shadow-none w-100" 
-                value={fromDate} 
-                onChange={(e) => {
-                  setFromDate(e.target.value);
-                  setSelectedDate('');
-                }} 
-                style={{ borderRadius: 10, height: 38 }} 
-              />
-            </div>
-
-            {/* To Date Filter */}
-            <div className="col-12 col-sm-6 col-md-4 col-lg-2">
-              <label className="small text-muted fw-bold mb-1 d-block">{labels.toDate}</label>
-              <input 
-                type="date" 
-                className="form-control form-control-sm border-light-subtle bg-light shadow-none w-100" 
-                value={toDate} 
-                onChange={(e) => {
-                  setToDate(e.target.value);
-                  setSelectedDate('');
-                }} 
-                style={{ borderRadius: 10, height: 38 }} 
-              />
-            </div>
-
-            {/* Company Filter */}
-            <div className="col-12 col-sm-6 col-md-4 col-lg-2">
-              <label className="small text-muted fw-bold mb-1 d-block">{labels.company}</label>
-              <Select
-                options={[{ value: '', label: 'All Companies' }, ...(companies || []).map(c => ({ value: c._id, label: c.name })), { value: 'UNASSIGNED', label: 'UNASSIGNED' }]}
-                value={selectedCompanyId ? (selectedCompanyId === 'UNASSIGNED' ? { value: 'UNASSIGNED', label: 'UNASSIGNED' } : { value: selectedCompanyId, label: companies?.find(c => c._id === selectedCompanyId)?.name || 'Unknown' }) : { value: '', label: 'All Companies' }}
-                onChange={(option) => handleCompanyChange(option.value)}
-                classNamePrefix="react-select"
-                menuPortalTarget={document.body}
-                menuPosition="fixed"
-                styles={{ menuPortal: base => ({ ...base, zIndex: 9999 }) }}
-              />
-            </div>
-
-            {/* Brand Filter */}
-            <div className="col-12 col-sm-6 col-md-4 col-lg-2">
-              <label className="small text-muted fw-bold mb-1 d-block">Brand</label>
-              <Select
-                options={[{ value: '', label: 'All Brands' }, ...(brands || []).filter(b => {
-                   if (!selectedCompanyId || selectedCompanyId === 'UNASSIGNED') return true;
-                   const bCompId = (b.companyId?._id || b.companyId)?.toString();
-                   const bComp = (b.company?._id || b.company)?.toString();
-                   return bCompId === selectedCompanyId?.toString() || bComp === selectedCompanyId?.toString();
-                }).map(b => ({ value: b._id, label: b.name }))]}
-                value={selectedBrandId ? { value: selectedBrandId, label: brands?.find(b => b._id === selectedBrandId)?.name || 'Unknown' } : { value: '', label: 'All Brands' }}
-                onChange={(option) => setSelectedBrandId(option.value)}
-                classNamePrefix="react-select"
-                menuPortalTarget={document.body}
-                menuPosition="fixed"
-                styles={{ menuPortal: base => ({ ...base, zIndex: 9999 }) }}
-              />
-            </div>
-
-            {/* Search */}
-            <div className="col-12 col-sm-6 col-md-4 col-lg-2">
-              <label className="small text-muted fw-bold mb-1 d-block">Search</label>
-              <div className="search-input-wrapper position-relative">
-                <i className="bi bi-search text-muted position-absolute top-50 start-0 translate-middle-y ms-3" style={{ pointerEvents: 'none' }} />
-                <input
-                  type="text"
-                  className="form-control form-control-sm border-light-subtle bg-light ps-5 shadow-none w-100"
-                  placeholder="Search bottle name..."
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  style={{ borderRadius: 10, height: 38 }}
-                />
-              </div>
-            </div>
-
-            {/* Buttons */}
-            <div className="col-12 col-sm-6 col-md-4 col-lg-2">
-              <button 
-                onClick={handleReset} 
-                type="button"
-                className="btn btn-sm btn-light border-light-subtle w-100" 
-                style={{ borderRadius: 10, fontWeight: 600, height: 38 }}
-              >
-                Reset Filters
-              </button>
-            </div>
-            {/* Zoom Control */}
-            <div className="col-12 col-md-auto ms-md-auto d-flex align-items-end justify-content-end mt-3 mt-md-0">
-               <ZoomControl value={zoom} onChange={setZoom} />
-            </div>
+        <div className="page-header d-flex align-items-center justify-content-between companies-page-header lacquer-plan-list-header">
+          <div>
+            <h1 className="page-title">Lacquer Plan</h1>
+            <p className="page-subtitle">Manage and track your lacquer plans</p>
+          </div>
+          <div className="d-flex align-items-center gap-3 productions-page-actions lacquer-plan-list-actions">
+            <button onClick={toggleLanguage} className="btn btn-outline-secondary shadow-sm px-3 py-2 rounded-3 fw-bold">
+              {language === 'en' ? 'ગુજરાતી' : 'English'}
+            </button>
+            <button onClick={handleExport} className="btn btn-outline-primary shadow-sm px-4 py-2 rounded-3">
+              <i className="bi bi-file-earmark-excel-fill me-2" /> Export Excel
+            </button>
+            <button onClick={() => setShowImportModal(true)} className="btn btn-outline-success shadow-sm px-4 py-2 rounded-3">
+              <i className="bi bi-file-earmark-excel-fill me-2" /> {labels.importExcel}
+            </button>
+            <Link to={`/lacquer-plan/add?date=${selectedDate}`} className="btn-accent shadow-sm px-4 py-2 rounded-3">
+              <i className="bi bi-plus-lg me-2" /> {labels.addPlan}
+            </Link>
           </div>
         </div>
 
-        <div className="p-0">
-          {/* Data Rendering */}
-          {loading ? (
-            <div className="text-center py-5">
-              <div className="spinner-border text-primary" role="status">
-                <span className="visually-hidden">Loading...</span>
+        <div className="dash-card mb-4">
+          <div className="dash-card-body p-3 border-bottom bg-white companies-dash-toolbar">
+            <div className="row g-3 align-items-end productions-filters-panel">
+              {/* Date Filter */}
+              <div className="col-12 col-sm-6 col-md-4 col-lg-2">
+                <label className="small text-muted fw-bold mb-1 d-block">{labels.date}</label>
+                <input
+                  type="date"
+                  className="form-control form-control-sm border-light-subtle bg-light shadow-none w-100"
+                  value={selectedDate}
+                  onChange={(e) => {
+                    setSelectedDate(e.target.value);
+                    setFromDate('');
+                    setToDate('');
+                  }}
+                  style={{ borderRadius: 10, height: 38 }}
+                />
               </div>
-            </div>
-          ) : (!filteredPlans || filteredPlans.length === 0) ? (
-            <div className="text-center py-5" style={{ minHeight: '400px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
-              <div className="bg-light rounded-circle d-flex align-items-center justify-content-center mb-4" style={{ width: '80px', height: '80px' }}>
-                <i className="bi bi-calendar-x text-muted" style={{ fontSize: '2rem' }}></i>
+
+              {/* From Date Filter */}
+              <div className="col-12 col-sm-6 col-md-4 col-lg-2">
+                <label className="small text-muted fw-bold mb-1 d-block">{labels.fromDate}</label>
+                <input
+                  type="date"
+                  className="form-control form-control-sm border-light-subtle bg-light shadow-none w-100"
+                  value={fromDate}
+                  onChange={(e) => {
+                    setFromDate(e.target.value);
+                    setSelectedDate('');
+                  }}
+                  style={{ borderRadius: 10, height: 38 }}
+                />
               </div>
-              <h4 className="text-dark fw-bold mb-2">No Lacquer Plan Found for This Date</h4>
-              
-              <div className="d-flex gap-3 align-items-center justify-content-center">
-                <div style={{ width: '260px' }}>
-                  <Link to={`/lacquer-plan/add?date=${selectedDate}`} className="btn btn-accent py-2 w-100 d-flex align-items-center justify-content-center" style={{ borderRadius: '8px', whiteSpace: 'nowrap' }}>
-                    <i className="bi bi-plus-circle me-2"></i> Create New Plan
-                  </Link>
+
+              {/* To Date Filter */}
+              <div className="col-12 col-sm-6 col-md-4 col-lg-2">
+                <label className="small text-muted fw-bold mb-1 d-block">{labels.toDate}</label>
+                <input
+                  type="date"
+                  className="form-control form-control-sm border-light-subtle bg-light shadow-none w-100"
+                  value={toDate}
+                  onChange={(e) => {
+                    setToDate(e.target.value);
+                    setSelectedDate('');
+                  }}
+                  style={{ borderRadius: 10, height: 38 }}
+                />
+              </div>
+
+              {/* Company Filter */}
+              <div className="col-12 col-sm-6 col-md-4 col-lg-2">
+                <label className="small text-muted fw-bold mb-1 d-block">{labels.company}</label>
+                <Select
+                  options={[{ value: '', label: 'All Companies' }, ...(companies || []).map(c => ({ value: c._id, label: c.name })), { value: 'UNASSIGNED', label: 'UNASSIGNED' }]}
+                  value={selectedCompanyId ? (selectedCompanyId === 'UNASSIGNED' ? { value: 'UNASSIGNED', label: 'UNASSIGNED' } : { value: selectedCompanyId, label: companies?.find(c => c._id === selectedCompanyId)?.name || 'Unknown' }) : { value: '', label: 'All Companies' }}
+                  onChange={(option) => handleCompanyChange(option.value)}
+                  classNamePrefix="react-select"
+                  menuPortalTarget={document.body}
+                  menuPosition="fixed"
+                  styles={{ menuPortal: base => ({ ...base, zIndex: 9999 }) }}
+                />
+              </div>
+
+              {/* Brand Filter */}
+              <div className="col-12 col-sm-6 col-md-4 col-lg-2">
+                <label className="small text-muted fw-bold mb-1 d-block">Brand</label>
+                <Select
+                  options={[{ value: '', label: 'All Brands' }, ...(brands || []).filter(b => {
+                    if (!selectedCompanyId || selectedCompanyId === 'UNASSIGNED') return true;
+                    const bCompId = (b.companyId?._id || b.companyId)?.toString();
+                    const bComp = (b.company?._id || b.company)?.toString();
+                    return bCompId === selectedCompanyId?.toString() || bComp === selectedCompanyId?.toString();
+                  }).map(b => ({ value: b._id, label: b.name }))]}
+                  value={selectedBrandId ? { value: selectedBrandId, label: brands?.find(b => b._id === selectedBrandId)?.name || 'Unknown' } : { value: '', label: 'All Brands' }}
+                  onChange={(option) => setSelectedBrandId(option.value)}
+                  classNamePrefix="react-select"
+                  menuPortalTarget={document.body}
+                  menuPosition="fixed"
+                  styles={{ menuPortal: base => ({ ...base, zIndex: 9999 }) }}
+                />
+              </div>
+
+              {/* Search */}
+              <div className="col-12 col-sm-6 col-md-4 col-lg-2">
+                <label className="small text-muted fw-bold mb-1 d-block">Search</label>
+                <div className="search-input-wrapper position-relative">
+                  <i className="bi bi-search text-muted position-absolute top-50 start-0 translate-middle-y ms-3" style={{ pointerEvents: 'none' }} />
+                  <input
+                    type="text"
+                    className="form-control form-control-sm border-light-subtle bg-light ps-5 shadow-none w-100"
+                    placeholder="Search bottle name..."
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    style={{ borderRadius: 10, height: 38 }}
+                  />
                 </div>
-                {(!fromDate && !toDate) && (
-                  <div style={{ width: '260px' }}>
-                    <button 
-                      onClick={handleImportPrevious} 
-                      className="btn btn-outline-secondary py-2 w-100 d-flex align-items-center justify-content-center" 
-                      style={{ borderRadius: '8px', whiteSpace: 'nowrap' }}
-                      disabled={importing}
-                    >
-                      {importing ? (
-                        <><span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span> Importing...</>
-                      ) : (
-                        <><i className="bi bi-arrow-down-square me-2"></i> Import Previous Plan</>
-                      )}
-                    </button>
-                  </div>
-                )}
+              </div>
+
+              {/* Buttons */}
+              <div className="col-12 col-sm-6 col-md-4 col-lg-2">
+                <button
+                  onClick={handleReset}
+                  type="button"
+                  className="btn btn-sm btn-light border-light-subtle w-100"
+                  style={{ borderRadius: 10, fontWeight: 600, height: 38 }}
+                >
+                  Reset Filters
+                </button>
+              </div>
+              {/* Zoom Control */}
+              <div className="col-12 col-md-auto ms-md-auto d-flex align-items-end justify-content-end mt-3 mt-md-0 lacquer-plan-zoom-control-wrapper">
+                <ZoomControl value={zoom} onChange={setZoom} />
               </div>
             </div>
-          ) : (
-             <DoubleScrollContainer>
+          </div>
+
+          <div className="p-0">
+            {/* Data Rendering */}
+            {loading ? (
+              <div className="text-center py-5">
+                <div className="spinner-border text-primary" role="status">
+                  <span className="visually-hidden">Loading...</span>
+                </div>
+              </div>
+            ) : (!filteredPlans || filteredPlans.length === 0) ? (
+              <div className="text-center py-5 lacquer-plan-empty-state" style={{ minHeight: '400px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
+                <div className="bg-light rounded-circle d-flex align-items-center justify-content-center mb-4" style={{ width: '80px', height: '80px' }}>
+                  <i className="bi bi-calendar-x text-muted" style={{ fontSize: '2rem' }}></i>
+                </div>
+                <h4 className="text-dark fw-bold mb-2">No Lacquer Plan Found for This Date</h4>
+
+                <div className="d-flex gap-3 align-items-center justify-content-center lacquer-plan-empty-actions">
+                  <div className="lacquer-plan-empty-action">
+                    <Link to={`/lacquer-plan/add?date=${selectedDate}`} className="btn btn-accent py-2 w-100 d-flex align-items-center justify-content-center" style={{ borderRadius: '8px', whiteSpace: 'nowrap' }}>
+                      <i className="bi bi-plus-circle me-2"></i> Create New Plan
+                    </Link>
+                  </div>
+                  {(!fromDate && !toDate) && (
+                    <div className="lacquer-plan-empty-action">
+                      <button
+                        onClick={handleImportPrevious}
+                        className="btn btn-outline-secondary py-2 w-100 d-flex align-items-center justify-content-center"
+                        style={{ borderRadius: '8px', whiteSpace: 'nowrap' }}
+                        disabled={importing}
+                      >
+                        {importing ? (
+                          <><span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span> Importing...</>
+                        ) : (
+                          <><i className="bi bi-arrow-down-square me-2"></i> Import Previous Plan</>
+                        )}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <DoubleScrollContainer>
                 <div className="zoomable-workspace" style={{ '--zoom-scale': zoom / 100 }}>
                   {renderGroupedTables(filteredPlans, !!(fromDate || toDate))}
                 </div>
-             </DoubleScrollContainer>
-          )}
+              </DoubleScrollContainer>
+            )}
+          </div>
         </div>
-      </div>
 
-      <ImportExcelModal 
-        show={showImportModal} 
-        onClose={() => setShowImportModal(false)} 
-        onImportComplete={() => fetchPlans()} 
-      />
-    </div>
+        <ImportExcelModal
+          show={showImportModal}
+          onClose={() => setShowImportModal(false)}
+          onImportComplete={() => fetchPlans()}
+        />
+      </div>
     </>
   );
 }

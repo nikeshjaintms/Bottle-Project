@@ -866,11 +866,16 @@ exports.createPlan = async (req, res) => {
 // Get Plans
 exports.getPlans = async (req, res) => {
   try {
-    const { date, month, fromDate, toDate, search, companyId, brandId } = req.query;
+    const { date, month, fromDate, toDate, search, companyId, brandId, page, limit, pagination = "false", bottleName } = req.query;
     let query = { isDeleted: false };
 
     if (brandId) {
       query.brandId = new mongoose.Types.ObjectId(brandId);
+    }
+
+    // Add bottleName filter to initial query
+    if (bottleName) {
+      query.bottleName = bottleName;
     }
 
     if (date) {
@@ -1069,7 +1074,24 @@ exports.getPlans = async (req, res) => {
         balanceToMake: plan.balanceToMake !== null && plan.balanceToMake !== undefined ? plan.balanceToMake : balanceToMake
       };
     }));
-    augmentedPlans.sort((a, b) => {
+
+    // Apply search filter on augmented plans AFTER aggregation
+    let filteredPlans = augmentedPlans;
+    if (search) {
+      filteredPlans = augmentedPlans.filter(plan => {
+        const searchLower = search.toLowerCase();
+        return (
+          (plan.bottleName && plan.bottleName.toLowerCase().includes(searchLower)) ||
+          (plan.brandName && plan.brandName.toLowerCase().includes(searchLower)) ||
+          (plan.companyName && plan.companyName.toLowerCase().includes(searchLower)) ||
+          (plan.variantName && plan.variantName.toLowerCase().includes(searchLower)) ||
+          (plan.colour && plan.colour.toLowerCase().includes(searchLower))
+        );
+      });
+    }
+
+    // Sort augmented plans
+    filteredPlans.sort((a, b) => {
       const getNum = (str) => {
         if (!str) return 0;
         const match = str.match(/^(\d+)/);
@@ -1098,7 +1120,32 @@ exports.getPlans = async (req, res) => {
       return brandA.localeCompare(brandB);
     });
 
-    res.status(200).json({ success: true, data: augmentedPlans });
+    // Handle pagination
+    const total = filteredPlans.length;
+    const enablePagination = pagination === "true";
+
+    if (!enablePagination) {
+      // Return all records without pagination
+      return res.status(200).json({ success: true, data: filteredPlans, total });
+    }
+
+    // Parse page and limit from query
+    const parsedPage = parseInt(page) || 1;
+    const parsedLimit = parseInt(limit) || 10;
+    const skip = (parsedPage - 1) * parsedLimit;
+
+    // Paginate the filtered results
+    const paginatedPlans = filteredPlans.slice(skip, skip + parsedLimit);
+    const totalPages = Math.ceil(total / parsedLimit);
+
+    res.status(200).json({
+      success: true,
+      data: paginatedPlans,
+      total,
+      page: parsedPage,
+      totalPages,
+      limit: parsedLimit
+    });
   } catch (error) {
     res.status(400).json({ success: false, message: error.message });
   }

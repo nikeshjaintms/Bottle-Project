@@ -103,26 +103,12 @@ export default function ShernoChallanList() {
       {/* Main Card */}
       <div className="dash-card">
         {/* Controls */}
-        <div className="dash-card-header d-flex align-items-center justify-content-between gap-3 flex-wrap companies-controls">
-          <div className="search-input-wrap">
-            <i className="bi bi-search search-icon" />
-            <input
-              type="text"
-              className="search-input"
-              placeholder="Search by Gate Pass No, P.O. No, Vehicle..."
-              value={search}
-              onChange={(e) => {
-                dispatch(setSearchTerm(e.target.value));
-                setSearchParams({ page: '1' });
-              }}
-            />
-          </div>
-
-          <div className="d-flex align-items-center gap-2">
-            <span className="small text-muted">Per page:</span>
+        <div className="dash-card-header d-flex align-items-center justify-content-between p-3 border-bottom bg-white companies-dash-toolbar">
+          <div className="d-flex align-items-center gap-2 text-muted small fw-500">
+            <span>Show</span>
             <select
-              className="form-select form-select-sm"
-              style={{ width: 'auto' }}
+              className="form-select form-select-sm shadow-none border-light-subtle bg-light"
+              style={{ width: 70, borderRadius: 8, cursor: 'pointer' }}
               value={itemsPerPage}
               onChange={(e) => {
                 setItemsPerPage(Number(e.target.value));
@@ -133,23 +119,38 @@ export default function ShernoChallanList() {
               <option value={25}>25</option>
               <option value={50}>50</option>
             </select>
+            <span>entries</span>
+          </div>
+
+          <div className="search-input-wrapper position-relative companies-search-wrap">
+            <i className="bi bi-search text-muted position-absolute top-50 start-0 translate-middle-y ms-3" style={{ pointerEvents: 'none' }} />
+            <input
+              type="text"
+              className="form-control form-control-sm border-light-subtle bg-light ps-5 py-2 shadow-none"
+              placeholder="Search by Gate Pass No, P.O. No, Vehicle..."
+              value={search}
+              onChange={(e) => {
+                dispatch(setSearchTerm(e.target.value));
+                setSearchParams({ page: '1' });
+              }}
+              style={{ borderRadius: 10, fontSize: 13 }}
+            />
           </div>
         </div>
 
         {/* Table Body */}
-        <div className="dash-card-body p-0">
-          <div className="table-responsive">
-            <table className="table align-middle mb-0">
+        <div className="table-responsive">
+            <table className="data-table mb-0 w-100">
               <thead>
                 <tr>
-                  <th style={{ width: 60 }} className="text-center">#</th>
-                  <th style={{ width: 140 }}>Gate Pass No</th>
-                  <th style={{ width: 140 }}>Date & Time</th>
-                  <th>P.O. Details</th>
-                  <th style={{ width: 150 }}>Vehicle No</th>
-                  <th style={{ width: 110 }} className="text-center">Total Boxes</th>
-                  <th style={{ width: 130 }} className="text-center">Total Qty</th>
-                  <th style={{ width: 140 }} className="text-end pe-4">Actions</th>
+                  <th className="py-3 text-uppercase small fw-bold text-muted ps-5 text-start" style={{ width: 60 }}>#</th>
+                  <th className="py-3 text-uppercase small fw-bold text-muted text-center" style={{ width: 140 }}>Gate Pass No</th>
+                  <th className="py-3 text-uppercase small fw-bold text-muted text-center" style={{ width: 140 }}>Date &amp; Time</th>
+                  <th className="py-3 text-uppercase small fw-bold text-muted text-center">P.O. Details</th>
+                  <th className="py-3 text-uppercase small fw-bold text-muted text-center" style={{ width: 150 }}>Vehicle No</th>
+                  <th className="py-3 text-uppercase small fw-bold text-muted text-center" style={{ width: 110 }}>Total Boxes</th>
+                  <th className="py-3 text-uppercase small fw-bold text-muted text-center" style={{ width: 130 }}>Total Qty</th>
+                  <th className="py-3 text-uppercase small fw-bold text-muted text-center" style={{ width: 140 }}>Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -163,12 +164,18 @@ export default function ShernoChallanList() {
                 ) : challans.length === 0 ? (
                   <tr>
                     <td colSpan={8} className="text-center py-5 text-muted">
-                      <i className="bi bi-inbox fs-2 d-block mb-2 text-secondary" />
-                      No Sherno delivery challans found.
-                      <div className="mt-2">
-                        <Link to="/delivery-challan/sherno/add" className="btn btn-sm btn-outline-primary">
-                          <i className="bi bi-plus-lg me-1" /> Create First Challan
-                        </Link>
+                      <div className="d-flex flex-column align-items-center justify-content-center gap-2">
+                        <i className="bi bi-inbox fs-2 text-secondary" />
+                        <span>No Sherno delivery challans found.</span>
+                        <div className="mt-2" style={{ width: 260 }}>
+                          <Link
+                            to="/delivery-challan/sherno/add"
+                            className="btn btn-accent py-2 w-100 d-flex align-items-center justify-content-center"
+                            style={{ borderRadius: 8, whiteSpace: 'nowrap' }}
+                          >
+                            <i className="bi bi-plus-circle me-2" /> Create First Challan
+                          </Link>
+                        </div>
                       </div>
                     </td>
                   </tr>
@@ -176,9 +183,9 @@ export default function ShernoChallanList() {
                   challans.map((c, index) => {
                     const rowNumber = (currentPage - 1) * itemsPerPage + index + 1;
                     return (
-                      <tr key={c._id}>
-                        <td className="text-center text-muted">{rowNumber}</td>
-                        <td>
+                      <tr key={c._id} className="align-middle border-bottom transition-all hover-bg-light">
+                        <td className="py-3 ps-5 text-start text-muted">{rowNumber}</td>
+                        <td className="py-3 text-center">
                           <Link
                             to={`/delivery-challan/sherno/view/${c._id}`}
                             className="fw-bold text-primary text-decoration-none"
@@ -186,13 +193,13 @@ export default function ShernoChallanList() {
                             #{c.challanNo}
                           </Link>
                         </td>
-                        <td>
+                        <td className="py-3 text-center">
                           <div className="fw-semibold">{formatDate(c.challanDate)}</div>
                           {c.challanTime && (
                             <small className="text-muted d-block">{c.challanTime}</small>
                           )}
                         </td>
-                        <td>
+                        <td className="py-3 text-center">
                           <div className="fw-semibold">
                             {c.poNo || c.buyersOrderNo ? `PO: ${c.poNo || c.buyersOrderNo}` : '-'}
                           </div>
@@ -202,53 +209,49 @@ export default function ShernoChallanList() {
                             </small>
                           )}
                         </td>
-                        <td>
+                        <td className="py-3 text-center">
                           <span className="font-monospace fw-semibold text-uppercase">
                             {c.vehicleNo || '-'}
                           </span>
                         </td>
-                        <td className="text-center font-monospace fw-bold text-primary">
+                        <td className="py-3 text-center font-monospace fw-bold text-primary">
                           {c.totalBoxes || 0}
                         </td>
-                        <td className="text-center font-monospace fw-bold text-success">
+                        <td className="py-3 text-center font-monospace fw-bold text-success">
                           {(c.totalQuantity || 0).toLocaleString('en-IN')}
                         </td>
-                        <td className="text-end pe-4">
-                          <div className="d-flex align-items-center justify-content-end gap-1">
+                        <td className="py-3 text-center">
+                          <div className="d-flex align-items-center justify-content-center gap-2">
                             <Link
                               to={`/delivery-challan/sherno/view/${c._id}`}
-                              className="btn btn-xs btn-outline-primary p-1 rounded-2"
+                              className="btn btn-sm btn-outline-info border-0 rounded-3 shadow-none p-2"
                               title="View & Print Challan"
                             >
-                              <i className="bi bi-eye" />
+                              <i className="bi bi-eye fs-6" />
                             </Link>
                             <button
                               type="button"
-                              className="btn btn-xs btn-outline-success p-1 rounded-2"
+                              className="btn btn-sm btn-outline-danger border-0 rounded-3 shadow-none p-2"
                               title="Download PDF"
                               disabled={downloadingId === c._id}
                               onClick={() => handleDownloadPdf(c._id, c.challanNo)}
                             >
-                              {downloadingId === c._id ? (
-                                <span className="spinner-border spinner-border-sm" style={{ width: 12, height: 12 }} />
-                              ) : (
-                                <i className="bi bi-file-earmark-pdf" />
-                              )}
+                            <i className={`bi ${downloadingId === c._id ? 'bi-hourglass-split' : 'bi-file-earmark-pdf-fill'} fs-6`} />
                             </button>
-                            <Link
-                              to={`/delivery-challan/sherno/edit/${c._id}`}
-                              className="btn btn-xs btn-outline-secondary p-1 rounded-2"
-                              title="Edit Challan"
-                            >
-                              <i className="bi bi-pencil" />
-                            </Link>
+                          <Link
+                            to={`/delivery-challan/sherno/edit/${c._id}`}
+                            className="btn btn-sm btn-outline-primary border-0 rounded-3 shadow-none p-2"
+                            title="Edit Challan"
+                          >
+                            <i className="bi bi-pencil-square fs-6" />
+                          </Link>
                             <button
                               type="button"
-                              className="btn btn-xs btn-outline-danger p-1 rounded-2"
+                            className="btn btn-sm btn-outline-danger border-0 rounded-3 shadow-none p-2"
                               title="Delete Challan"
                               onClick={() => handleDelete(c._id, c.challanNo)}
                             >
-                              <i className="bi bi-trash" />
+                              <i className="bi bi-trash fs-6" />
                             </button>
                           </div>
                         </td>
@@ -258,7 +261,6 @@ export default function ShernoChallanList() {
                 )}
               </tbody>
             </table>
-          </div>
         </div>
 
         {/* Footer / Pagination */}

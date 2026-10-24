@@ -18,7 +18,7 @@ export default function Topbar({ collapsed, onToggle, onLogout }) {
   };
 
   return (
-    <header className="topbar">
+    <header className="topbar no-print">
       <button className="topbar-toggle" onClick={onToggle} title="Toggle Sidebar">
         <i className={`bi ${collapsed ? 'bi-layout-sidebar' : 'bi-layout-sidebar-inset'}`} />
       </button>

@@ -409,11 +409,11 @@ exports.getSummaryOverview = async (req, res) => {
 };
 
 /**
- * GET /api/summary/logs?companyId=&bottleId=&fromDate=&toDate=&incomingPage=&dispatchPage=&shrenoPage=&limit=
+ * GET /api/summary/logs?companyId=&bottleId=&fromDate=&toDate=
  * Returns bottle detail Excel-style side-by-side logs:
  * Normal company: Incoming | Dispatch
  * SHRENO company: SHRENO Incoming | Incoming | Dispatch
- * Server-side paginated per block with complete totals footer and KPI strip.
+ * Returns all matching rows per block with complete totals footer and KPI strip.
  */
 exports.getSummaryLogs = async (req, res) => {
   try {
@@ -421,11 +421,7 @@ exports.getSummaryLogs = async (req, res) => {
       companyId,
       bottleId,
       fromDate,
-      toDate,
-      incomingPage = 1,
-      dispatchPage = 1,
-      shrenoPage = 1,
-      limit = 10
+      toDate
     } = req.query;
 
     if (!companyId || !bottleId) {
@@ -621,28 +617,14 @@ exports.getSummaryLogs = async (req, res) => {
       }
     }
 
-    // Pagination helper
-    const paginate = (rows, pageNum, pageSize) => {
-      const page = Math.max(1, parseInt(pageNum) || 1);
-      const lim = Math.max(1, parseInt(pageSize) || 10);
-      const total = rows.length;
-      const totalPages = Math.ceil(total / lim) || 1;
-      const startIndex = (page - 1) * lim;
-      const pageRows = rows.slice(startIndex, startIndex + lim);
+    const withRowCount = (rows) => ({
+      data: rows,
+      total: rows.length
+    });
 
-      return {
-        data: pageRows,
-        page,
-        limit: lim,
-        total,
-        totalPages
-      };
-    };
-
-    const lim = parseInt(limit) || 10;
-    const paginatedIncoming = paginate(allIncomingRows, incomingPage, lim);
-    const paginatedDispatch = paginate(allDispatchRows, dispatchPage, lim);
-    const paginatedShreno = isShreno ? paginate(allShrenoRows, shrenoPage, lim) : null;
+    const allIncoming = withRowCount(allIncomingRows);
+    const allDispatch = withRowCount(allDispatchRows);
+    const allShreno = isShreno ? withRowCount(allShrenoRows) : null;
 
     // Calculate KPI values
     const kpis = {
@@ -668,21 +650,21 @@ exports.getSummaryLogs = async (req, res) => {
       data: {
         kpis,
         incoming: {
-          ...paginatedIncoming,
+          ...allIncoming,
           totals: {
             totalQty: incomingTotalQty,
             totalBoxes: incomingTotalBoxes
           }
         },
         dispatch: {
-          ...paginatedDispatch,
+          ...allDispatch,
           totals: {
             totalQty: dispatchTotalQty,
             totalBoxes: dispatchTotalBoxes
           }
         },
         shrenoIncoming: isShreno ? {
-          ...paginatedShreno,
+          ...allShreno,
           totals: {
             totalQty: shrenoTotalQty
           }

@@ -32,7 +32,7 @@ export default function IncomingCompanies() {
   ];
 
   return (
-    <div className="page-content">
+    <div className="page-content incoming-module-page incoming-module-list">
       <div className="page-header d-flex align-items-center justify-content-between companies-page-header">
         <div>
           <h1 className="page-title">Incoming Register</h1>

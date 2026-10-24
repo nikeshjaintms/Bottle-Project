@@ -6,8 +6,8 @@ import {
   fetchNextChallanNo,
 } from '../../../redux/slices/deliveryChallanSlice';
 import { fetchCompanies } from '../../../redux/slices/companySlice';
+import Select from 'react-select';
 import SearchableSelect from '../../../components/SearchableSelect';
-import SearchableMultiSelect from '../../../components/SearchableMultiSelect';
 import API from '../../../services/api';
 import Swal from 'sweetalert2';
 
@@ -80,7 +80,6 @@ export default function AddShernoChallan() {
       id: 'grp_1',
       bottleSpecId: '',
       title: '',
-      selectedVariantIds: [],
       variantLines: [
         {
           id: 'line_1',
@@ -393,79 +392,20 @@ export default function AddShernoChallan() {
     setSpecGroups(updated);
   };
 
-  // When Variants are Multi-Selected
-  const handleVariantMultiSelect = (gIdx, newVariantIds) => {
+  // Select a variant for an individual challan line
+  const handleVariantSelect = (gIdx, lineIdx, variantId) => {
     const updated = [...specGroups];
     const group = updated[gIdx];
     const bottleKey = group.plainBottle || group.title || group.bottleSpecId;
     const variantsForSpec = specVariantsCache[bottleKey] || [];
-    const autoUnit = findUnitPerBox(group.plainBottle || group.title) || '';
-
-    group.selectedVariantIds = newVariantIds;
-
-    const existingByVar = {};
-    group.variantLines.forEach((vl) => {
-      if (vl.variantId) {
-        existingByVar[vl.variantId] = vl;
-      }
-    });
-
-    const newLines = [];
-    newVariantIds.forEach((vId) => {
-      if (existingByVar[vId]) {
-        newLines.push(existingByVar[vId]);
-      } else {
-        const variant = variantsForSpec.find((v) => v._id === vId);
-        let formattedDesc = '';
-        if (variant) {
-          const shade = variant.coatingShade ? variant.coatingShade.trim() : '';
-          const name = variant.variantName ? variant.variantName.trim() : '';
-          const color =
-            variant.detectedTextColor &&
-            variant.detectedTextColor !== 'Not Detected' &&
-            variant.detectedTextColor !== 'Analysis Failed' &&
-            variant.detectedTextColor !== 'Detection Failed'
-              ? variant.detectedTextColor.trim()
-              : '';
-          formattedDesc = [shade, name, color].filter(Boolean).join('-');
-        }
-
-        newLines.push({
-          id: 'line_' + Math.random().toString(36).substr(2, 9),
-          variantId: vId,
-          materialCode: existingByVar[vId]?.materialCode || '',
-          description: formattedDesc,
-          box: '',
-          fullBox: '',
-          looseBox: '1',
-          looseQty: '',
-          unit: autoUnit,
-          total: '',
-          boxCount: 0,
-          remarks: '',
-        });
-      }
-    });
-
-    if (newLines.length === 0) {
-      const defaultUnit = group.variantLines[0]?.unit || autoUnit || '';
-      newLines.push({
-        id: 'line_' + Math.random().toString(36).substr(2, 9),
-        variantId: '',
-        materialCode: '',
-        description: '',
-        box: '',
-        fullBox: '',
-        looseBox: '1',
-        looseQty: '',
-        unit: defaultUnit,
-        total: '',
-        boxCount: 0,
-        remarks: '',
-      });
+    const line = group.variantLines[lineIdx];
+    line.variantId = variantId;
+    const foundVariant = variantsForSpec.find((variant) => variant._id === variantId);
+    if (foundVariant) {
+      line.description = foundVariant.variantName || foundVariant.name || '';
+    } else if (!variantId) {
+      line.description = '';
     }
-
-    group.variantLines = newLines;
     setSpecGroups(updated);
   };
 
@@ -529,13 +469,8 @@ export default function AddShernoChallan() {
         boxCount: 0,
         remarks: '',
       };
-      group.selectedVariantIds = [];
       setSpecGroups(updated);
       return;
-    }
-
-    if (removedLine.variantId) {
-      group.selectedVariantIds = group.selectedVariantIds.filter((id) => id !== removedLine.variantId);
     }
 
     group.variantLines = group.variantLines.filter((_, idx) => idx !== lineIdx);
@@ -567,7 +502,6 @@ export default function AddShernoChallan() {
         id: 'grp_' + Math.random().toString(36).substr(2, 9),
         bottleSpecId: '',
         title: '',
-        selectedVariantIds: [],
         variantLines: [
           {
             id: 'line_' + Math.random().toString(36).substr(2, 9),
@@ -687,7 +621,7 @@ export default function AddShernoChallan() {
   }));
 
   return (
-    <div className="page-content">
+    <div className="page-content delivery-challan-form-page">
       {/* Header */}
       <div className="page-header d-flex align-items-center gap-3 user-form-page-header">
         <Link
@@ -712,14 +646,31 @@ export default function AddShernoChallan() {
         </div>
       </div>
 
-      <form onSubmit={handleSubmit}>
-        {/* SECTION 1: Challan Meta & Company Selection */}
-        <div className="dash-card mb-4">
-          <div className="dash-card-header bg-white p-3 border-bottom d-flex align-items-center gap-2">
+      <form onSubmit={handleSubmit} className="sherno-challan-form">
+        <style>{`
+          .sherno-challan-form .form-control,
+          .sherno-challan-form .form-select {
+            min-height: 38px;
+            padding: 0.375rem 0.75rem;
+            border: 1px solid #dee2e6 !important;
+            border-radius: 0.375rem !important;
+            background-color: #fff;
+            box-shadow: none !important;
+            font-size: 1rem;
+          }
+          .sherno-challan-form .form-control:focus,
+          .sherno-challan-form .form-select:focus {
+            border-color: #86b7fe !important;
+            box-shadow: 0 0 0 0.2rem rgba(13, 110, 253, 0.15) !important;
+          }
+        `}</style>
+        {/* Section 1: Gate Pass & P.O. Details */}
+        <div className="card border border-light-subtle shadow-sm rounded-3 mb-4 bg-white">
+          <div className="card-header bg-white p-3 border-bottom d-flex align-items-center gap-2">
             <i className="bi bi-receipt text-primary fs-5" />
-            <h5 className="mb-0 fw-bold">1. Gate Pass & P.O. Details</h5>
+            <h6 className="mb-0 fw-bold">1. Gate Pass &amp; P.O. Details</h6>
           </div>
-          <div className="dash-card-body p-4">
+          <div className="card-body p-4">
             <div className="row g-3">
               {/* Company Selection */}
               <div className="col-md-6">
@@ -851,12 +802,12 @@ export default function AddShernoChallan() {
           </div>
         </div>
 
-        {/* SECTION 2: Consignee Address */}
-        <div className="dash-card mb-4">
-          <div className="dash-card-header bg-white p-3 border-bottom d-flex align-items-center justify-content-between">
+        {/* Section 2: Consignee Address */}
+        <div className="card border border-light-subtle shadow-sm rounded-3 mb-4 bg-white">
+          <div className="card-header bg-white p-3 border-bottom d-flex align-items-center justify-content-between">
             <div className="d-flex align-items-center gap-2">
               <i className="bi bi-geo-alt text-primary fs-5" />
-              <h5 className="mb-0 fw-bold">2. Consignee (M/S SHRENO LTD)</h5>
+              <h6 className="mb-0 fw-bold">2. Consignee (M/S SHRENO LTD)</h6>
             </div>
             {companyId && (
               <Link
@@ -868,7 +819,7 @@ export default function AddShernoChallan() {
               </Link>
             )}
           </div>
-          <div className="dash-card-body p-4">
+          <div className="card-body p-4">
             <div className="row g-4">
               {/* BILLED TO / CONSIGNEE */}
               <div className="col-md-6 border-end">
@@ -1020,13 +971,13 @@ export default function AddShernoChallan() {
           </div>
         </div>
 
-        {/* SECTION 3: Line Items with Material Code, Spec, Variant & Unit/Box */}
-        <div className="dash-card mb-4" style={{ minHeight: 480 }}>
-          <div className="dash-card-header bg-white p-3 border-bottom d-flex align-items-center justify-content-between">
+        {/* Section 3: Challan Items */}
+        <div className="card border border-light-subtle shadow-sm rounded-3 mb-4 bg-white">
+          <div className="card-header bg-white p-3 border-bottom d-flex align-items-center justify-content-between">
             <div>
               <div className="d-flex align-items-center gap-2">
                 <i className="bi bi-box-seam text-primary fs-5" />
-                <h5 className="mb-0 fw-bold">3. Challan Items</h5>
+                <h6 className="mb-0 fw-bold">3. Challan Items</h6>
               </div>
               <small className="text-muted">
                 Each item includes Material Code (e.g. 82003708), Plain Bottle, Variant, and Quantities.
@@ -1034,25 +985,25 @@ export default function AddShernoChallan() {
             </div>
             <button
               type="button"
-              className="btn btn-sm btn-accent"
+              className="btn btn-accent px-4 py-2"
               onClick={addSpecGroup}
             >
               <i className="bi bi-plus-circle me-1" /> Add Plain Bottle
             </button>
           </div>
 
-          <div className="dash-card-body p-3" style={{ minHeight: 400 }}>
-            <div className="table-responsive" style={{ minHeight: 360, paddingBottom: 180, overflowX: 'auto', overflowY: 'visible' }}>
-              <table className="table table-bordered align-middle mb-0">
+          <div className="card-body p-4">
+            <div className="table-responsive sherno-challan-items-responsive" style={{ overflowX: 'auto', overflowY: 'visible' }}>
+              <table className="table table-bordered align-middle mb-0 sherno-challan-items-table">
                 <thead className="table-light text-center small text-uppercase">
                   <tr>
                     <th style={{ width: 45 }}>#</th>
-                    <th style={{ width: 220 }}>Plain Bottle</th>
-                    <th style={{ width: 230 }}>Select Variant(s)</th>
+                    <th style={{ width: 300 }}>Plain Bottle</th>
                     <th style={{ width: 140 }}>Material Code</th>
+                    <th style={{ width: 230 }}>Variant / Shade</th>
                     <th style={{ minWidth: 260 }}>Description (Coating-Variant-Color)</th>
                     <th style={{ width: 190 }}>Box Details</th>
-                    <th style={{ width: 90 }}>Unit</th>
+                    <th style={{ width: 90 }}>BottlePerBox</th>
                     <th style={{ width: 110 }}>Total Qty</th>
                     <th style={{ width: 55 }}>Action</th>
                   </tr>
@@ -1104,17 +1055,22 @@ export default function AddShernoChallan() {
                             style={{ background: '#fdfdfe' }}
                           >
                             {plainBottleOptions.length > 0 ? (
-                              <SearchableSelect
+                              <Select
                                 options={plainBottleOptions}
-                                value={group.plainBottle || group.title}
-                                onChange={(val) => handleBottleSelect(gIdx, val)}
+                                value={plainBottleOptions.find((option) => option.value === (group.plainBottle || group.title)) || ((group.plainBottle || group.title) ? { value: group.plainBottle || group.title, label: group.plainBottle || group.title } : null)}
+                                onChange={(selected) => handleBottleSelect(gIdx, selected?.value || '')}
                                 placeholder="-- Select Plain Bottle --"
-                                style={{
-                                  borderRadius: 8,
-                                  minHeight: 38,
-                                  padding: '6px 10px',
-                                  fontSize: 13,
-                                  fontWeight: 600,
+                                isClearable
+                                menuPortalTarget={document.body}
+                                menuPosition="fixed"
+                                menuPlacement="auto"
+                                styles={{
+                                  menuPortal: (base) => ({ ...base, zIndex: 9999 }),
+                                  control: (base) => ({ ...base, width: '100%', minWidth: 0, minHeight: 42, height: 'auto', alignItems: 'center', flexWrap: 'nowrap' }),
+                                  valueContainer: (base) => ({ ...base, flex: '1 1 0%', width: 0, minWidth: 0, flexWrap: 'wrap', whiteSpace: 'normal' }),
+                                  singleValue: (base) => ({ ...base, position: 'relative', top: 'auto', transform: 'none', maxWidth: '100%', margin: 0, whiteSpace: 'normal', overflow: 'visible', textOverflow: 'clip', wordBreak: 'normal', overflowWrap: 'break-word' }),
+                                  indicatorsContainer: (base) => ({ ...base, flexShrink: 0 }),
+                                  option: (base) => ({ ...base, whiteSpace: 'normal', wordBreak: 'normal', overflowWrap: 'break-word' }),
                                 }}
                               />
                             ) : (
@@ -1132,19 +1088,6 @@ export default function AddShernoChallan() {
                                 style={{ height: 38, fontSize: 13, borderRadius: 8 }}
                               />
                             )}
-                            <input
-                              type="text"
-                              className="form-control mt-1 text-muted small"
-                              value={group.title}
-                              onChange={(e) => {
-                                const updated = [...specGroups];
-                                updated[gIdx].title = e.target.value;
-                                setSpecGroups(updated);
-                              }}
-                              placeholder="Spec Title override"
-                              title="Spec Title displayed on Challan"
-                              style={{ height: 30, fontSize: 12, borderRadius: 6 }}
-                            />
                             {specGroups.length > 1 && (
                               <button
                                 type="button"
@@ -1155,34 +1098,6 @@ export default function AddShernoChallan() {
                               >
                                 <i className="bi bi-trash me-1" /> Remove Bottle
                               </button>
-                            )}
-                          </td>
-                        )}
-
-                        {/* Multi-Select Variant */}
-                        {lIdx === 0 && (
-                          <td
-                            rowSpan={numLines}
-                            className="align-top"
-                            style={{ background: '#fdfdfe' }}
-                          >
-                            {bottleKey ? (
-                              <SearchableMultiSelect
-                                options={variantOptions}
-                                selectedValues={group.selectedVariantIds}
-                                onChange={(newVals) => handleVariantMultiSelect(gIdx, newVals)}
-                                placeholder="-- Pick Variant(s) --"
-                                style={{
-                                  borderRadius: 8,
-                                  minHeight: 38,
-                                  padding: '6px 10px',
-                                  fontSize: 13,
-                                }}
-                              />
-                            ) : (
-                              <div className="text-muted small fst-italic text-center py-2">
-                                Select Plain Bottle first
-                              </div>
                             )}
                           </td>
                         )}
@@ -1199,6 +1114,23 @@ export default function AddShernoChallan() {
                             }
                             title="Material Code (e.g. 82003708 for Shreno)"
                             style={{ height: 38, fontSize: 13, borderRadius: 8 }}
+                          />
+                        </td>
+
+                        {/* Variant selection per item line */}
+                        <td>
+                          <Select
+                            options={variantOptions}
+                            value={variantOptions.find((option) => option.value === line.variantId) || null}
+                            onChange={(selected) => handleVariantSelect(gIdx, lIdx, selected?.value || '')}
+                            placeholder={!group.plainBottle && !group.title ? 'Choose bottle first' : variantsForThisSpec.length ? '-- Choose Variant --' : 'No preset variants'}
+                            isClearable
+                            isDisabled={(!group.plainBottle && !group.title) || variantsForThisSpec.length === 0}
+                            menuPortalTarget={document.body}
+                            styles={{
+                              menuPortal: (base) => ({ ...base, zIndex: 9999 }),
+                              placeholder: (base) => ({ ...base, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }),
+                            }}
                           />
                         </td>
 
@@ -1266,7 +1198,7 @@ export default function AddShernoChallan() {
                             onChange={(e) =>
                               handleVariantLineChange(gIdx, lIdx, 'unit', e.target.value)
                             }
-                            title="Pcs per Box (e.g. 64)"
+                            title="BottlePerBox (e.g. 64)"
                             required
                             style={{ height: 38, fontSize: 13, borderRadius: 8 }}
                           />
@@ -1288,11 +1220,11 @@ export default function AddShernoChallan() {
                         <td className="text-center">
                           <button
                             type="button"
-                            className="btn btn-sm btn-outline-danger p-1 rounded-2"
+                            className="btn btn-sm btn-outline-danger border-0 rounded-3 shadow-none p-2"
                             onClick={() => removeVariantLine(gIdx, lIdx)}
                             title="Remove this line"
                           >
-                            <i className="bi bi-trash" />
+                            <i className="bi bi-trash fs-6" />
                           </button>
                         </td>
                       </tr>
@@ -1317,9 +1249,12 @@ export default function AddShernoChallan() {
           </div>
         </div>
 
-        {/* SECTION 4: Checks & Submit */}
-        <div className="dash-card mb-4">
-          <div className="dash-card-body p-4">
+        {/* Section 4: Checks & Submission */}
+        <div className="card border border-light-subtle shadow-sm rounded-3 mb-4 bg-white">
+          <div className="card-header bg-white p-3 border-bottom">
+            <h6 className="fw-bold text-dark mb-0">4. Checks &amp; Submission</h6>
+          </div>
+          <div className="card-body p-4">
             <div className="row g-3 align-items-center">
               <div className="col-md-6">
                 <label className="form-label small fw-600 text-muted">Checked By</label>
@@ -1346,13 +1281,10 @@ export default function AddShernoChallan() {
               </div>
             </div>
 
-            <div className="d-flex align-items-center justify-content-end gap-3 mt-4 pt-3 border-top">
-              <Link to="/delivery-challan/sherno" className="btn btn-outline-secondary px-4">
-                Cancel
-              </Link>
+            <div className="d-flex gap-2 mt-4 user-form-actions border-top pt-4">
               <button
                 type="submit"
-                className="btn btn-accent px-5 fw-bold"
+                className="btn-accent px-5 py-3 flex-grow-1"
                 disabled={loading}
               >
                 {loading ? (
@@ -1365,6 +1297,9 @@ export default function AddShernoChallan() {
                   </>
                 )}
               </button>
+              <Link to="/delivery-challan/sherno" className="btn-ghost px-5 py-3 text-decoration-none text-center">
+                Cancel
+              </Link>
             </div>
           </div>
         </div>

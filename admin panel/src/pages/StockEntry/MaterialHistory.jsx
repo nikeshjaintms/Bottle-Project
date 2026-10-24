@@ -173,8 +173,8 @@ export default function MaterialHistory() {
   };
 
   return (
-    <div className="page-content">
-      <div className="page-header d-flex flex-wrap justify-content-between align-items-center gap-3 companies-page-header">
+    <div className="page-content stock-entry-page stock-entry-history">
+      <div className="page-header d-flex flex-wrap justify-content-between align-items-center gap-3 companies-page-header stock-entry-header">
         <div>
           <h1 className="page-title">Material History</h1>
           <p className="page-subtitle">Track every inward and outward transaction</p>
@@ -188,8 +188,8 @@ export default function MaterialHistory() {
         </div>
       </div>
 
-      <div className="dash-card p-0">
-        <div className="dash-card-header d-flex flex-column flex-md-row align-items-start align-items-md-center justify-content-between px-4 pt-3 border-bottom bg-white companies-dash-toolbar gap-3">
+      <div className="dash-card p-0 stock-entry-card">
+        <div className="dash-card-header d-flex flex-column flex-md-row align-items-start align-items-md-center justify-content-between px-4 pt-3 border-bottom bg-white companies-dash-toolbar gap-3 stock-entry-tabs">
           <ul className="nav nav-tabs border-0 flex-row flex-nowrap w-100 overflow-auto gap-4 pb-1" style={{ marginBottom: '-1px', WebkitOverflowScrolling: 'touch', whiteSpace: 'nowrap' }}>
             <Can I="read" a="stock_entry">
               <li className="nav-item flex-shrink-0">
@@ -217,7 +217,7 @@ export default function MaterialHistory() {
         </div>
         
         {/* Pagination Toolbar */}
-        <div className="d-flex flex-wrap align-items-center justify-content-between p-3 border-bottom bg-white companies-dash-toolbar">
+        <div className="d-flex flex-wrap align-items-center justify-content-between p-3 border-bottom bg-white companies-dash-toolbar stock-entry-toolbar stock-entry-history-toolbar">
           <div className="d-flex flex-column flex-sm-row align-items-start align-items-sm-center gap-2 gap-sm-3 mb-2 mb-md-0 w-100 w-md-auto flex-grow-1">
             <span className="text-muted fw-bold small text-nowrap">Select Material:</span>
             <div className="flex-grow-1" style={{ width: '100%', maxWidth: '300px' }}>

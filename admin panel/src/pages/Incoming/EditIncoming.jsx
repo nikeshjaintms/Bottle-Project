@@ -346,7 +346,7 @@ export default function EditIncoming() {
   const grandTotal = items.reduce((acc, curr) => acc + (Number(curr.totalQty) || 0), 0);
 
   return (
-    <div className="page-content">
+    <div className="page-content incoming-module-page incoming-module-form">
       <div className="d-flex justify-content-between align-items-end mb-4">
         <div className="d-flex align-items-center gap-3">
           <button onClick={() => navigate(-1)} className="btn-ghost border-0 shadow-sm" style={{ width: 40, height: 40, borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -437,7 +437,7 @@ export default function EditIncoming() {
             </div>
           ) : (
             <div className="dash-card border-0 shadow-sm p-4">
-        <form onSubmit={handleSubmit}>
+        <form onSubmit={handleSubmit} className="incoming-entry-form">
           {/* Header Details */}
 
           {isPoRequired && (
@@ -525,7 +525,7 @@ export default function EditIncoming() {
             <h6 className="fw-bold text-primary mb-0">BOTTLE ENTRIES</h6>
           </div>
 
-          <div className="table-responsive mb-3">
+          <div className="table-responsive mb-3 incoming-entry-table">
             <table className="table table-bordered align-middle">
               <thead className="table-light">
                 <tr>

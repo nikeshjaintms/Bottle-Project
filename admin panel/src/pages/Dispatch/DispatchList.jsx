@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { Link, useSearchParams, useParams, useNavigate } from 'react-router-dom';
 import { fetchDispatch, deleteDispatch } from '../../redux/slices/dispatchSlice';
@@ -14,7 +14,7 @@ import DispatchImportModal from './DispatchImportModal';
 
 export default function DispatchList() {
   const dispatch = useDispatch();
-  const { data: dispatches, loading, totalPages, total, page } = useSelector(state => state.dispatch);
+  const { data: dispatches, loading, totalPages, total } = useSelector(state => state.dispatch);
   const { companies } = useSelector(state => state.companies);
   const { items: bottlePerBoxes } = useSelector(state => state.bottlePerBox);
   const { bottleSpecs } = useSelector(state => state.bottleSpecs);
@@ -30,8 +30,20 @@ export default function DispatchList() {
   const navigate = useNavigate();
   
   const [searchParams, setSearchParams] = useSearchParams();
-  const urlPage = searchParams.get("page") || '';
-  const currentPage = Number(urlPage) || page || 1;
+  const currentPage = Number(searchParams.get("page")) || 1;
+
+  // Debounce search
+  const searchTimeoutRef = useRef(null);
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+
+  useEffect(() => {
+    clearTimeout(searchTimeoutRef.current);
+    searchTimeoutRef.current = setTimeout(() => {
+      setDebouncedSearch(searchTerm);
+      setSearchParams({ page: '1' });
+    }, 400);
+    return () => clearTimeout(searchTimeoutRef.current);
+  }, [searchTerm]);
 
   useEffect(() => {
     dispatch(fetchCompanies({ pagination: "false" }));
@@ -46,99 +58,60 @@ export default function DispatchList() {
     return companies.find(c => c._id === companyId);
   }, [companyId, companies]);
 
-  // Calculate which bottles have actual dispatch records for this company
-  const [allDispatchesForBottles, setAllDispatchesForBottles] = useState([]);
+  // Fetch bottle options from API instead of from page data
+  const [bottleOptions, setBottleOptions] = useState([]);
 
   useEffect(() => {
     if (companyId) {
-      // Fetch all dispatch records for this company without pagination
-      dispatch(fetchDispatch({ pagination: "false", companyId })).then(res => {
-        if (res.payload && res.payload.data) {
-          setAllDispatchesForBottles(res.payload.data);
-        }
-      });
+      api.get('/dispatch/bottle-options', { params: { companyId } })
+        .then(res => {
+          const options = res.data.data || [];
+          
+          const unmappedCount = res.data.unmappedCount ?? 0;
+          
+          // Build options array with Unmapped first (no brackets or counts)
+          const allOptions = [
+            { value: 'Unmapped', label: 'Unmapped' },
+            ...options
+              .map(b => ({ value: b.name, label: b.name }))
+              .sort((a, b) => a.label.localeCompare(b.label, undefined, { numeric: true, sensitivity: 'base' }))
+          ];
+          
+          setBottleOptions(allOptions);
+        })
+        .catch(err => console.error('Error fetching bottle options:', err));
     }
   }, [companyId]);
 
-  const availableBottlesWithRecords = React.useMemo(() => {
-    const dataToUse = allDispatchesForBottles.length > 0 ? allDispatchesForBottles : dispatches;
-    if (!dataToUse || !Array.isArray(dataToUse) || dataToUse.length === 0) return [];
-    
-    const bottleIds = new Set();
-    const bottleNameMap = new Map(); // Map bottle names to IDs for fallback
-    
-    dataToUse.forEach(disp => {
-      if (disp.items && Array.isArray(disp.items)) {
-        disp.items.forEach(item => {
-          if (item.bottleId) {
-            // Handle both object IDs and string IDs
-            const id = typeof item.bottleId === 'object' ? (item.bottleId._id || item.bottleId.id) : item.bottleId;
-            const name = typeof item.bottleId === 'object' ? (item.bottleId.bottleName || item.bottleId.plainBottleName) : null;
-            if (id) {
-              bottleIds.add(String(id));
-              if (name) {
-                bottleNameMap.set(name, String(id));
-              }
-            }
-          }
-        });
-      }
-    });
-    
-    // Return only bottlePerBoxes that have dispatch records
-    let filtered = (bottlePerBoxes || [])
-      .filter(b => bottleIds.has(String(b._id)))
-      .sort((a, b) => {
-        const nameA = (a.bottleName || a.plainBottleName || '').toLowerCase();
-        const nameB = (b.bottleName || b.plainBottleName || '').toLowerCase();
-        return nameA.localeCompare(nameB, undefined, { numeric: true, sensitivity: 'base' });
-      });
-    
-    // If no bottlePerBoxes data, create fallback objects from dispatch records
-    if (filtered.length === 0 && bottleNameMap.size > 0) {
-      filtered = Array.from(bottleNameMap.entries()).map(([name, id]) => ({
-        _id: id,
-        bottleName: name,
-        plainBottleName: name
-      }));
-    }
-    
-    return filtered;
-  }, [allDispatchesForBottles, dispatches, bottlePerBoxes]);
-
-  // Auto-select first bottle when company changes (only once per company)
-  const [autoSelectDone, setAutoSelectDone] = useState(false);
-  useEffect(() => {
-    if (companyId) {
-      setAutoSelectDone(false);
-      setBottleFilter('');
-    }
-  }, [companyId]);
-
-  useEffect(() => {
-    if (companyId && !autoSelectDone && bottleFilter === '' && availableBottlesWithRecords.length > 0) {
-      const firstBottleId = availableBottlesWithRecords[0]._id;
-      setBottleFilter(firstBottleId);
-      setAutoSelectDone(true);
-      setSearchParams({ page: 1 });
-    }
-  }, [availableBottlesWithRecords, autoSelectDone, companyId, bottleFilter]);
-
+  // Fetch data with proper pagination
   useEffect(() => {
     dispatch(fetchDispatch({ 
-      page: currentPage, 
-      limit: itemsPerPage, 
-      search: searchTerm, 
+      page: currentPage,
+      limit: itemsPerPage,
+      search: debouncedSearch, 
       dateFrom,
       dateTo,
       companyId,
-      bottleName: bottleFilter,
-      pagination: companyId ? "false" : "true"
+      plainBottleName: bottleFilter,
+      pagination: "true"
     }));
-  }, [dispatch, currentPage, itemsPerPage, searchTerm, dateFrom, dateTo, companyId, bottleFilter]);
-  
+  }, [dispatch, currentPage, itemsPerPage, debouncedSearch, dateFrom, dateTo, companyId, bottleFilter]);
+
   const handlePageChange = (newPage) => {
-    setSearchParams({ page: newPage });
+    setSearchParams(prev => {
+      const params = new URLSearchParams(prev);
+      params.set('page', String(newPage));
+      return params;
+    });
+  };
+
+  const handlePageSizeChange = (newSize) => {
+    setItemsPerPage(newSize);
+    setSearchParams(prev => {
+      const params = new URLSearchParams(prev);
+      params.set('page', '1');
+      return params;
+    });
   };
 
   const handleReset = () => {
@@ -146,8 +119,8 @@ export default function DispatchList() {
     setDateFrom('');
     setDateTo('');
     setBottleFilter('');
-    setAutoSelectDone(false);
-    setSearchParams({ page: 1 });
+    setItemsPerPage(10);
+    setSearchParams({ page: '1' });
   };
 
   const handleDelete = (id, gatePassNo) => {
@@ -164,12 +137,13 @@ export default function DispatchList() {
           if (!res.error) {
             Swal.fire('Deleted!', 'Record removed.', 'success');
             dispatch(fetchDispatch({ 
-              page: currentPage, 
-              limit: itemsPerPage, 
-              search: searchTerm,
+              page: 1,
+              limit: itemsPerPage,
+              search: debouncedSearch,
               dateFrom,
               dateTo,
-              companyId
+              companyId,
+              plainBottleName: bottleFilter
             }));
           } else {
             Swal.fire('Error!', res.payload || 'Failed to delete.', 'error');
@@ -188,12 +162,14 @@ export default function DispatchList() {
         didOpen: () => Swal.showLoading()
       });
 
+      // Fetch ALL matching data (not just current page) for export
       const response = await api.get('/dispatch', {
         params: {
-          search: searchTerm,
+          search: debouncedSearch,
           dateFrom,
           dateTo,
           companyId,
+          plainBottleName: bottleFilter,
           pagination: 'false'
         }
       });
@@ -206,46 +182,49 @@ export default function DispatchList() {
       }
 
       let exportedData = [];
+      let srNo = 1;
       
-      allData.forEach((dispatch, dispatchIdx) => {
+      allData.forEach((dispatch) => {
         if (dispatch.items && dispatch.items.length > 0) {
           dispatch.items.forEach((item, itemIdx) => {
             exportedData.push({
-              'Sr No': `${dispatchIdx + 1}.${itemIdx + 1}`,
+              'Sr No': srNo,
               'Dispatch Date': new Date(dispatch.dispatchDate).toLocaleDateString('en-GB'),
               'G. Pass No': dispatch.gatePassNo || 'N/A',
               'Company': dispatch.companyId?.name || 'N/A',
-              'Bottle Name': typeof item.bottleId === 'string' ? item.bottleId : (item.bottleId?.plainBottleName || item.bottleId?.bottleName || 'N/A'),
-              'Variant': item.variantId?.variantName || 'N/A',
-              'Coating Shade': item.coatingShade || 'N/A',
-              'Text Color': item.detectedTextColor || 'N/A',
+              'Bottle Name': item.plainBottleName || 'Unmapped',
+              'Variant': item.variantName || '-',
+              'Coating Shade': item.coatingShade || '-',
+              'Text Color': item.detectedTextColor || '-',
               'Box': item.box || 0,
               'Qty/Box': item.qty || 0,
               'Total Qty': item.totalQty || 0,
               'Remarks': dispatch.remarks || '-'
             });
+            srNo++;
           });
         } else {
           exportedData.push({
-            'Sr No': dispatchIdx + 1,
+            'Sr No': srNo,
             'Dispatch Date': new Date(dispatch.dispatchDate).toLocaleDateString('en-GB'),
             'G. Pass No': dispatch.gatePassNo || 'N/A',
             'Company': dispatch.companyId?.name || 'N/A',
             'Bottle Name': 'N/A',
-            'Variant': 'N/A',
-            'Coating Shade': 'N/A',
-            'Text Color': 'N/A',
+            'Variant': '-',
+            'Coating Shade': '-',
+            'Text Color': '-',
             'Box': 0,
             'Qty/Box': 0,
             'Total Qty': 0,
             'Remarks': dispatch.remarks || '-'
           });
+          srNo++;
         }
       });
 
       const worksheet = XLSX.utils.json_to_sheet(exportedData);
       worksheet['!cols'] = [
-        { wch: 8 }, { wch: 12 }, { wch: 15 }, { wch: 20 }, { wch: 20 },
+        { wch: 6 }, { wch: 12 }, { wch: 15 }, { wch: 20 }, { wch: 20 },
         { wch: 15 }, { wch: 15 }, { wch: 15 }, { wch: 10 }, { wch: 12 }, { wch: 15 }, { wch: 20 }
       ];
       
@@ -254,6 +233,7 @@ export default function DispatchList() {
 
       let filename = `Dispatch`;
       if (dateFrom) filename += `_from_${dateFrom}`;
+      if (dateTo) filename += `_to_${dateTo}`;
       filename += ".xlsx";
 
       XLSX.writeFile(workbook, filename);
@@ -264,8 +244,13 @@ export default function DispatchList() {
     }
   };
 
+  // Calculate pagination display
+  const startIndex = (currentPage - 1) * itemsPerPage + 1;
+  const endIndex = Math.min(currentPage * itemsPerPage, total);
+  const showingText = total === 0 ? 'Showing 0 entries' : `Showing ${startIndex} to ${endIndex} of ${total} entries`;
+
   return (
-    <div className="page-content">
+    <div className="page-content dispatch-module-page dispatch-module-list">
       <div className="page-header d-flex align-items-center justify-content-between companies-page-header">
         <div className="d-flex align-items-center gap-3">
           <button onClick={() => navigate('/dispatch')} className="btn btn-light border-0 shadow-sm rounded-circle d-flex align-items-center justify-content-center" style={{ width: 40, height: 40 }}>
@@ -307,8 +292,8 @@ export default function DispatchList() {
                   style={{ borderRadius: 10, height: 38 }}
                   value={dateFrom}
                   onChange={(e) => {
-                    setSearchParams({ page: 1 });
                     setDateFrom(e.target.value);
+                    setSearchParams({ page: '1' });
                   }}
                 />
               </div>
@@ -320,8 +305,8 @@ export default function DispatchList() {
                   style={{ borderRadius: 10, height: 38 }}
                   value={dateTo}
                   onChange={(e) => {
-                    setSearchParams({ page: 1 });
                     setDateTo(e.target.value);
+                    setSearchParams({ page: '1' });
                   }}
                 />
               </div>
@@ -330,27 +315,19 @@ export default function DispatchList() {
                 <Select
                   isClearable={true}
                   isSearchable
-                  options={
-                    availableBottlesWithRecords.map(b => ({ value: b._id, label: b.bottleName || b.plainBottleName }))
-                  }
+                  options={bottleOptions}
                   value={
                     bottleFilter && bottleFilter !== '' 
-                      ? (() => {
-                          const foundBottle = availableBottlesWithRecords?.find(b => String(b._id) === String(bottleFilter));
-                          return {
-                            value: bottleFilter,
-                            label: foundBottle?.bottleName || foundBottle?.plainBottleName || 'Unknown'
-                          };
-                        })()
+                      ? bottleOptions.find(opt => opt.value === bottleFilter)
                       : null
                   }
                   onChange={(selected) => {
-                    setSearchParams({ page: 1 });
-                    if (selected && selected.value !== undefined && selected.value !== null) {
+                    if (selected && selected.value) {
                       setBottleFilter(selected.value);
                     } else {
                       setBottleFilter('');
                     }
+                    setSearchParams({ page: '1' });
                   }}
                   classNamePrefix="react-select"
                   placeholder="Select bottle name..."
@@ -375,10 +352,7 @@ export default function DispatchList() {
                     className="form-control form-control-sm border-light-subtle bg-light ps-5 shadow-none w-100"
                     placeholder="Search..."
                     value={searchTerm}
-                    onChange={(e) => {
-                      setSearchTerm(e.target.value);
-                      setSearchParams({ page: 1 });
-                    }}
+                    onChange={(e) => setSearchTerm(e.target.value)}
                     style={{ borderRadius: 10, height: 38 }}
                   />
                 </div>
@@ -400,25 +374,7 @@ export default function DispatchList() {
 
       <div className="dash-card border-0 shadow-sm">
         <div className="dash-card-header d-flex align-items-center justify-content-between p-3 border-bottom bg-white companies-dash-toolbar">
-          <div className="d-flex align-items-center gap-2 text-muted small fw-500">
-            <span>Show</span>
-            <select
-              className="form-select form-select-sm shadow-none border-light-subtle bg-light"
-              style={{ width: 70, borderRadius: 8, cursor: 'pointer' }}
-              value={itemsPerPage}
-              onChange={(e) => {
-                setItemsPerPage(Number(e.target.value));
-                setSearchParams({ page: 1 });
-              }}
-            >
-              <option value="10">10</option>
-              <option value="25">25</option>
-              <option value="50">50</option>
-            </select>
-            <span>entries</span>
-          </div>
-
-          <div className="d-flex gap-2 flex-wrap">
+          <div className="d-flex gap-2 flex-wrap align-items-center">
             {!companyId && (
               <div className="search-input-wrapper position-relative companies-search-wrap">
                 <i className="bi bi-search text-muted position-absolute top-50 start-0 translate-middle-y ms-3" style={{ pointerEvents: 'none' }} />
@@ -427,11 +383,27 @@ export default function DispatchList() {
                   className="form-control form-control-sm border-light-subtle bg-light ps-5 py-2 shadow-none"
                   placeholder="Search G. Pass No or Bottle..."
                   value={searchTerm}
-                  onChange={e => { setSearchTerm(e.target.value); setSearchParams({ page: 1 }); }}
+                  onChange={e => setSearchTerm(e.target.value)}
                   style={{ borderRadius: 10, fontSize: 13, width: 250 }}
                 />
               </div>
             )}
+            {/* Page size selector */}
+            <div className="d-flex align-items-center gap-2">
+              <label className="small text-muted fw-bold mb-0">Show</label>
+              <select
+                className="form-select form-select-sm"
+                style={{ width: 80 }}
+                value={itemsPerPage}
+                onChange={(e) => handlePageSizeChange(parseInt(e.target.value))}
+              >
+                <option value={10}>10</option>
+                <option value={25}>25</option>
+                <option value={50}>50</option>
+                <option value={100}>100</option>
+              </select>
+              <span className="small text-muted fw-bold">entries</span>
+            </div>
           </div>
         </div>
         
@@ -444,55 +416,106 @@ export default function DispatchList() {
           ) : dispatches.length === 0 ? (
             <div className="p-5 text-center text-muted">
               <i className="bi bi-inbox fs-1 d-block mb-3" />
-              No dispatch records found.
+              <div>{showingText}</div>
+              <div>No dispatch records found.</div>
             </div>
           ) : (
-            <div className="table-responsive companies-list-desktop">
-              <table className="data-table">
-                <thead>
-                  <tr>
-                    <th className="py-3 text-uppercase small fw-bold text-muted ps-4 text-start" style={{ width: 50 }}>Sr</th>
-                    <th className="py-3 text-uppercase small fw-bold text-muted" style={{ width: 100 }}>Dispatch Date</th>
-                    <th className="py-3 text-uppercase small fw-bold text-muted" style={{ width: 120 }}>G. Pass No.</th>
-                    {!companyId && <th className="py-3 text-uppercase small fw-bold text-muted" style={{ width: 150 }}>Company</th>}
-                    <th className="py-3 text-uppercase small fw-bold text-muted">Bottle Name</th>
-                    <th className="py-3 text-uppercase small fw-bold text-muted">Variant</th>
-                    <th className="py-3 text-uppercase small fw-bold text-muted">Coating Shade</th>
-                    <th className="py-3 text-uppercase small fw-bold text-muted">Text Color</th>
-                    <th className="py-3 text-uppercase small fw-bold text-muted text-center" style={{ width: 70 }}>Box</th>
-                    <th className="py-3 text-uppercase small fw-bold text-muted text-center" style={{ width: 70 }}>Qty</th>
-                    <th className="py-3 text-uppercase small fw-bold text-muted text-end" style={{ width: 100 }}>Total</th>
-                    <th className="py-3 text-uppercase small fw-bold text-muted pe-4 text-end" style={{ width: 100 }}>Action</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {dispatches.map((dispatchItem, idx) => {
-                    const startingIndex = (currentPage - 1) * itemsPerPage;
-                    return dispatchItem.items && dispatchItem.items.length > 0 ? dispatchItem.items.map((item, itemIdx) => (
-                      <tr key={`${dispatchItem._id}-${itemIdx}`} className="align-middle border-bottom transition-all hover-bg-light">
-                        {itemIdx === 0 && (
-                          <>
-                            <td className="ps-4 fw-500 text-muted small" rowSpan={dispatchItem.items.length}>{startingIndex + idx + 1}</td>
-                            <td className="fw-500 small" rowSpan={dispatchItem.items.length}>
-                              {new Date(dispatchItem.dispatchDate).toLocaleDateString('en-GB')}
-                            </td>
-                            <td className="fw-bold text-primary small" rowSpan={dispatchItem.items.length}>{dispatchItem.gatePassNo}</td>
-                            {!companyId && (
-                              <td className="fw-500 small" rowSpan={dispatchItem.items.length}>
-                                {dispatchItem.companyId?.name || '-'}
+            <>
+              <div className="small text-muted p-3 bg-light border-bottom">{showingText}</div>
+              <div className="table-responsive companies-list-desktop dispatch-list-table">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th className="py-3 text-uppercase small fw-bold text-muted ps-4 text-start" style={{ width: 50 }}>Sr</th>
+                      <th className="py-3 text-uppercase small fw-bold text-muted" style={{ width: 100 }}>Dispatch Date</th>
+                      <th className="py-3 text-uppercase small fw-bold text-muted" style={{ width: 120 }}>G. Pass No.</th>
+                      {!companyId && <th className="py-3 text-uppercase small fw-bold text-muted" style={{ width: 150 }}>Company</th>}
+                      <th className="py-3 text-uppercase small fw-bold text-muted">Plain Bottle</th>
+                      <th className="py-3 text-uppercase small fw-bold text-muted">Variant</th>
+                      <th className="py-3 text-uppercase small fw-bold text-muted">Coating Shade</th>
+                      <th className="py-3 text-uppercase small fw-bold text-muted">Text Color</th>
+                      <th className="py-3 text-uppercase small fw-bold text-muted text-center" style={{ width: 70 }}>Box</th>
+                      <th className="py-3 text-uppercase small fw-bold text-muted text-center" style={{ width: 70 }}>Qty</th>
+                      <th className="py-3 text-uppercase small fw-bold text-muted text-end" style={{ width: 100 }}>Total</th>
+                      <th className="py-3 text-uppercase small fw-bold text-muted pe-4 text-end" style={{ width: 100 }}>Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {dispatches.map((dispatchItem, idx) => {
+                      const startingIndex = (currentPage - 1) * itemsPerPage;
+                      const displayItems = bottleFilter
+                        ? (dispatchItem.items || []).filter(item =>
+                            bottleFilter === 'Unmapped'
+                              ? (!item.bottleId || item.isUnmapped || !item.plainBottleName)
+                              : item.plainBottleName === bottleFilter
+                          )
+                        : (dispatchItem.items || []);
+
+                      return displayItems && displayItems.length > 0 ? displayItems.map((item, itemIdx) => (
+                        <tr key={`${dispatchItem._id}-${itemIdx}`} className="align-middle border-bottom transition-all hover-bg-light">
+                          {itemIdx === 0 && (
+                            <>
+                              <td className="ps-4 fw-500 text-muted small" rowSpan={displayItems.length}>{startingIndex + idx + 1}</td>
+                              <td className="fw-500 small" rowSpan={displayItems.length}>
+                                {new Date(dispatchItem.dispatchDate).toLocaleDateString('en-GB')}
                               </td>
-                            )}
-                          </>
-                        )}
-                        <td className="small fw-500">{typeof item.bottleId === 'string' ? item.bottleId : (item.bottleId?.plainBottleName || item.bottleId?.bottleName || '-')}</td>
-                        <td className="small">{item.variantId?.variantName || '-'}</td>
-                        <td className="small">{item.coatingShade || '-'}</td>
-                        <td className="small">{item.detectedTextColor || '-'}</td>
-                        <td className="text-center fw-500 small">{item.box}</td>
-                        <td className="text-center fw-500 small">{item.qty}</td>
-                        <td className="text-end fw-bold text-accent small">{item.totalQty}</td>
-                        {itemIdx === 0 && (
-                          <td className="pe-4 text-end" rowSpan={dispatchItem.items.length}>
+                              <td className="fw-bold text-primary small" rowSpan={displayItems.length}>{dispatchItem.gatePassNo}</td>
+                              {!companyId && (
+                                <td className="fw-500 small" rowSpan={displayItems.length}>
+                                  {dispatchItem.companyId?.name || '-'}
+                                </td>
+                              )}
+                            </>
+                          )}
+                          <td className="small fw-500">{item.plainBottleName || (item.productName ? `${item.productName} (Unmapped)` : 'Unmapped')}</td>
+                          <td className="small">{item.variantName || item.printing || item.productName || '-'}</td>
+                          <td className="small">{item.coatingShade || item.coatingShadeHint || '-'}</td>
+                          <td className="small">{item.detectedTextColor || '-'}</td>
+                          <td className="text-center fw-500 small">{item.box || 0}</td>
+                          <td className="text-center fw-500 small">{item.qty || 0}</td>
+                          <td className="text-end fw-bold text-accent small">{item.totalQty || (Number(item.box || 0) * Number(item.qty || 0))}</td>
+                          {itemIdx === 0 && (
+                            <td className="pe-4 text-end" rowSpan={displayItems.length}>
+                              <div className="d-flex justify-content-end gap-2">
+                                <Can I="read" a="dispatch">
+                                  <Link
+                                    to={`/dispatch/view/${dispatchItem._id}`}
+                                    className="btn btn-sm btn-outline-info border-0 rounded-3 shadow-none p-2"
+                                    title="View"
+                                  >
+                                    <i className="bi bi-eye fs-6"></i>
+                                  </Link>
+                                </Can>
+                                <Can I="edit" a="dispatch">
+                                  <Link
+                                    to={`/dispatch/edit/${dispatchItem._id}`}
+                                    className="btn btn-sm btn-outline-primary border-0 rounded-3 shadow-none p-2"
+                                    title="Edit"
+                                  >
+                                    <i className="bi bi-pencil-square fs-6"></i>
+                                  </Link>
+                                </Can>
+                                <Can I="delete" a="dispatch">
+                                  <button
+                                    onClick={() => handleDelete(dispatchItem._id, dispatchItem.gatePassNo)}
+                                    className="btn btn-sm btn-outline-danger border-0 rounded-3 shadow-none p-2"
+                                    title="Delete"
+                                  >
+                                    <i className="bi bi-trash fs-6"></i>
+                                  </button>
+                                </Can>
+                              </div>
+                            </td>
+                          )}
+                        </tr>
+                      )) : (
+                        <tr key={dispatchItem._id} className="align-middle border-bottom transition-all hover-bg-light">
+                          <td className="ps-4 fw-500 text-muted small">{startingIndex + idx + 1}</td>
+                          <td className="fw-500 small">{new Date(dispatchItem.dispatchDate).toLocaleDateString('en-GB')}</td>
+                          <td className="fw-bold text-primary small">{dispatchItem.gatePassNo}</td>
+                          {!companyId && <td className="fw-500 small">{dispatchItem.companyId?.name || '-'}</td>}
+                          <td colSpan={7} className="text-center text-muted small py-3">No items</td>
+                          <td className="pe-4 text-end">
                             <div className="d-flex justify-content-end gap-2">
                               <Can I="read" a="dispatch">
                                 <Link
@@ -523,108 +546,77 @@ export default function DispatchList() {
                               </Can>
                             </div>
                           </td>
-                        )}
-                      </tr>
-                    )) : (
-                      <tr key={dispatchItem._id} className="align-middle border-bottom transition-all hover-bg-light">
-                        <td className="ps-4 fw-500 text-muted small">{startingIndex + idx + 1}</td>
-                        <td className="fw-500 small">{new Date(dispatchItem.dispatchDate).toLocaleDateString('en-GB')}</td>
-                        <td className="fw-bold text-primary small">{dispatchItem.gatePassNo}</td>
-                        {!companyId && <td className="fw-500 small">{dispatchItem.companyId?.name || '-'}</td>}
-                        <td colSpan={7} className="text-center text-muted small py-3">No items</td>
-                        <td className="pe-4 text-end">
-                          <div className="d-flex justify-content-end gap-2">
-                            <Can I="read" a="dispatch">
-                              <Link
-                                to={`/dispatch/view/${dispatchItem._id}`}
-                                className="btn btn-sm btn-outline-info border-0 rounded-3 shadow-none p-2"
-                                title="View"
-                              >
-                                <i className="bi bi-eye fs-6"></i>
-                              </Link>
-                            </Can>
-                            <Can I="edit" a="dispatch">
-                              <Link
-                                to={`/dispatch/edit/${dispatchItem._id}`}
-                                className="btn btn-sm btn-outline-primary border-0 rounded-3 shadow-none p-2"
-                                title="Edit"
-                              >
-                                <i className="bi bi-pencil-square fs-6"></i>
-                              </Link>
-                            </Can>
-                            <Can I="delete" a="dispatch">
-                              <button
-                                onClick={() => handleDelete(dispatchItem._id, dispatchItem.gatePassNo)}
-                                className="btn btn-sm btn-outline-danger border-0 rounded-3 shadow-none p-2"
-                                title="Delete"
-                              >
-                                <i className="bi bi-trash fs-6"></i>
-                              </button>
-                            </Can>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              
+              {/* Pagination controls - matching Incoming style */}
+              {totalPages > 1 && (
+                <div className="dash-card-footer d-flex align-items-center justify-content-between p-3 border-top bg-white companies-dash-footer">
+                  <div className="text-muted small fw-500">
+                    Showing <b>{startIndex}</b> to <b>{endIndex}</b> of <b>{total}</b> entries
+                  </div>
+
+                  <div className="d-flex align-items-center gap-2 flex-wrap justify-content-center">
+                    <button
+                      className="btn btn-sm btn-light"
+                      disabled={currentPage === 1}
+                      onClick={() => { if (currentPage > 1) handlePageChange(currentPage - 1); }}
+                    >
+                      Previous
+                    </button>
+
+                    {(() => {
+                      const pages = [];
+                      const delta = 2;
+                      const left = currentPage - delta;
+                      const right = currentPage + delta;
+                      pages.push(1);
+                      if (left > 2) pages.push('...');
+                      for (let i = Math.max(2, left); i <= Math.min(totalPages - 1, right); i++) pages.push(i);
+                      if (right < totalPages - 1) pages.push('...');
+                      if (totalPages > 1) pages.push(totalPages);
+                      return pages.map((p, idx) =>
+                        p === '...'
+                          ? <span key={`e-${idx}`} className="px-1 text-muted" style={{ fontSize: 13 }}>…</span>
+                          : <button key={p} className={`btn btn-sm ${currentPage === p ? 'btn-primary' : 'btn-light'}`} onClick={() => handlePageChange(p)}>{p}</button>
+                      );
+                    })()}
+
+                    <button
+                      className="btn btn-sm btn-light"
+                      disabled={currentPage === totalPages || totalPages === 0}
+                      onClick={() => { if (currentPage < totalPages) handlePageChange(currentPage + 1); }}
+                    >
+                      Next
+                    </button>
+                  </div>
+                </div>
+              )}
+            </>
           )}
         </div>
-        
-        {totalPages > 1 && (
-          <div className="dash-card-footer d-flex align-items-center justify-content-between p-3 border-top bg-white companies-pagination">
-            <div className="text-muted small fw-500">
-              Showing {total === 0 ? 0 : ((currentPage - 1) * itemsPerPage) + 1} to {Math.min(currentPage * itemsPerPage, total)} of {total} entries
-            </div>
-            <div className="d-flex gap-1">
-              <button
-                className="btn btn-sm btn-light border-light-subtle shadow-none"
-                disabled={currentPage === 1}
-                onClick={() => handlePageChange(currentPage - 1)}
-                style={{ width: 32, height: 32, padding: 0, borderRadius: 8 }}
-              >
-                <i className="bi bi-chevron-left" />
-              </button>
-              
-              {[...Array(totalPages)].map((_, i) => (
-                <button
-                  key={i}
-                  className={`btn btn-sm ${currentPage === i + 1 ? 'btn-primary' : 'btn-light border-light-subtle'} shadow-none`}
-                  onClick={() => handlePageChange(i + 1)}
-                  style={{ width: 32, height: 32, padding: 0, borderRadius: 8 }}
-                >
-                  {i + 1}
-                </button>
-              ))}
-              
-              <button
-                className="btn btn-sm btn-light border-light-subtle shadow-none"
-                disabled={currentPage === totalPages}
-                onClick={() => handlePageChange(currentPage + 1)}
-                style={{ width: 32, height: 32, padding: 0, borderRadius: 8 }}
-              >
-                <i className="bi bi-chevron-right" />
-              </button>
-            </div>
-          </div>
-        )}
       </div>
 
       <DispatchImportModal
         show={showImportModal}
+        companyId={companyId}
         onClose={() => setShowImportModal(false)}
         onImportComplete={() => {
           dispatch(fetchDispatch({
             page: 1,
             limit: itemsPerPage,
-            search: searchTerm,
+            search: debouncedSearch,
             dateFrom,
             dateTo,
             companyId,
-            pagination: companyId ? "false" : "true"
+            plainBottleName: bottleFilter,
+            pagination: "true"
           }));
-          setSearchParams({ page: 1 });
+          setSearchParams({ page: '1' });
         }}
       />
     </div>

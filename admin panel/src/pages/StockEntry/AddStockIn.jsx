@@ -236,8 +236,8 @@ export default function AddStockIn() {
   const validItemsCount = items.filter(i => i.rawMaterialId && evaluateMath(i.quantity) > 0).length;
 
   return (
-    <div className="page-content">
-      <div className="page-header d-flex align-items-center justify-content-between user-form-page-header">
+    <div className="page-content stock-entry-page stock-entry-form-page">
+      <div className="page-header d-flex align-items-center justify-content-between user-form-page-header stock-entry-form-header">
         <div className="d-flex align-items-center gap-3">
           <Link to={fallbackUrl} className="btn btn-light border-0 shadow-sm rounded-circle d-flex align-items-center justify-content-center" style={{ width: 40, height: 40 }}>
             <i className="bi bi-arrow-left fs-5 text-secondary"></i>
@@ -248,7 +248,7 @@ export default function AddStockIn() {
           </div>
         </div>
 
-        <div className="mode-toggle-container p-1 bg-light rounded-4 d-flex" style={{ border: '1px solid #eee' }}>
+        <div className="mode-toggle-container p-1 bg-light rounded-4 d-flex stock-entry-mode-toggle" style={{ border: '1px solid #eee' }}>
           <button
             className={`btn btn-sm py-2 px-4 rounded-3 border-0 transition-all ${mode === 'camera' ? 'btn-accent shadow-sm' : 'btn-ghost'}`}
             onClick={() => setMode('camera')}
@@ -268,7 +268,7 @@ export default function AddStockIn() {
         <div className="col-xl-10 col-lg-12">
           
           {mode === 'camera' ? (
-            <div className="dash-card mb-4 overflow-hidden border-0 shadow-lg" style={{ borderRadius: 24 }}>
+            <div className="dash-card mb-4 overflow-hidden border-0 shadow-lg stock-entry-upload-card" style={{ borderRadius: 24 }}>
               <div className="dash-card-body p-3 p-md-5 text-center">
                 {!cameraSource && !image ? (
                   <div className="py-5">
@@ -364,8 +364,8 @@ export default function AddStockIn() {
               </div>
             </div>
           ) : (
-            <div className="dash-card">
-              <div className="dash-card-body p-4">
+            <div className="dash-card stock-entry-form-card">
+              <div className="dash-card-body p-4 stock-entry-form-body">
                 <form onSubmit={handleSubmit}>
                 <div className="row g-4 mb-4">
                   <div className="col-md-4">
@@ -386,7 +386,7 @@ export default function AddStockIn() {
                   <h6 className="fw-bold text-primary mb-0">INVOICE ITEMS</h6>
                 </div>
                 
-                <div className="table-responsive mb-3">
+                <div className="table-responsive mb-3 stock-entry-items-table">
                   <table className="table table-bordered align-middle">
                     <thead className="table-light">
                       <tr>

@@ -281,7 +281,7 @@ export default function IncomingList() {
   };
 
   return (
-    <div className="page-content">
+    <div className="page-content incoming-module-page incoming-module-list">
       <div className="page-header d-flex align-items-center justify-content-between companies-page-header">
         <div className="d-flex align-items-center gap-3">
           {companyId && (
@@ -719,6 +719,7 @@ export default function IncomingList() {
 
       <IncomingImportModal 
         show={showImportModal} 
+        companyId={companyId}
         onClose={() => setShowImportModal(false)}
         onImportComplete={() => {
           dispatch(fetchIncoming({ page: currentPage, limit: itemsPerPage, search: searchTerm, status: statusFilter, companyId }));

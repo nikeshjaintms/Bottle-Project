@@ -4,6 +4,7 @@ import { useDispatch, useSelector } from 'react-redux';
 import { fetchDeliveryChallanById } from '../../../redux/slices/deliveryChallanSlice';
 import API from '../../../services/api';
 import Swal from 'sweetalert2';
+import logo from '../../../assets/hero.png';
 
 export default function ViewShernoChallan() {
   const { id } = useParams();
@@ -76,15 +77,18 @@ export default function ViewShernoChallan() {
     : (c.items || []).reduce((acc, it) => acc + (Number(it.total) || 0), 0);
 
   return (
-    <div className="page-content">
+    <div className="page-content delivery-challan-view-page">
       {/* Top Action Bar (Hidden in Print) */}
       <div className="page-header d-flex align-items-center justify-content-between mb-3 no-print">
         <div className="d-flex align-items-center gap-3">
           <Link
             to="/delivery-challan/sherno"
-            className="btn btn-outline-secondary d-flex align-items-center gap-1"
+            className="btn-ghost border-0 shadow-sm"
+            style={{ width: 40, height: 40, borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+            title="Back to Sherno Challans"
+            aria-label="Back to Sherno Challans"
           >
-            <i className="bi bi-arrow-left" /> Back to Challans
+            <i className="bi bi-arrow-left fs-5" />
           </Link>
           <h1 className="page-title mb-0 fs-4">
             Delivery Challan #{c.challanNo}{' '}
@@ -94,37 +98,38 @@ export default function ViewShernoChallan() {
         <div className="d-flex align-items-center gap-2">
           <Link
             to={`/delivery-challan/sherno/edit/${c._id}`}
-            className="btn btn-outline-secondary d-flex align-items-center gap-1"
+            className="btn btn-outline-primary shadow-sm px-4 py-2 rounded-3"
           >
-            <i className="bi bi-pencil" /> Edit Challan
+            <i className="bi bi-pencil-fill me-2" /> Edit Challan
           </Link>
           <a
             href={`http://localhost:5000/api/delivery-challan/${c._id}/html`}
             target="_blank"
             rel="noreferrer"
-            className="btn btn-outline-info d-flex align-items-center gap-1"
+            className="btn btn-outline-primary shadow-sm px-4 py-2 rounded-3"
           >
-            <i className="bi bi-filetype-html" /> HTML Preview
+            <i className="bi bi-filetype-html me-2" /> HTML Preview
           </a>
           <button
             type="button"
-            className="btn btn-outline-danger d-flex align-items-center gap-1"
+            className="btn btn-outline-primary shadow-sm px-4 py-2 rounded-3"
             disabled={downloadingPdf}
             onClick={handleDownloadPdf}
           >
             {downloadingPdf ? (
               <span className="spinner-border spinner-border-sm" />
             ) : (
-              <i className="bi bi-file-earmark-pdf" />
+              <i className="bi bi-file-earmark-pdf-fill me-2 text-danger" />
             )}
             Download PDF
           </button>
           <button
             type="button"
-            className="btn btn-accent d-flex align-items-center gap-1 fw-bold"
+            className="btn btn-accent shadow-sm px-4 py-2 rounded-3"
+            style={{ color: 'white', textDecoration: 'none' }}
             onClick={handlePrint}
           >
-            <i className="bi bi-printer-fill fs-6" /> Print
+            <i className="bi bi-printer-fill me-2" /> Print
           </button>
         </div>
       </div>
@@ -147,11 +152,16 @@ export default function ViewShernoChallan() {
           }}
         >
           {/* Header Section */}
-          <div className="text-center border-bottom border-dark border-2 pb-0">
+          <div className="text-center border-bottom border-dark border-2 pb-0" style={{ position: 'relative' }}>
+            <img
+              src={logo}
+              alt="Shayona Glass Decor logo"
+              style={{ position: 'absolute', top: 5, left: 10, width: 140, height: 92, objectFit: 'contain' }}
+            />
             <h3
               className="fw-bold mb-1 pt-2"
               style={{
-                color: '#1a56db',
+                color: '#00b2ff',
                 letterSpacing: '0.5px',
                 fontSize: '21px',
                 fontFamily: '"Times New Roman", Times, serif',

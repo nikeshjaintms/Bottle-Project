@@ -38,8 +38,8 @@ export default function ViewStockIn() {
   const totalAmount = entry.items?.reduce((sum, item) => sum + (Number(item.amount) || 0), 0) || 0;
 
   return (
-    <div className="page-content">
-      <div className="page-header d-flex align-items-center gap-3 user-form-page-header">
+    <div className="page-content stock-entry-page stock-entry-view-page">
+      <div className="page-header d-flex align-items-center gap-3 user-form-page-header stock-entry-form-header">
         <Link to={fallbackUrl} className="btn btn-light border-0 shadow-sm rounded-circle d-flex align-items-center justify-content-center" style={{ width: 40, height: 40 }}>
           <i className="bi bi-arrow-left fs-5 text-secondary"></i>
         </Link>
@@ -51,8 +51,8 @@ export default function ViewStockIn() {
 
       <div className="row justify-content-center">
         <div className="col-xl-10 col-lg-12">
-          <div className="dash-card">
-            <div className="dash-card-body p-4">
+          <div className="dash-card stock-entry-form-card">
+            <div className="dash-card-body p-4 stock-entry-form-body">
               <div className="row g-4 mb-4 border-bottom pb-4">
                 <div className="col-md-4">
                   <label className="text-muted fw-bold small">Invoice Number</label>
@@ -68,7 +68,7 @@ export default function ViewStockIn() {
                 </div>
               </div>
               
-              <div className="table-responsive mb-4">
+              <div className="table-responsive mb-4 stock-entry-items-table">
                 <table className="table table-bordered align-middle">
                   <thead className="table-light">
                     <tr>

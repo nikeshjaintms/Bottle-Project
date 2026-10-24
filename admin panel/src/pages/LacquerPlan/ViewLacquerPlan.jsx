@@ -21,8 +21,8 @@ export default function ViewLacquerPlan() {
   }
 
   return (
-    <div className="page-content">
-      <div className="d-flex justify-content-between align-items-end mb-4">
+    <div className="page-content lacquer-plan-page lacquer-plan-view-page">
+      <div className="d-flex justify-content-between align-items-end mb-4 lacquer-plan-view-header">
         <div className="d-flex align-items-center gap-3">
           <button type="button" onClick={() => navigate(-1)} className="btn-ghost border-0 shadow-sm" style={{ width: 40, height: 40, borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <i className="bi bi-arrow-left fs-5" />
@@ -41,7 +41,7 @@ export default function ViewLacquerPlan() {
 
       <div className="row justify-content-center">
         <div className="col-xl-12 col-lg-12">
-          <div className="dash-card border-0 shadow-sm p-4">
+          <div className="dash-card border-0 shadow-sm p-4 lacquer-plan-view-card">
             {error && <div className="alert alert-danger">{error}</div>}
             
             <div className="mb-4 pb-4 border-bottom">
@@ -62,7 +62,7 @@ export default function ViewLacquerPlan() {
                 <h6 className="fw-bold text-muted mb-0">PLAN ENTRIES FOR <span className="text-primary">{currentPlan.bottleName || 'BOTTLE'}</span></h6>
               </div>
 
-              <div className="table-responsive mb-4">
+              <div className="table-responsive mb-4 lacquer-plan-view-table">
               <table className="table table-bordered align-middle table-sm" style={{ minWidth: '2400px' }}>
                 <thead className="table-light">
                   <tr>

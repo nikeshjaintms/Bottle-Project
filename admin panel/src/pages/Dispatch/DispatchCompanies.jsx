@@ -32,7 +32,7 @@ export default function DispatchCompanies() {
   ];
 
   return (
-    <div className="page-content">
+    <div className="page-content dispatch-module-page dispatch-module-list">
       <div className="page-header d-flex align-items-center justify-content-between companies-page-header">
         <div>
           <h1 className="page-title">Dispatch Register</h1>

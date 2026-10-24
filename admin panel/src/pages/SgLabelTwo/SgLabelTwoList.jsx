@@ -175,7 +175,7 @@ export default function SgLabelTwoList() {
   };
 
   return (
-    <div className="page-content">
+    <div className="page-content sg-label-two-page">
       <div className="page-header d-flex flex-column flex-md-row align-items-start align-items-md-center justify-content-between mb-4 gap-3">
         <div>
           <h1 className="page-title mb-1">SG Label 2 Templates</h1>
@@ -191,7 +191,7 @@ export default function SgLabelTwoList() {
       </div>
 
       <div className="dash-card border-0 shadow-sm rounded-4 overflow-hidden">
-        <div className="dash-card-header d-flex flex-column flex-md-row justify-content-between align-items-center p-4 border-bottom bg-white companies-dash-header">
+        <div className="dash-card-header d-flex flex-column flex-md-row justify-content-between align-items-center p-4 border-bottom bg-white companies-dash-header sg-label-two-toolbar">
           <div className="d-flex align-items-center gap-2 text-muted small fw-500">
             <span>Show</span>
             <select
@@ -225,6 +225,63 @@ export default function SgLabelTwoList() {
             </div>
           </div>
         ) : (
+          <div className="companies-list-mobile d-md-none sg-label-two-mobile-list">
+            {paginatedTemplates.length === 0 ? (
+              <div className="companies-mobile-empty">No templates found. Click "Create New Template" to get started.</div>
+            ) : (
+              paginatedTemplates.map((template, index) => (
+                <div key={template._id} className="companies-mobile-card brands-mobile-card sg-label-two-template-card">
+                  <div className="d-flex align-items-start justify-content-between gap-2 w-100 min-w-0">
+                    <div className="min-w-0">
+                      <div className="d-flex align-items-start gap-2 mb-2">
+                        <span className="text-muted small fw-bold flex-shrink-0">
+                          #{String((currentPage - 1) * itemsPerPage + index + 1).padStart(2, '0')}
+                        </span>
+                        <span className="fw-semibold text-dark text-break">{template.name}</span>
+                      </div>
+                      <div className="small text-muted mb-2">
+                        <span className="fw-semibold">Elements:</span>{' '}
+                        <span className="text-break">{template.elements?.[0]?.content || 'N/A'}</span>
+                      </div>
+                      <span className={`badge-status badge-${template.status ? 'active' : 'inactive'} d-inline-block`}>
+                        {template.status ? 'ACTIVE' : 'INACTIVE'}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="companies-mobile-actions brands-mobile-actions sg-label-two-template-actions">
+                    <button onClick={() => handlePrint(template, 'print')} className="btn btn-sm btn-outline-secondary border-0 rounded-3 shadow-none p-2" title="Print Template" aria-label="Print template">
+                      <i className="bi bi-printer fs-6"></i>
+                    </button>
+                    <button onClick={() => handlePrint(template, 'download')} className="btn btn-sm btn-outline-success border-0 rounded-3 shadow-none p-2" title="Download Template" aria-label="Download template">
+                      <i className="bi bi-download fs-6"></i>
+                    </button>
+                    <Link to={`/sg-labels-2/view/${template._id}`} className="btn btn-sm btn-outline-info border-0 rounded-3 shadow-none p-2" title="View Template" aria-label="View template">
+                      <i className="bi bi-eye fs-6"></i>
+                    </Link>
+                    <Can I="create" a="sg-label-2">
+                      <button onClick={() => handleCopy(template)} className="btn btn-sm btn-outline-secondary border-0 rounded-3 shadow-none p-2" title="Copy Template" aria-label="Copy template">
+                        <i className="bi bi-files fs-6"></i>
+                      </button>
+                    </Can>
+                    <Can I="edit" a="sg-label-2">
+                      <Link to={`/sg-labels-2/edit/${template._id}`} className="btn btn-sm btn-outline-primary border-0 rounded-3 shadow-none p-2" title="Edit Template" aria-label="Edit template">
+                        <i className="bi bi-pencil-square fs-6"></i>
+                      </Link>
+                    </Can>
+                    <Can I="delete" a="sg-label-2">
+                      <button onClick={() => handleDelete(template._id, template.name)} className="btn btn-sm btn-outline-danger border-0 rounded-3 shadow-none p-2" title="Delete Template" aria-label="Delete template">
+                        <i className="bi bi-trash fs-6"></i>
+                      </button>
+                    </Can>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        )}
+
+        {!loading && (
           <div className="table-responsive d-none d-md-block" style={{ overflowX: 'auto' }}>
             <table className="data-table mb-0" style={{ width: '100%' }}>
               <thead className="bg-light">

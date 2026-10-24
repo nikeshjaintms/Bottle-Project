@@ -1,7 +1,7 @@
 import { createSlice, createAsyncThunk } from '@reduxjs/toolkit';
 import API from '../../services/api';
 
-export const fetchDispatch = createAsyncThunk('dispatch/fetchDispatch', async ({ page = 1, limit = 10, search = '', searchPrinting = '', dateFrom = '', dateTo = '', pagination, companyId }, { rejectWithValue }) => {
+export const fetchDispatch = createAsyncThunk('dispatch/fetchDispatch', async ({ page = 1, limit = 10, search = '', searchPrinting = '', dateFrom = '', dateTo = '', pagination, companyId, plainBottleName = '' }, { rejectWithValue }) => {
   try {
     const params = new URLSearchParams();
     if (page) params.append('page', page);
@@ -12,6 +12,7 @@ export const fetchDispatch = createAsyncThunk('dispatch/fetchDispatch', async ({
     if (dateTo) params.append('dateTo', dateTo);
     if (pagination !== undefined) params.append('pagination', pagination);
     if (companyId) params.append('companyId', companyId);
+    if (plainBottleName) params.append('plainBottleName', plainBottleName);
     
     const res = await API.get(`/dispatch?${params.toString()}`);
     return res.data;
@@ -62,6 +63,7 @@ const dispatchSlice = createSlice({
     data: [],
     total: 0,
     page: 1,
+    limit: 10,
     totalPages: 1,
     currentDispatch: null,
     loading: false,
@@ -78,6 +80,7 @@ const dispatchSlice = createSlice({
         state.data = action.payload.data;
         state.total = action.payload.total;
         state.page = action.payload.page;
+        state.limit = action.payload.limit || 10;
         state.totalPages = action.payload.totalPages;
       })
       .addCase(fetchDispatch.rejected, (state, action) => { state.loading = false; state.error = action.payload; })

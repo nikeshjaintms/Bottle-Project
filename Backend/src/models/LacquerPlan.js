@@ -9,6 +9,23 @@ const lacquerPlanSchema = new mongoose.Schema({
     type: String,
     required: true
   },
+  // Reference to BottlePerBox for plain bottle
+  plainBottleId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "BottlePerBox",
+    default: null
+  },
+  // Printing fields - fetched from BottleSpec based on plain bottle selection
+  printingTypeId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "PrintingType",
+    default: null
+  },
+  printingColorId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "PrintingColor",
+    default: null
+  },
   variantId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: "Variant"
@@ -143,6 +160,17 @@ const lacquerPlanSchema = new mongoose.Schema({
   stockWarningDetails: {
     type: mongoose.Schema.Types.Mixed,
     default: null
+  },
+  // Mark indicating row has been sent to Ready To Dispatch
+  // Contains reference to the dispatch sheet and line, plus timestamp of send action
+  readyToDispatch: {
+    type: Object,
+    default: null,
+    properties: {
+      sheetId: mongoose.Schema.Types.ObjectId,
+      lineId: mongoose.Schema.Types.ObjectId,
+      sentAt: Date
+    }
   }
 }, { timestamps: true });
 

@@ -6,6 +6,7 @@ import {
   fetchNextChallanNo,
 } from '../../../redux/slices/deliveryChallanSlice';
 import { fetchCompanies } from '../../../redux/slices/companySlice';
+import Select from 'react-select';
 import SearchableSelect from '../../../components/SearchableSelect';
 import API from '../../../services/api';
 import Swal from 'sweetalert2';
@@ -692,7 +693,7 @@ export default function AddMcnoreChallan() {
   };
 
   return (
-    <div className="page-content">
+    <div className="page-content delivery-challan-form-page">
       {/* Header */}
       <div className="page-header d-flex align-items-center gap-3 user-form-page-header">
         <Link
@@ -717,10 +718,33 @@ export default function AddMcnoreChallan() {
         </div>
       </div>
 
-      <form onSubmit={handleSubmit}>
-        {/* PROMINENT COMPANY DROPDOWN & RADIO BUTTON SELECTOR */}
-        <div className="dash-card mb-4 border-primary border-opacity-25 shadow-sm">
-          <div className="p-4 bg-light-subtle rounded-3">
+      <form onSubmit={handleSubmit} className="mcnore-challan-form">
+        <style>{`
+          .mcnore-challan-form .form-control,
+          .mcnore-challan-form .form-select {
+            min-height: 38px;
+            padding: 0.375rem 0.75rem;
+            border: 1px solid #dee2e6 !important;
+            border-radius: 0.375rem !important;
+            background-color: #fff;
+            box-shadow: none !important;
+            font-size: 1rem;
+          }
+          .mcnore-challan-form .form-control:focus,
+          .mcnore-challan-form .form-select:focus {
+            border-color: #86b7fe !important;
+            box-shadow: 0 0 0 0.2rem rgba(13, 110, 253, 0.15) !important;
+          }
+        `}</style>
+        {/* Section 1: Company & Challan Mode */}
+        <div className="card border border-light-subtle shadow-sm rounded-3 mb-4 bg-white">
+          <div className="card-header bg-white p-3 border-bottom">
+            <h6 className="fw-bold text-dark mb-0 d-flex align-items-center gap-2">
+              <i className="bi bi-building text-primary" />
+              1. Company &amp; Challan Mode
+            </h6>
+          </div>
+          <div className="card-body p-4">
             <div className="row g-4 align-items-center">
               {/* Company Selection with MCNORE selected */}
               <div className="col-lg-5 col-md-12">
@@ -820,19 +844,19 @@ export default function AddMcnoreChallan() {
           </div>
         </div>
 
-        {/* SECTION 1: Challan Meta & Dispatch Details */}
-        <div className="dash-card mb-4">
-          <div className="p-3 border-bottom bg-white d-flex align-items-center justify-content-between">
+        {/* Section 2: Challan & Dispatch Information */}
+        <div className="card border border-light-subtle shadow-sm rounded-3 mb-4 bg-white">
+          <div className="card-header bg-white p-3 border-bottom d-flex align-items-center justify-content-between">
             <h6 className="fw-bold text-dark mb-0">
               <i className="bi bi-info-circle-fill text-primary me-2" />
-              1. Challan &amp; Dispatch Information
+              2. Challan &amp; Dispatch Information
             </h6>
             <span className="badge bg-light text-muted border">
               Mode: {poMode === 'with_po' ? 'With PO' : 'Without PO'}
             </span>
           </div>
 
-          <div className="p-4">
+          <div className="card-body p-4">
             <div className="row g-3">
               {/* Conditional PO vs Invoice fields */}
               {poMode === 'with_po' ? (
@@ -982,12 +1006,12 @@ export default function AddMcnoreChallan() {
           </div>
         </div>
 
-        {/* SECTION 2: Consignee (Billed To / Shipped To) */}
-        <div className="dash-card mb-4">
-          <div className="p-3 border-bottom bg-white d-flex align-items-center justify-content-between">
+        {/* Section 3: Consignee Details */}
+        <div className="card border border-light-subtle shadow-sm rounded-3 mb-4 bg-white">
+          <div className="card-header bg-white p-3 border-bottom d-flex align-items-center justify-content-between">
             <h6 className="fw-bold text-dark mb-0">
               <i className="bi bi-geo-alt-fill text-primary me-2" />
-              2. Consignee Details (Billed To &amp; Shipped To)
+              3. Consignee Details (Billed To &amp; Shipped To)
             </h6>
             <div className="form-check form-switch m-0">
               <input
@@ -1006,7 +1030,7 @@ export default function AddMcnoreChallan() {
             </div>
           </div>
 
-          <div className="p-4">
+          <div className="card-body p-4">
             <div className="row g-4">
               {/* BILLED TO */}
               <div className="col-md-6 border-end">
@@ -1035,7 +1059,7 @@ export default function AddMcnoreChallan() {
                   )}
                 </div>
 
-                <div className="p-3 bg-light rounded-3 small">
+                <div className="p-3 bg-white border border-light-subtle rounded-3">
                   <input
                     type="text"
                     className="form-control form-control-sm mb-2 fw-bold"
@@ -1114,7 +1138,7 @@ export default function AddMcnoreChallan() {
                   )}
                 </div>
 
-                <div className="p-3 bg-light rounded-3 small">
+                <div className="p-3 bg-white border border-light-subtle rounded-3">
                   <input
                     type="text"
                     className="form-control form-control-sm mb-2 fw-bold"
@@ -1175,13 +1199,13 @@ export default function AddMcnoreChallan() {
           </div>
         </div>
 
-        {/* SECTION 3: Item Specifications & Variant Breakdown */}
-        <div className="dash-card mb-4">
-          <div className="p-3 border-bottom bg-white d-flex align-items-center justify-content-between">
+        {/* Section 4: Plain Bottles & Quantities */}
+        <div className="card border border-light-subtle shadow-sm rounded-3 mb-4 bg-white">
+          <div className="card-header bg-white p-3 border-bottom d-flex align-items-center justify-content-between">
             <div>
               <h6 className="fw-bold text-dark mb-0">
                 <i className="bi bi-box-seam-fill text-primary me-2" />
-                3. Plain Bottles &amp; Quantities
+                4. Plain Bottles &amp; Quantities
               </h6>
               <small className="text-muted">
                 {poMode === 'without_po'
@@ -1194,39 +1218,32 @@ export default function AddMcnoreChallan() {
             </button>
           </div>
 
-          <div className="p-4">
+          <div className="card-body p-4">
             {specGroups.map((grp, grpIdx) => {
               const bottleKey = grp.plainBottle || grp.title || grp.bottleSpecId;
               const variants = bottleKey ? specVariantsCache[bottleKey] || [] : [];
 
               return (
-                <div key={grp.id} className="p-3 border rounded-3 mb-4 bg-white shadow-sm">
+                <div key={grp.id} className="mcnore-item-group border border-light-subtle rounded-3 mb-4 bg-white p-4 shadow-sm">
                   {/* Group Header: Plain Bottle Selector */}
                   <div className="row g-2 align-items-center mb-3 pb-3 border-bottom">
-                    <div className="col-md-5">
+                    <div className="col-md-7">
                       <label className="form-label small fw-bold text-muted mb-1">
-                        Plain Bottle #{grpIdx + 1}
+                        Plain Bottle
                       </label>
-                      <SearchableSelect
+                      <Select
                         options={plainBottleOptions}
-                        value={grp.plainBottle || grp.title}
-                        onChange={(val) => handleGroupBottleChange(grpIdx, val)}
+                        value={plainBottleOptions.find((option) => option.value === (grp.plainBottle || grp.title)) || null}
+                        onChange={(selected) => handleGroupBottleChange(grpIdx, selected?.value || '')}
                         placeholder="Select Plain Bottle..."
-                      />
-                    </div>
-
-                    <div className="col-md-3">
-                      <label className="form-label small fw-bold text-muted mb-1">Spec Header / Title</label>
-                      <input
-                        type="text"
-                        className="form-control form-control-sm"
-                        value={grp.title}
-                        onChange={(e) => {
-                          const newGroups = [...specGroups];
-                          newGroups[grpIdx].title = e.target.value;
-                          setSpecGroups(newGroups);
+                        isClearable
+                        menuPortalTarget={document.body}
+                        styles={{
+                          menuPortal: (base) => ({ ...base, zIndex: 9999 }),
+                          control: (base) => ({ ...base, minHeight: 42, height: 'auto', alignItems: 'flex-start' }),
+                          valueContainer: (base) => ({ ...base, minHeight: 40, flexWrap: 'wrap', whiteSpace: 'normal' }),
+                          singleValue: (base) => ({ ...base, position: 'relative', top: 'auto', transform: 'none', maxWidth: '100%', whiteSpace: 'normal', overflow: 'visible', textOverflow: 'clip', wordBreak: 'break-word' }),
                         }}
-                        placeholder="e.g. 100 ML WILD STONE RECTANGLE"
                       />
                     </div>
 
@@ -1258,19 +1275,26 @@ export default function AddMcnoreChallan() {
                   </div>
 
                   {/* Variant Lines */}
-                  <div className="table-responsive">
-                    <table className="table table-bordered table-sm align-middle mb-2">
+                  <div className="table-responsive mcnore-variant-lines">
+                    <table
+                      className="table table-bordered table-sm align-middle mb-2 mcnore-variant-lines-table"
+                      style={{
+                        width: '100%',
+                        minWidth: poMode === 'with_po' ? 1180 : 1160,
+                        tableLayout: 'fixed',
+                      }}
+                    >
                       <thead className="table-light small text-uppercase">
                         <tr>
-                          {poMode === 'with_po' && <th style={{ width: 130 }}>Material Code</th>}
-                          <th style={{ width: 220 }}>Variant / Shade</th>
-                          <th>Description</th>
-                          <th style={{ width: 170 }}>Boxes Calculation</th>
-                          <th style={{ width: 85 }}>Unit (Pcs/Box)</th>
-                          <th style={{ width: 95 }}>Total Qty</th>
-                          <th style={{ width: 85 }}>Rate</th>
+                          {poMode === 'with_po' && <th style={{ width: 115 }}>Material Code</th>}
+                          <th style={{ width: 200 }}>Variant / Shade</th>
+                          <th style={{ width: 210 }}>Description</th>
+                          <th style={{ width: 190 }}>Boxes Calculation</th>
+                          <th style={{ width: 105 }}>BottlePerBox</th>
+                          <th style={{ width: 90 }}>Total Qty</th>
+                          <th style={{ width: 95 }}>Rate</th>
                           {poMode === 'without_po' && <th style={{ width: 95 }}>JW Rate</th>}
-                          <th style={{ width: 100 }}>Taxable Value</th>
+                          <th style={{ width: 105 }}>Taxable Value</th>
                           <th style={{ width: 45 }}></th>
                         </tr>
                       </thead>
@@ -1295,7 +1319,7 @@ export default function AddMcnoreChallan() {
                           return (
                             <tr key={vl.id}>
                               {poMode === 'with_po' && (
-                                <td>
+                                <td data-label="Material Code">
                                   <input
                                     type="text"
                                     className="form-control form-control-sm"
@@ -1307,30 +1331,56 @@ export default function AddMcnoreChallan() {
                                   />
                                 </td>
                               )}
-                              <td>
-                                {variants.length > 0 ? (
-                                  <select
-                                    className="form-select form-select-sm"
-                                    value={vl.variantId}
-                                    onChange={(e) =>
-                                      handleVariantLineChange(grpIdx, lineIdx, 'variantId', e.target.value)
-                                    }
-                                  >
-                                    <option value="">-- Choose Variant --</option>
-                                    {variantOptions.map((opt) => (
-                                      <option key={opt.value} value={opt.value}>
-                                        {opt.label}
-                                      </option>
-                                    ))}
-                                  </select>
-                                ) : (
-                                  <span className="text-muted small">No preset variants</span>
-                                )}
+                              <td data-label="Variant / Shade">
+                                <Select
+                                  options={variantOptions}
+                                  value={variantOptions.find((option) => option.value === vl.variantId) || null}
+                                  onChange={(selected) =>
+                                    handleVariantLineChange(grpIdx, lineIdx, 'variantId', selected?.value || '')
+                                  }
+                                  placeholder={!bottleKey ? 'Choose bottle first' : variants.length ? 'Choose variant...' : 'No preset variants'}
+                                  isDisabled={!bottleKey || variants.length === 0}
+                                  isClearable
+                                  menuPortalTarget={document.body}
+                                  menuPosition="fixed"
+                                  menuPlacement="auto"
+                                  styles={{
+                                    menuPortal: (base) => ({ ...base, zIndex: 9999 }),
+                                    control: (base) => ({ ...base, minWidth: 0, minHeight: 38, height: 'auto', alignItems: 'center', flexWrap: 'nowrap' }),
+                                    valueContainer: (base) => ({
+                                      ...base,
+                                      flex: '1 1 0%',
+                                      width: 0,
+                                      minWidth: 0,
+                                      overflow: 'visible',
+                                      flexWrap: 'wrap',
+                                      whiteSpace: 'normal',
+                                    }),
+                                    placeholder: (base) => ({ ...base, whiteSpace: 'normal', wordBreak: 'normal', overflowWrap: 'break-word' }),
+                                    singleValue: (base) => ({
+                                      ...base,
+                                      position: 'relative',
+                                      top: 'auto',
+                                      transform: 'none',
+                                      maxWidth: '100%',
+                                      margin: 0,
+                                      whiteSpace: 'normal',
+                                      overflow: 'visible',
+                                      textOverflow: 'clip',
+                                      wordBreak: 'normal',
+                                      overflowWrap: 'break-word',
+                                    }),
+                                    indicatorsContainer: (base) => ({ ...base, flexShrink: 0, alignSelf: 'center' }),
+                                    indicatorSeparator: () => ({ display: 'none' }),
+                                    option: (base) => ({ ...base, whiteSpace: 'normal', wordBreak: 'normal', overflowWrap: 'break-word' }),
+                                  }}
+                                />
                               </td>
-                              <td>
+                              <td data-label="Description">
                                 <input
                                   type="text"
                                   className="form-control form-control-sm"
+                                  style={{ fontSize: 12 }}
                                   placeholder="e.g. 175C BROWN - OUD IMPERIAL- ROSE GOLD FOIL"
                                   value={vl.description}
                                   onChange={(e) =>
@@ -1339,12 +1389,12 @@ export default function AddMcnoreChallan() {
                                   required
                                 />
                               </td>
-                              <td>
+                              <td data-label="Boxes Calculation">
                                 <div className="d-flex align-items-center gap-1">
                                   <input
                                     type="number"
                                     className="form-control form-control-sm text-center"
-                                    style={{ width: 60 }}
+                                    style={{ width: 78, minWidth: 78 }}
                                     placeholder="Boxes"
                                     value={vl.fullBox}
                                     onChange={(e) =>
@@ -1355,7 +1405,7 @@ export default function AddMcnoreChallan() {
                                   <input
                                     type="number"
                                     className="form-control form-control-sm text-center"
-                                    style={{ width: 65 }}
+                                    style={{ width: 82, minWidth: 82 }}
                                     placeholder="Loose"
                                     value={vl.looseQty}
                                     onChange={(e) =>
@@ -1365,7 +1415,7 @@ export default function AddMcnoreChallan() {
                                 </div>
                                 {vl.box && <div className="small text-muted mt-1">{vl.box}</div>}
                               </td>
-                              <td>
+                              <td data-label="BottlePerBox">
                                 <input
                                   type="number"
                                   className="form-control form-control-sm text-center"
@@ -1373,10 +1423,10 @@ export default function AddMcnoreChallan() {
                                   onChange={(e) =>
                                     handleVariantLineChange(grpIdx, lineIdx, 'unit', e.target.value)
                                   }
-                                  placeholder="Pcs"
+                                  placeholder="BottlePerBox"
                                 />
                               </td>
-                              <td>
+                              <td data-label="Total Qty">
                                 <input
                                   type="number"
                                   className="form-control form-control-sm text-end fw-bold"
@@ -1387,7 +1437,7 @@ export default function AddMcnoreChallan() {
                                   placeholder="0"
                                 />
                               </td>
-                              <td>
+                              <td data-label="Rate">
                                 <input
                                   type="number"
                                   step="0.01"
@@ -1400,7 +1450,7 @@ export default function AddMcnoreChallan() {
                                 />
                               </td>
                               {poMode === 'without_po' && (
-                                <td>
+                                <td data-label="JW Rate">
                                   <input
                                     type="number"
                                     step="0.01"
@@ -1413,7 +1463,7 @@ export default function AddMcnoreChallan() {
                                   />
                                 </td>
                               )}
-                              <td className="text-end fw-500">
+                              <td data-label="Taxable Value" className="text-end fw-500">
                                 {vl.taxableValue || vl.jobWorkTaxableValue ? (
                                   <div>
                                     {vl.taxableValue > 0 && <div>₹{vl.taxableValue}</div>}
@@ -1425,14 +1475,14 @@ export default function AddMcnoreChallan() {
                                   <span className="text-muted small">-</span>
                                 )}
                               </td>
-                              <td className="text-center">
+                              <td data-label="Action" className="text-center">
                                 <button
                                   type="button"
-                                  className="btn btn-sm btn-link text-danger p-0"
+                                  className="btn btn-sm btn-outline-danger border-0 rounded-3 shadow-none p-2"
                                   onClick={() => removeVariantLine(grpIdx, lineIdx)}
                                   title="Delete line"
                                 >
-                                  <i className="bi bi-x-circle-fill" />
+                                  <i className="bi bi-trash fs-6" />
                                 </button>
                               </td>
                             </tr>
@@ -1455,19 +1505,19 @@ export default function AddMcnoreChallan() {
           </div>
         </div>
 
-        {/* SECTION 4: Totals & Tax Summary Breakdown */}
-        <div className="dash-card mb-4">
-          <div className="p-3 border-bottom bg-white d-flex align-items-center justify-content-between">
+        {/* Section 5: Quantities & Tax Summary */}
+        <div className="card border border-light-subtle shadow-sm rounded-3 mb-4 bg-white">
+          <div className="card-header bg-white p-3 border-bottom d-flex align-items-center justify-content-between">
             <h6 className="fw-bold text-dark mb-0">
               <i className="bi bi-calculator-fill text-primary me-2" />
-              4. Quantities &amp; Tax Calculation Breakdown
+              5. Quantities &amp; Tax Calculation Breakdown
             </h6>
             <span className="badge bg-light text-dark border">
               Total Boxes: {totalBoxes} | Total Qty: {totalQuantity.toLocaleString('en-IN')}
             </span>
           </div>
 
-          <div className="p-4">
+          <div className="card-body p-4">
             <div className="row g-4">
               <div className="col-md-6">
                 <div className="p-3 bg-light rounded-3">
@@ -1568,15 +1618,15 @@ export default function AddMcnoreChallan() {
           </div>
         </div>
 
-        {/* SECTION 5: Verification & Remarks */}
-        <div className="dash-card mb-4">
-          <div className="p-3 border-bottom bg-white">
+        {/* Section 6: Verification & Remarks */}
+        <div className="card border border-light-subtle shadow-sm rounded-3 mb-4 bg-white">
+          <div className="card-header bg-white p-3 border-bottom">
             <h6 className="fw-bold text-dark mb-0">
               <i className="bi bi-shield-check text-primary me-2" />
-              5. Verification &amp; Security Signature Info
+              6. Verification &amp; Security Signature Info
             </h6>
           </div>
-          <div className="p-4">
+          <div className="card-body p-4">
             <div className="row g-3">
               <div className="col-md-4">
                 <label className="form-label fw-bold small">Checked By</label>
@@ -1622,11 +1672,8 @@ export default function AddMcnoreChallan() {
         </div>
 
         {/* Actions Bar */}
-        <div className="d-flex align-items-center justify-content-end gap-3 mb-5">
-          <Link to="/delivery-challan/mcnore" className="btn btn-outline-secondary px-4">
-            Cancel
-          </Link>
-          <button type="submit" className="btn btn-accent px-5" disabled={loading}>
+        <div className="d-flex gap-2 mt-4 user-form-actions border-top pt-4 mb-5">
+          <button type="submit" className="btn-accent px-5 py-3 flex-grow-1" disabled={loading}>
             {loading ? (
               <>
                 <span className="spinner-border spinner-border-sm me-2" />
@@ -1639,6 +1686,9 @@ export default function AddMcnoreChallan() {
               </>
             )}
           </button>
+          <Link to="/delivery-challan/mcnore" className="btn-ghost px-5 py-3 text-decoration-none text-center">
+            Cancel
+          </Link>
         </div>
       </form>
     </div>

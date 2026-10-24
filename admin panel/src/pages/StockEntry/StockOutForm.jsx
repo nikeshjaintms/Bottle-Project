@@ -88,8 +88,8 @@ export default function StockOutForm({ onClose, selectedDate, material, editEntr
   };
 
   return (
-    <div className="modal show d-block" style={{ backgroundColor: 'rgba(15, 23, 42, 0.6)', backdropFilter: 'blur(4px)' }}>
-      <div className="modal-dialog modal-dialog-centered">
+    <div className="modal show d-block stock-entry-out-modal" style={{ backgroundColor: 'rgba(15, 23, 42, 0.6)', backdropFilter: 'blur(4px)' }}>
+      <div className="modal-dialog modal-dialog-centered stock-entry-out-dialog">
         <div className="modal-content border-0 shadow-lg" style={{ borderRadius: '1.25rem', overflow: 'hidden' }}>
           <div className="modal-header border-bottom-0 p-4 pb-3" style={{ background: 'linear-gradient(135deg, #f87171 0%, #ef4444 100%)' }}>
             <h5 className="modal-title fw-bold text-white d-flex align-items-center">

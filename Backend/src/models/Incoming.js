@@ -4,7 +4,7 @@ const incomingSchema = new mongoose.Schema(
   {
     documentDate: {
       type: Date,
-      required: true,
+      required: false,
       default: Date.now,
     },
     deliveryNumber: {
@@ -49,11 +49,13 @@ const incomingSchema = new mongoose.Schema(
         qty: {
           type: Number,
           required: true,
-          min: 1,
+          min: 0,
+          default: 0,
         },
         totalQty: {
           type: Number,
           required: true,
+          default: 0,
         }
       }
     ],

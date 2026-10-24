@@ -1130,8 +1130,8 @@ export default function EditPrintingPlan() {
 
   return (
     <>
-      <div className="page-content">
-        <div className="d-flex justify-content-between align-items-end mb-4">
+      <div className="page-content printing-plan-page printing-plan-form-page">
+        <div className="d-flex justify-content-between align-items-end mb-4 printing-plan-form-header">
           <div className="d-flex align-items-center gap-3">
             <button type="button" onClick={() => navigate(-1)} className="btn-ghost border-0 shadow-sm" style={{ width: 40, height: 40, borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
               <i className="bi bi-arrow-left fs-5" />
@@ -1150,17 +1150,17 @@ export default function EditPrintingPlan() {
 
         <div className="row justify-content-center">
           <div className="col-xl-12 col-lg-12">
-            <div className="dash-card border-0 shadow-sm p-4">
+            <div className="dash-card border-0 shadow-sm p-4 printing-plan-form-card">
               {error && <div className="alert alert-danger">{error}</div>}
 
-              <form onSubmit={handleSubmit}>
+              <form onSubmit={handleSubmit} className="printing-plan-form">
                 <div className="mb-4 pb-4 border-bottom">
                   <label className="form-label fw-bold small">Common Plan Date <span className="text-danger">*</span></label>
                   <input type="date" className="form-control shadow-none w-auto"
                     value={planDate} onChange={(e) => setPlanDate(e.target.value)} required />
                 </div>
 
-                <div className="bg-white border border-light-subtle rounded-3 p-4 mb-4 shadow-sm position-relative">
+                <div className="bg-white border border-light-subtle rounded-3 p-4 mb-4 shadow-sm position-relative printing-plan-section">
 
                   <div className="row g-4 mb-4 bg-light p-3 rounded mx-0 align-items-end">
                     <div className="col-md-4">
@@ -1221,7 +1221,7 @@ export default function EditPrintingPlan() {
                     <h6 className="fw-bold text-muted mb-0">PLAN ENTRIES</h6>
                   </div>
 
-                  <div className="table-responsive mb-3">
+                  <div className="table-responsive mb-3 printing-plan-entry-table">
                     <table className="table table-bordered align-middle table-sm" style={{ minWidth: '2400px' }}>
                       <thead className="table-light">
                         <tr>

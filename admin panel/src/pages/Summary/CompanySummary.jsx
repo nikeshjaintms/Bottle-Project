@@ -36,9 +36,6 @@ export default function CompanySummary() {
   // Bottle Logs Detail data
   const [logsData, setLogsData] = useState(null);
   const [logsLoading, setLogsLoading] = useState(false);
-  const [incomingPage, setIncomingPage] = useState(1);
-  const [dispatchPage, setDispatchPage] = useState(1);
-  const [shrenoPage, setShrenoPage] = useState(1);
 
   // 1. Fetch Bottles for this Company & determine default
   useEffect(() => {
@@ -117,11 +114,7 @@ export default function CompanySummary() {
             companyId,
             bottleId: selectedBottleId,
             fromDate,
-            toDate,
-            incomingPage,
-            dispatchPage,
-            shrenoPage,
-            limit: 10
+            toDate
           }
         });
         if (isMounted) {
@@ -140,14 +133,10 @@ export default function CompanySummary() {
 
     fetchLogs();
     return () => { isMounted = false; };
-  }, [companyId, selectedBottleId, fromDate, toDate, incomingPage, dispatchPage, shrenoPage]);
+  }, [companyId, selectedBottleId, fromDate, toDate]);
 
-  // Reset pagination when bottle changes
   const handleBottleChange = (newBottleId) => {
     setSelectedBottleId(newBottleId);
-    setIncomingPage(1);
-    setDispatchPage(1);
-    setShrenoPage(1);
   };
 
   const handleResetFilters = () => {
@@ -217,7 +206,7 @@ export default function CompanySummary() {
     <div className="page-content summary-container">
       {/* Top Breadcrumb & Header */}
       <div className="summary-header d-flex align-items-center justify-content-between flex-wrap gap-3">
-        <div className="d-flex align-items-center gap-3">
+        <div className="summary-company-heading d-flex align-items-center gap-3">
           <button
             onClick={() => navigate('/summary')}
             className="btn-ghost border-0"
@@ -236,8 +225,8 @@ export default function CompanySummary() {
             <i className="bi bi-arrow-left" style={{ fontSize: 20 }} />
           </button>
           <div>
-            <div className="d-flex align-items-center gap-2">
-              <h1 className="page-title mb-0">{company?.name || 'Company Summary'}</h1>
+            <div className="summary-company-title-row d-flex align-items-center gap-2">
+              <h1 className="page-title summary-company-name mb-0">{company?.name || 'Company Summary'}</h1>
               {isShreno ? (
                 <span className="summary-header-badge bg-warning-subtle text-warning-emphasis border border-warning-subtle">
                   <i className="bi bi-star-fill text-warning" /> {labels.shrenoCompany}
@@ -634,7 +623,7 @@ export default function CompanySummary() {
                 </span>
               </div>
 
-              <div className="summary-table-scroll">
+              <div className="summary-table-scroll incoming-table-scroll">
                 <table className="summary-table">
                   <thead>
                     <tr>
@@ -674,7 +663,7 @@ export default function CompanySummary() {
                       logsData?.incoming?.data?.map((row, idx) => (
                         <tr key={row._id}>
                           <td className="text-muted fw-semibold">
-                            {(logsData.incoming.page - 1) * logsData.incoming.limit + idx + 1}
+                            {idx + 1}
                           </td>
                           {isShreno && (
                             <>
@@ -709,30 +698,6 @@ export default function CompanySummary() {
                 </table>
               </div>
 
-              {/* Incoming Block Pagination */}
-              {logsData?.incoming?.totalPages > 1 && (
-                <div className="p-2 border-top bg-light d-flex align-items-center justify-content-between small text-muted">
-                  <span>
-                    Page {logsData.incoming.page} of {logsData.incoming.totalPages}
-                  </span>
-                  <div className="d-flex gap-1">
-                    <button
-                      className="btn btn-sm btn-light border py-0 px-2"
-                      disabled={logsData.incoming.page <= 1}
-                      onClick={() => setIncomingPage(p => p - 1)}
-                    >
-                      Prev
-                    </button>
-                    <button
-                      className="btn btn-sm btn-light border py-0 px-2"
-                      disabled={logsData.incoming.page >= logsData.incoming.totalPages}
-                      onClick={() => setIncomingPage(p => p + 1)}
-                    >
-                      Next
-                    </button>
-                  </div>
-                </div>
-              )}
             </div>
 
             {/* ------------------------------------------------------------- */}
@@ -749,7 +714,7 @@ export default function CompanySummary() {
                 </span>
               </div>
 
-              <div className="summary-table-scroll">
+              <div className={`summary-table-scroll dispatch-table-scroll${isShreno ? ' shreno-dispatch-table-scroll' : ''}`}>
                 <table className="summary-table">
                   <thead>
                     <tr>
@@ -760,7 +725,8 @@ export default function CompanySummary() {
                         <th className="fw-bold">PRODUCT NAME</th>
                       ) : (
                         <>
-                          <th colSpan={2} style={{ textAlign: 'center' }} className="fw-bold">PRODUCT NAME</th>
+                          <th style={{ textAlign: 'center' }} className="fw-bold">COATING</th>
+                          <th style={{ textAlign: 'center' }} className="fw-bold">PRINTING</th>
                           <th className="fw-bold">TEXT COLOR</th>
                         </>
                       )}
@@ -769,15 +735,6 @@ export default function CompanySummary() {
                       <th className="num-col fw-bold">{labels.dispDispatchQty}</th>
                       <th className="fw-bold">REMARK</th>
                     </tr>
-                    {!isShreno && (
-                      <tr style={{ fontSize: '12px', fontWeight: 'normal', backgroundColor: '#f8f9fa' }}>
-                        <th></th>
-                        <th colSpan={2}></th>
-                        <th style={{ textAlign: 'center' }} className="fw-bold">COATING</th>
-                        <th style={{ textAlign: 'center' }} className="fw-bold">PRINTING</th>
-                        <th colSpan={5}></th>
-                      </tr>
-                    )}
                   </thead>
                   <tbody>
                     {logsLoading ? (
@@ -800,7 +757,7 @@ export default function CompanySummary() {
                       logsData?.dispatch?.data?.map((row, idx) => (
                         <tr key={row._id}>
                           <td className="text-muted fw-semibold" style={{ width: 45 }}>
-                            {(logsData.dispatch.page - 1) * logsData.dispatch.limit + idx + 1}
+                            {idx + 1}
                           </td>
                           <td>{formatDate(row.date || row.dispatchDate)}</td>
                           <td className="fw-bold text-dark">{row.gatePassNo || row.dcNo || '-'}</td>
@@ -870,30 +827,6 @@ export default function CompanySummary() {
                 </table>
               </div>
 
-              {/* Dispatch Block Pagination */}
-              {logsData?.dispatch?.totalPages > 1 && (
-                <div className="p-2 border-top bg-light d-flex align-items-center justify-content-between small text-muted">
-                  <span>
-                    Page {logsData.dispatch.page} of {logsData.dispatch.totalPages}
-                  </span>
-                  <div className="d-flex gap-1">
-                    <button
-                      className="btn btn-sm btn-light border py-0 px-2"
-                      disabled={logsData.dispatch.page <= 1}
-                      onClick={() => setDispatchPage(p => p - 1)}
-                    >
-                      Prev
-                    </button>
-                    <button
-                      className="btn btn-sm btn-light border py-0 px-2"
-                      disabled={logsData.dispatch.page >= logsData.dispatch.totalPages}
-                      onClick={() => setDispatchPage(p => p + 1)}
-                    >
-                      Next
-                    </button>
-                  </div>
-                </div>
-              )}
             </div>
 
             {/* ------------------------------------------------------------- */}
@@ -911,7 +844,7 @@ export default function CompanySummary() {
                   </span>
                 </div>
 
-                <div className="summary-table-scroll">
+                <div className="summary-table-scroll packing-table-scroll">
                   <table className="summary-table">
                     <thead>
                       <tr>
@@ -962,30 +895,6 @@ export default function CompanySummary() {
                   </table>
                 </div>
 
-                {/* Packing Material Block Pagination */}
-                {logsData?.shrenoIncoming?.totalPages > 1 && (
-                  <div className="p-2 border-top bg-light d-flex align-items-center justify-content-between small text-muted">
-                    <span>
-                      Page {logsData.shrenoIncoming.page} of {logsData.shrenoIncoming.totalPages}
-                    </span>
-                    <div className="d-flex gap-1">
-                      <button
-                        className="btn btn-sm btn-light border py-0 px-2"
-                        disabled={logsData.shrenoIncoming.page <= 1}
-                        onClick={() => setShrenoPage(p => p - 1)}
-                      >
-                        Prev
-                      </button>
-                      <button
-                        className="btn btn-sm btn-light border py-0 px-2"
-                        disabled={logsData.shrenoIncoming.page >= logsData.shrenoIncoming.totalPages}
-                        onClick={() => setShrenoPage(p => p + 1)}
-                      >
-                        Next
-                      </button>
-                    </div>
-                  </div>
-                )}
               </div>
             )}
           </div>

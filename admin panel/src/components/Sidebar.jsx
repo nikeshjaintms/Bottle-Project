@@ -85,8 +85,6 @@ const navItems = [
         ]
       },
       { to: '/summary', icon: 'bi-file-earmark-diff', label: 'Summary', action: 'sidebar', subject: 'dispatch' },
-      { to: '/pending-sheet', icon: 'bi-clipboard-check-fill', label: 'Ready Stock', action: 'sidebar', subject: 'pending-sheet' },
-
     ],
   },
   {

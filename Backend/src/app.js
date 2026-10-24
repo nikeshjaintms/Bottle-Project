@@ -64,7 +64,6 @@ app.use("/api/bottle-per-box", require("./routes/bottlePerBox.routes"));
 app.use("/api/item-type", require("./routes/itemType.routes"));
 app.use("/api/lacquer-plan", require("./routes/lacquerPlan.routes"));
 app.use("/api/printing-plan", require("./routes/printingPlan.routes"));
-app.use("/api/pending-sheet", require("./routes/pendingSheet.routes"));
 app.use("/api/shreno-incoming", require("./routes/shrenoIncoming.routes"));
 app.use("/api/dispatch", require("./routes/dispatch.routes"));
 app.use("/api/delivery-challan", require("./routes/deliveryChallan.routes"));

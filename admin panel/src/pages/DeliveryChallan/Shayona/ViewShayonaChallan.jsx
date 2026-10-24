@@ -3,6 +3,7 @@ import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
 import { fetchDeliveryChallanById } from '../../../redux/slices/deliveryChallanSlice';
 import html2pdf from 'html2pdf.js';
+import logo from '../../../assets/hero.png';
 
 export default function ViewShayonaChallan() {
   const { id } = useParams();
@@ -142,52 +143,55 @@ export default function ViewShayonaChallan() {
     : '';
 
   return (
-    <div className="page-content">
+    <div className="page-content delivery-challan-view-page">
       {/* Action Toolbar (hidden on print) */}
       <div className="d-flex align-items-center justify-content-between mb-4 no-print flex-wrap gap-2">
         <div className="d-flex align-items-center gap-2">
           <Link
             to="/delivery-challan/shayoona"
-            className="btn btn-sm btn-outline-secondary d-flex align-items-center gap-1"
+            className="btn-ghost border-0 shadow-sm"
+            style={{ width: 40, height: 40, borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+            title="Back to Shayona Challans"
+            aria-label="Back to Shayona Challans"
           >
-            <i className="bi bi-arrow-left" /> Back to Challans
+            <i className="bi bi-arrow-left fs-5" />
           </Link>
-          <span className="text-muted small">|</span>
           <span className="fw-bold text-dark fs-5">
             Delivery Challan #{c.challanNo} {isShreno && <span className="badge bg-primary ms-2 fs-6">SHRENO</span>}
           </span>
         </div>
 
-        <div className="d-flex gap-2">
+        <div className="d-flex align-items-center gap-2">
           <Link
             to={`/delivery-challan/shayoona/edit/${c._id}`}
-            className="btn btn-sm btn-outline-secondary d-flex align-items-center gap-1"
+            className="btn btn-outline-primary shadow-sm px-4 py-2 rounded-3"
           >
-            <i className="bi bi-pencil" /> Edit Challan
+            <i className="bi bi-pencil-fill me-2" /> Edit Challan
           </Link>
           <button
             type="button"
-            className="btn btn-sm btn-outline-info d-flex align-items-center gap-2 px-3 shadow-sm"
+            className="btn btn-outline-primary shadow-sm px-4 py-2 rounded-3"
             onClick={handleOpenHtmlPreview}
             title="Open pure Backend HTML template in new tab"
           >
-            <i className="bi bi-filetype-html fs-6" /> HTML Preview
+            <i className="bi bi-filetype-html me-2" /> HTML Preview
           </button>
           <button
             type="button"
-            className="btn btn-sm btn-outline-primary d-flex align-items-center gap-2 px-3 shadow-sm"
+            className="btn btn-outline-primary shadow-sm px-4 py-2 rounded-3"
             onClick={handleDownloadPDF}
             disabled={downloadingPdf}
           >
-            <i className={`bi ${downloadingPdf ? 'bi-hourglass-split' : 'bi-file-earmark-pdf-fill'} fs-6 text-danger`} />
+            <i className={`bi ${downloadingPdf ? 'bi-hourglass-split' : 'bi-file-earmark-pdf-fill'} me-2 text-danger`} />
             {downloadingPdf ? 'Generating PDF...' : 'Download PDF'}
           </button>
           <button
             type="button"
-            className="btn btn-sm btn-accent d-flex align-items-center gap-2 px-3 shadow-sm"
+            className="btn btn-accent shadow-sm px-4 py-2 rounded-3"
+            style={{ color: 'white', textDecoration: 'none' }}
             onClick={handlePrint}
           >
-            <i className="bi bi-printer-fill fs-6" /> Print
+            <i className="bi bi-printer-fill me-2" /> Print
           </button>
         </div>
       </div>
@@ -210,11 +214,16 @@ export default function ViewShayonaChallan() {
           }}
         >
           {/* Header Section */}
-          <div className="text-center border-bottom border-dark border-2 pb-0">
+          <div className="text-center border-bottom border-dark border-2 pb-0" style={{ position: 'relative' }}>
+            <img
+              src={logo}
+              alt="Shayona Glass Decor logo"
+              style={{ position: 'absolute', top: 5, left: 10, width: 140, height: 92, objectFit: 'contain' }}
+            />
             <h3
               className="fw-bold mb-1 pt-2"
               style={{
-                color: '#1a56db',
+                color: '#00b2ff',
                 letterSpacing: '0.5px',
                 fontSize: '22px',
                 fontFamily: '"Times New Roman", Times, serif',
