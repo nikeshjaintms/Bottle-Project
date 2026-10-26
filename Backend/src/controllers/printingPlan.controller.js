@@ -38,7 +38,9 @@ const calculateCoatedStock = async (coatingShade, companyId, planDate = null) =>
   const lacquerRecords = await LacquerPlan.find(lacquerQuery).lean();
   let totalLacquerCoated = 0;
   for (const lp of lacquerRecords) {
-    totalLacquerCoated += (lp.coatingCompletedQty !== undefined ? lp.coatingCompletedQty : (lp.coatedQty || 0));
+    const c1 = Number(lp.coatingCompletedQty) || 0;
+    const c2 = Number(lp.coatedQty) || 0;
+    totalLacquerCoated += Math.max(c1, c2);
   }
   
   // 2. Sum Printing Ready for this shade (non-deleted)

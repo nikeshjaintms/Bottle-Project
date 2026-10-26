@@ -159,7 +159,8 @@ exports.getAllDispatch = async (req, res) => {
           { plainBottleKeys: [] }
         ];
       } else {
-        query.plainBottleKeys = plainBottleName;
+        const normalized = normalizeBottleName(plainBottleName);
+        query.plainBottleKeys = normalized || plainBottleName;
       }
     }
     
@@ -287,12 +288,7 @@ async function batchPopulateItems(dispatches) {
         if (item.bottleId) {
           const bottleData = bottleMap.get(String(item.bottleId));
           if (bottleData) {
-            const normalized = String(bottleData.plainBottleName || bottleData.bottleName || '')
-              .trim()
-              .toUpperCase()
-              .replace(/\s+/g, ' ')
-              .replace(/\bROLL\s+ON\b/g, 'ROLLON');
-            item.plainBottleName = normalized;
+            item.plainBottleName = normalizeBottleName(bottleData.plainBottleName || bottleData.bottleName);
           }
         } else if (!item.plainBottleName) {
           // Entry with no bottle - mark as Unmapped
