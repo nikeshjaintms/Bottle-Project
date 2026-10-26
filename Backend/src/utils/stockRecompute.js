@@ -93,10 +93,9 @@ async function recomputePlainStock(bottleIdOrName, companyId = null, userId = nu
   const lacquerPlans = await LacquerPlan.find(lacquerQuery).lean();
   let totalCoatingCompleted = 0;
   for (const lp of lacquerPlans) {
-    const completed = (lp.coatingCompletedQty !== undefined && lp.coatingCompletedQty !== null)
-      ? Number(lp.coatingCompletedQty)
-      : (Number(lp.coatedQty) || 0);
-    totalCoatingCompleted += completed;
+    const c1 = Number(lp.coatingCompletedQty) || 0;
+    const c2 = Number(lp.coatedQty) || 0;
+    totalCoatingCompleted += Math.max(c1, c2);
   }
 
   // 5. Σ Ready of PLAIN printing rows (from non-deleted PrintingPlan)
@@ -162,7 +161,7 @@ async function recomputePlainStock(bottleIdOrName, companyId = null, userId = nu
  * @param {string|mongoose.Types.ObjectId|null} companyId
  * @param {Date|string|null} targetDate
  */
-async function computeLivePlainStock(bottleIdOrName, companyId = null, targetDate = null) {
+async function computeLivePlainStock(bottleIdOrName, companyId = null, targetDate = null, excludePlanIds = null) {
   if (!bottleIdOrName) return 0;
 
   // 1. Resolve BottlePerBox document
@@ -208,8 +207,11 @@ async function computeLivePlainStock(bottleIdOrName, companyId = null, targetDat
     ]
   };
 
+  let startOfDay = null;
   let endOfDay = null;
   if (targetDate) {
+    startOfDay = new Date(targetDate);
+    startOfDay.setUTCHours(0, 0, 0, 0);
     endOfDay = new Date(targetDate);
     endOfDay.setUTCHours(23, 59, 59, 999);
   }
@@ -235,27 +237,71 @@ async function computeLivePlainStock(bottleIdOrName, companyId = null, targetDat
     }
   }
 
-  // 4. Σ coating completed (≤D) from non-deleted LacquerPlan
-  const lacquerQuery = {
-    isDeleted: false,
-    ...bottleMatchCondition
-  };
-  if (resolvedCompanyId) {
-    lacquerQuery.companyId = resolvedCompanyId;
-  }
-  if (endOfDay) {
-    lacquerQuery.planDate = { $lte: endOfDay };
-  }
-  const lacquerPlans = await LacquerPlan.find(lacquerQuery).lean();
-  let totalCoatingCompleted = 0;
-  for (const lp of lacquerPlans) {
-    const completed = (lp.coatingCompletedQty !== undefined && lp.coatingCompletedQty !== null)
-      ? Number(lp.coatingCompletedQty)
-      : (Number(lp.coatedQty) || 0);
-    totalCoatingCompleted += completed;
+  // 4. Exclude Plan IDs normalization
+  let excludeIds = [];
+  if (excludePlanIds) {
+    if (Array.isArray(excludePlanIds)) {
+      excludeIds = excludePlanIds.flatMap(id => String(id).split(',')).map(id => id.trim()).filter(id => mongoose.Types.ObjectId.isValid(id)).map(id => new mongoose.Types.ObjectId(id));
+    } else if (typeof excludePlanIds === 'string') {
+      excludeIds = excludePlanIds.split(',').map(id => id.trim()).filter(id => mongoose.Types.ObjectId.isValid(id)).map(id => new mongoose.Types.ObjectId(id));
+    }
   }
 
-  // 5. Σ Ready of PLAIN printing rows (≤D) from non-deleted PrintingPlan
+  // 5. Σ coating completed BEFORE targetDate (prior plans) and ON targetDate (same-day plans)
+  let priorCoatingCompleted = 0;
+  let sameDayCoated = 0;
+
+  if (startOfDay && endOfDay) {
+    // Prior plans: < startOfDay
+    const priorQuery = {
+      isDeleted: false,
+      ...bottleMatchCondition,
+      planDate: { $lt: startOfDay }
+    };
+    if (resolvedCompanyId) priorQuery.companyId = resolvedCompanyId;
+    if (excludeIds.length > 0) priorQuery._id = { $nin: excludeIds };
+
+    const priorPlans = await LacquerPlan.find(priorQuery).lean();
+    for (const lp of priorPlans) {
+      const c1 = Number(lp.coatingCompletedQty) || 0;
+      const c2 = Number(lp.coatedQty) || 0;
+      priorCoatingCompleted += Math.max(c1, c2);
+    }
+
+    // Same-day plans: between startOfDay and endOfDay
+    const sameDayQuery = {
+      isDeleted: false,
+      ...bottleMatchCondition,
+      planDate: { $gte: startOfDay, $lte: endOfDay }
+    };
+    if (resolvedCompanyId) sameDayQuery.companyId = resolvedCompanyId;
+    if (excludeIds.length > 0) sameDayQuery._id = { $nin: excludeIds };
+
+    const sameDayPlans = await LacquerPlan.find(sameDayQuery).lean();
+    for (const lp of sameDayPlans) {
+      const c1 = Number(lp.coatingCompletedQty) || 0;
+      const c2 = Number(lp.coatedQty) || 0;
+      sameDayCoated += Math.max(c1, c2);
+    }
+  } else {
+    // All-time cumulative
+    const allLacquerQuery = {
+      isDeleted: false,
+      ...bottleMatchCondition
+    };
+    if (resolvedCompanyId) allLacquerQuery.companyId = resolvedCompanyId;
+    if (endOfDay) allLacquerQuery.planDate = { $lte: endOfDay };
+    if (excludeIds.length > 0) allLacquerQuery._id = { $nin: excludeIds };
+
+    const allPlans = await LacquerPlan.find(allLacquerQuery).lean();
+    for (const lp of allPlans) {
+      const c1 = Number(lp.coatingCompletedQty) || 0;
+      const c2 = Number(lp.coatedQty) || 0;
+      priorCoatingCompleted += Math.max(c1, c2);
+    }
+  }
+
+  // 6. Σ Ready of PLAIN printing rows (≤D) from non-deleted PrintingPlan
   const printingQuery = {
     isDeleted: false,
     coatingShade: { $regex: /^PLAIN$/i },
@@ -273,9 +319,29 @@ async function computeLivePlainStock(bottleIdOrName, companyId = null, targetDat
     totalPlainPrintingReady += (Number(pp.producedQty) || 0);
   }
 
-  // 6. Formula Value
-  const formulaValue = totalIncoming - totalCoatingCompleted - totalPlainPrintingReady;
-  return formulaValue;
+  // 7. Formula Values
+  // openingStock = Incoming up to date − coated of all non-deleted plans BEFORE date − Ready of PLAIN printing rows
+  const openingStock = totalIncoming - priorCoatingCompleted - totalPlainPrintingReady;
+  // plainStock = openingStock − same-day coated
+  const plainStock = openingStock - sameDayCoated;
+
+  const resObj = {
+    openingStock,
+    plainStock,
+    available: plainStock,
+    totalStock: openingStock,
+    sameDayCoated
+  };
+
+  resObj[Symbol.toPrimitive] = function(hint) {
+    if (hint === 'string') return String(plainStock);
+    return plainStock;
+  };
+  resObj.valueOf = function() {
+    return plainStock;
+  };
+
+  return resObj;
 }
 
 /**

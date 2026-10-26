@@ -2,6 +2,7 @@
 const LacquerPlan = require("../models/LacquerPlan");
 const PlainBottleStock = require("../models/PlainBottleStock");
 const { recomputePlainStock, computeLivePlainStock } = require("../utils/stockRecompute");
+const { computePlanGroupKey, resolveCanonicalPlainBottle, normalizeBottleName: normalizeBottleCanonical } = require("../utils/lacquerGroupKey");
 const BottlePerBox = require("../models/BottlePerBox");
 const CoatingProduction = require("../models/CoatingProduction");
 const PrintingPlan = require("../models/PrintingPlan");
@@ -143,14 +144,22 @@ const getPlanCombinationKey = (item, resolveBrand = null, resolveVariant = null)
   return keys[0] || '';
 };
 
+const getCoatedQty = (item) => {
+  if (!item) return 0;
+  const c1 = Number(item.coatingCompletedQty);
+  const c2 = Number(item.coatedQty);
+  if (Number.isFinite(c1) && Number.isFinite(c2)) {
+    return Math.max(c1, c2);
+  }
+  if (Number.isFinite(c1)) return c1;
+  if (Number.isFinite(c2)) return c2;
+  return 0;
+};
+
 const isPlanRowCompleted = (item) => {
   if (!item) return false;
   const order = Number(item.orderQty) || 0;
-  const coated = Number(
-    item.coatingCompletedQty !== undefined && item.coatingCompletedQty !== null
-      ? item.coatingCompletedQty
-      : (item.coatedQty || 0)
-  );
+  const coated = getCoatedQty(item);
 
   // If order is <= 0 or coated is 0, it is not a completed production row
   if (order <= 0 || coated <= 0) {
@@ -550,7 +559,7 @@ const createPrintingPlanIfApplicable = syncPrintingPlanForLacquerPlan;
  * @param {Date} excludeDate - (optional) Date to exclude from allocation count
  * @returns {Promise<{totalStock, allocated, available, breakdown}>}
  */
-const calculateAvailableStock = async (plainBottleName, companyId, excludeDate = null, planDate = null) => {
+const calculateAvailableStock = async (plainBottleName, companyId, excludeDate = null, planDate = null, excludePlanIds = null) => {
   try {
     if (!plainBottleName || !companyId) {
       return {
@@ -563,61 +572,16 @@ const calculateAvailableStock = async (plainBottleName, companyId, excludeDate =
       };
     }
 
-    // 1. Get live shown stock computed as of target date (no cache fallback)
+    // 1. Get live shown stock computed as of target date (excluding excludePlanIds)
     const effectiveDate = planDate || (excludeDate ? new Date(excludeDate) : new Date());
-    const shownStock = await computeLivePlainStock(plainBottleName, companyId, effectiveDate);
-
-    // 2. Sum that date's Σ Coating Completed Qty of the pool
-    const startOfDay = new Date(effectiveDate);
-    startOfDay.setUTCHours(0, 0, 0, 0);
-    const endOfDay = new Date(effectiveDate);
-    endOfDay.setUTCHours(23, 59, 59, 999);
-
-    const escapeRegex = (string) => string ? string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') : '';
-    const nameTrimmed = String(plainBottleName).trim();
-    const BottlePerBox = require('../models/BottlePerBox');
-    const bp = await BottlePerBox.findOne({
-      $or: [
-        { bottleName: new RegExp("^" + escapeRegex(nameTrimmed) + "$", "i") },
-        { plainBottleName: new RegExp("^" + escapeRegex(nameTrimmed) + "$", "i") },
-        { bottleNames: new RegExp("^" + escapeRegex(nameTrimmed) + "$", "i") }
-      ],
-      isDeleted: false
-    });
-
-    const bottleNames = [nameTrimmed];
-    if (bp) {
-      if (bp.bottleName) bottleNames.push(bp.bottleName);
-      if (bp.plainBottleName) bottleNames.push(bp.plainBottleName);
-      if (Array.isArray(bp.bottleNames)) bottleNames.push(...bp.bottleNames);
-    }
-    const bottleRegexes = Array.from(new Set(bottleNames.map(n => n.trim()))).map(n => new RegExp("^" + escapeRegex(n) + "$", "i"));
-
-    const datePlans = await LacquerPlan.find({
-      bottleName: { $in: bottleRegexes },
-      $or: [
-        { canonicalCompanyId: companyId },
-        { companyId: companyId }
-      ],
-      planDate: { $gte: startOfDay, $lte: endOfDay },
-      isDeleted: false
-    }).select('coatingCompletedQty coatedQty').lean();
-
-    const totalCoatedToday = datePlans.reduce((sum, p) => {
-      const qty = (p.coatingCompletedQty !== undefined && p.coatingCompletedQty !== null)
-        ? p.coatingCompletedQty
-        : (p.coatedQty || 0);
-      return sum + (Number(qty) || 0);
-    }, 0);
-
-    const openingStock = shownStock + totalCoatedToday;
+    const availableStock = await computeLivePlainStock(plainBottleName, companyId, effectiveDate, excludePlanIds);
 
     return {
-      totalStock: shownStock,
-      openingStock,
-      totalCoatedToday,
+      totalStock: availableStock,
+      openingStock: availableStock,
+      totalCoatedToday: 0,
       allocated: 0,
-      available: openingStock,
+      available: availableStock,
       breakdown: { lacquerPlans: 0, incomingPlan: 0, reserved: 0 }
     };
   } catch (error) {
@@ -635,9 +599,10 @@ const calculateAvailableStock = async (plainBottleName, companyId, excludeDate =
  * @param {number} orderQty - Quantity being ordered
  * @param {ObjectId} excludeRowId - (optional)
  * @param {Date|string} planDate - (optional) Target plan date
+ * @param {Array|string} excludePlanIds - (optional)
  * @returns {Promise<{hasWarning, orderQty, availableStock, openingStock, overBy, details}>}
  */
-const validateRowStockWarning = async (plainBottleName, companyId, orderQty, excludeRowId = null, planDate = null) => {
+const validateRowStockWarning = async (plainBottleName, companyId, orderQty, excludeRowId = null, planDate = null, excludePlanIds = null) => {
   try {
     const parsedOrder = parseFloat(orderQty) || 0;
     if (!plainBottleName || !companyId || parsedOrder <= 0) {
@@ -652,6 +617,7 @@ const validateRowStockWarning = async (plainBottleName, companyId, orderQty, exc
     }
 
     let excludeDate = null;
+    const effectiveExclude = excludePlanIds || excludeRowId;
     if (excludeRowId) {
       const rowToExclude = await LacquerPlan.findById(excludeRowId).select('planDate orderQty').lean();
       if (rowToExclude) {
@@ -659,7 +625,7 @@ const validateRowStockWarning = async (plainBottleName, companyId, orderQty, exc
       }
     }
 
-    const stock = await calculateAvailableStock(plainBottleName, companyId, excludeDate, planDate);
+    const stock = await calculateAvailableStock(plainBottleName, companyId, excludeDate, planDate, effectiveExclude);
     const openingStock = stock.openingStock !== undefined ? stock.openingStock : stock.available;
     const hasWarning = parsedOrder > 0 && parsedOrder > openingStock;
     const overBy = hasWarning ? (parsedOrder - openingStock) : 0;
@@ -673,7 +639,7 @@ const validateRowStockWarning = async (plainBottleName, companyId, orderQty, exc
       details: {
         totalStock: stock.totalStock,
         openingStock,
-        totalCoatedToday: stock.totalCoatedToday
+        totalCoatedToday: 0
       }
     };
   } catch (error) {
@@ -682,9 +648,166 @@ const validateRowStockWarning = async (plainBottleName, companyId, orderQty, exc
   }
 };
 
+/**
+ * Validates that the sum of Coating Completed Qty of all rows in the submission
+ * for each pool (company + plain bottle) does not exceed available plain bottle stock.
+ */
+const validateCoatedQtyLimit = async (items, excludePlanIds = null) => {
+  const pools = new Map();
+
+  for (const item of items) {
+    if (!item) continue;
+    const compId = (item.canonicalCompanyId || (item.companyId?._id || item.companyId) || '').toString();
+    const rawBottle = (item.plainBottle || item.plainBottleName || item.bottleName || '').trim();
+    if (!compId || !rawBottle) continue;
+
+    const canonicalBottle = await resolveCanonicalPlainBottle(rawBottle, compId);
+    const coated = getCoatedQty(item);
+    const dateStr = item.planDate ? new Date(item.planDate).toISOString().split('T')[0] : '';
+    const poolKey = `${compId}::${canonicalBottle}::${dateStr}`;
+
+    if (!pools.has(poolKey)) {
+      pools.set(poolKey, {
+        companyId: compId,
+        bottleName: canonicalBottle,
+        planDate: item.planDate,
+        totalCoated: 0
+      });
+    }
+    pools.get(poolKey).totalCoated += coated;
+  }
+
+  for (const [key, pool] of pools.entries()) {
+    if (pool.totalCoated > 0) {
+      const stock = await computeLivePlainStock(pool.bottleName, pool.companyId, pool.planDate, excludePlanIds);
+      const available = stock.plainStock !== undefined ? stock.plainStock : stock;
+      if (pool.totalCoated > available) {
+        return {
+          exceeded: true,
+          available,
+          totalCoated: pool.totalCoated,
+          plainBottle: pool.bottleName,
+          message: `Only ${available} bottles available for ${pool.bottleName} (this entry adds up to ${pool.totalCoated}).`
+        };
+      }
+    }
+  }
+
+  return null;
+};
+
+const assignGroupsAndSequences = async (items) => {
+  const groupSeqMap = new Map();
+  for (const item of items) {
+    if (!item) continue;
+    const gKey = await computePlanGroupKey(item);
+    item.groupKey = gKey;
+    if (!groupSeqMap.has(gKey)) {
+      const existingPlans = await LacquerPlan.find({ groupKey: gKey, isDeleted: false }).sort({ rowSeq: 1 });
+      const maxSeq = existingPlans.length > 0 ? Math.max(...existingPlans.map(p => p.rowSeq || 0)) : 0;
+      groupSeqMap.set(gKey, maxSeq);
+    }
+    const nextSeq = groupSeqMap.get(gKey) + 1;
+    groupSeqMap.set(gKey, nextSeq);
+    item.rowSeq = nextSeq;
+  }
+};
+
+function escapeRegex(str) {
+  return String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Synchronizes remaining plain stock across ALL plans sharing the same canonical bottle
+ * and company on a given planDate.
+ */
+async function syncSameDayPlansPlainStock(bottleName, companyId, planDate, userId = null) {
+  try {
+    if (!bottleName || !companyId || !planDate) return;
+
+    const startOfDay = new Date(planDate);
+    startOfDay.setUTCHours(0, 0, 0, 0);
+    const endOfDay = new Date(planDate);
+    endOfDay.setUTCHours(23, 59, 59, 999);
+
+    const canonicalBottle = await resolveCanonicalPlainBottle(bottleName, companyId);
+    if (!canonicalBottle) return;
+
+    const nameTrimmed = String(canonicalBottle).trim();
+    const bp = await BottlePerBox.findOne({
+      $or: [
+        { bottleName: { $regex: new RegExp("^" + escapeRegex(nameTrimmed) + "$", "i") } },
+        { plainBottleName: { $regex: new RegExp("^" + escapeRegex(nameTrimmed) + "$", "i") } },
+        { bottleNames: { $regex: new RegExp("^" + escapeRegex(nameTrimmed) + "$", "i") } }
+      ],
+      isDeleted: false
+    });
+
+    const names = Array.from(new Set([
+      nameTrimmed,
+      String(bottleName).trim(),
+      bp?.bottleName,
+      bp?.plainBottleName,
+      ...(bp?.bottleNames || [])
+    ].filter(Boolean).map(n => String(n).trim())));
+
+    const bottleRegexes = names.map(n => new RegExp("^" + escapeRegex(n) + "$", "i"));
+    const bottleMatchCondition = {
+      $or: [
+        { bottleName: { $in: bottleRegexes } },
+        { plainBottle: { $in: bottleRegexes } }
+      ]
+    };
+
+    let compCondition = { companyId: companyId };
+    const cidStr = (companyId._id || companyId).toString();
+    if (mongoose.Types.ObjectId.isValid(cidStr)) {
+      compCondition = {
+        $or: [
+          { companyId: new mongoose.Types.ObjectId(cidStr) },
+          { canonicalCompanyId: new mongoose.Types.ObjectId(cidStr) }
+        ]
+      };
+    }
+
+    // Recompute live remaining stock for this target date
+    const stockRes = await computeLivePlainStock(canonicalBottle, companyId, planDate);
+    const remainingPlainStock = stockRes.plainStock !== undefined ? stockRes.plainStock : Number(stockRes);
+
+    await LacquerPlan.updateMany(
+      {
+        planDate: { $gte: startOfDay, $lte: endOfDay },
+        ...compCondition,
+        ...bottleMatchCondition,
+        isDeleted: false
+      },
+      { $set: { plainStock: remainingPlainStock } }
+    );
+
+    // Also recompute overall live plain bottle stock document
+    await recomputePlainStock(canonicalBottle, companyId, userId);
+  } catch (err) {
+    console.error("Error in syncSameDayPlansPlainStock:", err);
+  }
+}
+
 // Create Plan
 exports.createPlan = async (req, res) => {
   try {
+    const submissionItems = Array.isArray(req.body) ? req.body : [req.body];
+    const coatedLimitError = await validateCoatedQtyLimit(submissionItems, null);
+    if (coatedLimitError) {
+      return res.status(400).json({
+        success: false,
+        message: coatedLimitError.message,
+        available: coatedLimitError.available,
+        totalCoated: coatedLimitError.totalCoated
+      });
+    }
+
+    // Assign groupKey and sequential rowSeq per group
+    await assignGroupsAndSequences(submissionItems);
+
     if (Array.isArray(req.body)) {
       const comboSet = new Set();
 
@@ -751,31 +874,25 @@ exports.createPlan = async (req, res) => {
         await syncLacquerPlanStockDeduction(plan, plan.coatingCompletedQty ?? plan.coatedQty, req.user?._id);
         await createPrintingPlanIfApplicable(plan);
 
-        if (plan.plainStock !== undefined && plan.plainStock !== null) {
-          const planBottle = (plan.plainBottle || plan.bottleName || '').trim();
-          const planComp = plan.canonicalCompanyId || plan.companyId;
-          if (planBottle && planComp && plan.planDate) {
-            const startOfDay = new Date(plan.planDate);
-            startOfDay.setUTCHours(0, 0, 0, 0);
-            const endOfDay = new Date(plan.planDate);
-            endOfDay.setUTCHours(23, 59, 59, 999);
+      }
 
-            await LacquerPlan.updateMany(
-              {
-                _id: { $ne: plan._id },
-                planDate: { $gte: startOfDay, $lte: endOfDay },
-                companyId: planComp,
-                $or: [
-                  { bottleName: { $regex: new RegExp("^" + planBottle + "$", "i") } },
-                  { plainBottle: { $regex: new RegExp("^" + planBottle + "$", "i") } }
-                ],
-                isDeleted: false
-              },
-              { $set: { plainStock: plan.plainStock } }
-            );
+      // Sync live remaining plain stock across all plans on this day
+      const uniqueSyncKeys = new Map();
+      for (const plan of plans) {
+        const pBottle = (plan.plainBottle || plan.bottleName || '').trim();
+        const pComp = plan.canonicalCompanyId || plan.companyId;
+        if (pBottle && pComp && plan.planDate) {
+          const k = `${pComp.toString()}::${pBottle}::${new Date(plan.planDate).toISOString().split('T')[0]}`;
+          if (!uniqueSyncKeys.has(k)) {
+            uniqueSyncKeys.set(k, { bottleName: pBottle, companyId: pComp, planDate: plan.planDate });
           }
         }
       }
+
+      for (const { bottleName, companyId, planDate } of uniqueSyncKeys.values()) {
+        await syncSameDayPlansPlainStock(bottleName, companyId, planDate, req.user?._id);
+      }
+
       return res.status(201).json({ success: true, data: plans });
     } else {
       await validatePlanCompanyBottleVariant(req.body, false);
@@ -831,29 +948,10 @@ exports.createPlan = async (req, res) => {
       await syncLacquerPlanStockDeduction(plan, plan.coatingCompletedQty ?? plan.coatedQty, req.user?._id);
       await createPrintingPlanIfApplicable(plan);
 
-      if (plan.plainStock !== undefined && plan.plainStock !== null) {
-        const planBottle = (plan.plainBottle || plan.bottleName || '').trim();
-        const planComp = plan.canonicalCompanyId || plan.companyId;
-        if (planBottle && planComp && plan.planDate) {
-          const startOfDay = new Date(plan.planDate);
-          startOfDay.setUTCHours(0, 0, 0, 0);
-          const endOfDay = new Date(plan.planDate);
-          endOfDay.setUTCHours(23, 59, 59, 999);
-
-          await LacquerPlan.updateMany(
-            {
-              _id: { $ne: plan._id },
-              planDate: { $gte: startOfDay, $lte: endOfDay },
-              companyId: planComp,
-              $or: [
-                { bottleName: { $regex: new RegExp("^" + planBottle + "$", "i") } },
-                { plainBottle: { $regex: new RegExp("^" + planBottle + "$", "i") } }
-              ],
-              isDeleted: false
-            },
-            { $set: { plainStock: plan.plainStock } }
-          );
-        }
+      const pBottle = (plan.plainBottle || plan.bottleName || '').trim();
+      const pComp = plan.canonicalCompanyId || plan.companyId;
+      if (pBottle && pComp && plan.planDate) {
+        await syncSameDayPlansPlainStock(pBottle, pComp, plan.planDate, req.user?._id);
       }
 
       return res.status(201).json({ success: true, data: plan });
@@ -1018,16 +1116,23 @@ exports.getPlans = async (req, res) => {
       let plainStock = 0;
       let coatedQty = 0;
 
+      let openingStock = 0;
+
       // 1. Fetch live day-based plain stock (Rule L3)
       if (plan.bottleName) {
         const compId = plan.canonicalCompanyId || plan.companyId;
         const dayStr = plan.planDate ? new Date(plan.planDate).toISOString().split('T')[0] : '';
-        const cacheKey = `${compId}::${(plan.bottleName || '').toUpperCase()}::${dayStr}`;
+        const canonicalBottle = await resolveCanonicalPlainBottle(plan.plainBottle || plan.bottleName, compId);
+        const cacheKey = `${compId}::${canonicalBottle}::${dayStr}`;
         if (stockCache.has(cacheKey)) {
-          plainStock = stockCache.get(cacheKey);
+          const cached = stockCache.get(cacheKey);
+          plainStock = cached.plainStock;
+          openingStock = cached.openingStock;
         } else {
-          plainStock = await computeLivePlainStock(plan.bottleName, compId, plan.planDate);
-          stockCache.set(cacheKey, plainStock);
+          const stock = await computeLivePlainStock(canonicalBottle, compId, plan.planDate);
+          plainStock = stock.plainStock !== undefined ? stock.plainStock : stock;
+          openingStock = stock.openingStock !== undefined ? stock.openingStock : plainStock;
+          stockCache.set(cacheKey, { plainStock, openingStock });
         }
       }
 
@@ -1065,11 +1170,15 @@ exports.getPlans = async (req, res) => {
 
       return {
         ...plan,
+        groupKey: plan.groupKey,
+        rowSeq: plan.rowSeq || 1,
         plainBottleName,
+        availableStock: plainStock,
         livePlainStock: plainStock,
         liveCoatedQty: coatedQty,
         liveBalanceToMake: balanceToMake,
         plainStock: plainStock,  // ALWAYS use live stock for list display, NOT stored snapshot
+        openingStock: openingStock,
         coatedQty: plan.coatedQty !== null && plan.coatedQty !== undefined ? plan.coatedQty : coatedQty,
         balanceToMake: plan.balanceToMake !== null && plan.balanceToMake !== undefined ? plan.balanceToMake : balanceToMake
       };
@@ -1183,7 +1292,7 @@ exports.getMonthStatus = async (req, res) => {
 // Validate Stock Warning for a row
 exports.validateStockWarning = async (req, res) => {
   try {
-    const { bottleName, companyId, orderQty, excludeRowId, planDate, date } = req.query;
+    const { bottleName, companyId, orderQty, excludeRowId, excludePlanIds, planDate, date } = req.query;
 
     if (!bottleName || !companyId || !orderQty) {
       return res.status(400).json({
@@ -1197,7 +1306,8 @@ exports.validateStockWarning = async (req, res) => {
       companyId,
       parseInt(orderQty, 10),
       excludeRowId || null,
-      planDate || date || null
+      planDate || date || null,
+      excludePlanIds || null
     );
 
     res.status(200).json({ success: true, data: warning });
@@ -1433,6 +1543,7 @@ exports.importPreviousDay = async (req, res) => {
       );
       
       if (plansToInsert.length > 0) {
+        await assignGroupsAndSequences(plansToInsert);
         newPlans = await LacquerPlan.insertMany(plansToInsert);
         for (const plan of newPlans) {
           await syncLacquerPlanStockDeduction(plan, plan.coatingCompletedQty ?? plan.coatedQty, req.user?._id);
@@ -1452,6 +1563,7 @@ exports.importPreviousDay = async (req, res) => {
       );
       
       if (plansToInsert.length > 0) {
+        await assignGroupsAndSequences(plansToInsert);
         newPlans = await LacquerPlan.insertMany(plansToInsert);
         for (const plan of newPlans) {
           await syncLacquerPlanStockDeduction(plan, plan.coatingCompletedQty ?? plan.coatedQty, req.user?._id);
@@ -1469,6 +1581,7 @@ exports.importPreviousDay = async (req, res) => {
       });
       
       if (plansToInsert.length > 0) {
+        await assignGroupsAndSequences(plansToInsert);
         newPlans = await LacquerPlan.insertMany(plansToInsert);
         for (const plan of newPlans) {
           await syncLacquerPlanStockDeduction(plan, plan.coatingCompletedQty ?? plan.coatedQty, req.user?._id);
@@ -1532,16 +1645,52 @@ exports.getPlanById = async (req, res) => {
       return res.status(404).json({ success: false, message: "Plan not found" });
     }
 
-    let plainStock = 0;
-    if (plan.bottleName) {
-      plainStock = await computeLivePlainStock(plan.bottleName, plan.canonicalCompanyId || plan.companyId, plan.planDate);
+    let groupPlans = [];
+    let groupPlanIds = [];
+    if (plan.groupKey) {
+      groupPlans = await LacquerPlan.find({
+        groupKey: plan.groupKey,
+        isDeleted: false
+      })
+        .sort({ rowSeq: 1, createdAt: 1 })
+        .populate("companyId", "name")
+        .populate("brandId", "name")
+        .populate("variantId", "variantName")
+        .lean();
+      groupPlanIds = groupPlans.map(p => p._id.toString());
+    } else {
+      groupPlans = [plan.toObject()];
+      groupPlanIds = [plan._id.toString()];
     }
+
+    const compId = plan.canonicalCompanyId || (plan.companyId?._id || plan.companyId);
+    const canonicalBottle = await resolveCanonicalPlainBottle(plan.plainBottle || plan.bottleName, compId);
+
+    // Compute stock excluding the plan's own group IDs (no double deduction)
+    const stockRes = await computeLivePlainStock(canonicalBottle, compId, plan.planDate, groupPlanIds);
+    const plainStock = stockRes.plainStock !== undefined ? stockRes.plainStock : Number(stockRes);
+    const openingStock = stockRes.openingStock !== undefined ? stockRes.openingStock : plainStock;
 
     const planObj = plan.toObject();
     planObj.livePlainStock = plainStock;
     planObj.plainStock = plainStock;
+    planObj.openingStock = openingStock;
 
-    res.status(200).json({ success: true, data: planObj });
+    groupPlans = groupPlans.map(p => ({
+      ...p,
+      livePlainStock: plainStock,
+      plainStock: plainStock,
+      openingStock: openingStock
+    }));
+
+    res.status(200).json({
+      success: true,
+      data: planObj,
+      groupPlans,
+      groupPlanIds,
+      plainStock,
+      openingStock
+    });
   } catch (error) {
     res.status(400).json({ success: false, message: error.message });
   }
@@ -1553,6 +1702,20 @@ exports.updatePlan = async (req, res) => {
     const existingPlan = await LacquerPlan.findById(req.params.id);
     if (!existingPlan || existingPlan.isDeleted) {
       return res.status(404).json({ success: false, message: "Plan not found" });
+    }
+
+    const excludeIds = req.body.excludePlanIds ? req.body.excludePlanIds : [req.params.id];
+    const itemsToCheck = req.body.allFormRows && Array.isArray(req.body.allFormRows)
+      ? req.body.allFormRows
+      : [{ ...existingPlan.toObject(), ...req.body }];
+    const coatedLimitError = await validateCoatedQtyLimit(itemsToCheck, excludeIds);
+    if (coatedLimitError) {
+      return res.status(400).json({
+        success: false,
+        message: coatedLimitError.message,
+        available: coatedLimitError.available,
+        totalCoated: coatedLimitError.totalCoated
+      });
     }
 
     const oldBottleName = existingPlan.bottleName;
@@ -1619,11 +1782,38 @@ exports.updatePlan = async (req, res) => {
       }
     }
 
+    // Compute target groupKey
+    const targetGroupKey = await computePlanGroupKey({
+      ...existingPlan.toObject(),
+      ...req.body
+    });
+
     const updateData = { ...req.body };
     let newHistory = null;
     if (updateData.newOrderHistoryEntry) {
       newHistory = updateData.newOrderHistoryEntry;
       delete updateData.newOrderHistoryEntry;
+    }
+
+    // Handle groupKey and rowSeq
+    const oldGroupKey = existingPlan.groupKey;
+    if (oldGroupKey && targetGroupKey && targetGroupKey !== oldGroupKey) {
+      // Row moved to a new group: assign next rowSeq in new group
+      const newGroupExisting = await LacquerPlan.find({ groupKey: targetGroupKey, isDeleted: false, _id: { $ne: existingPlan._id } }).sort({ rowSeq: 1 });
+      const nextSeq = newGroupExisting.length > 0 ? Math.max(...newGroupExisting.map(p => p.rowSeq || 0)) + 1 : 1;
+      updateData.groupKey = targetGroupKey;
+      updateData.rowSeq = nextSeq;
+
+      // Renumber old group remaining rows
+      const oldGroupRemaining = await LacquerPlan.find({ groupKey: oldGroupKey, isDeleted: false, _id: { $ne: existingPlan._id } }).sort({ rowSeq: 1 });
+      for (let i = 0; i < oldGroupRemaining.length; i++) {
+        await LacquerPlan.findByIdAndUpdate(oldGroupRemaining[i]._id, { rowSeq: i + 1 });
+      }
+    } else {
+      updateData.groupKey = targetGroupKey || existingPlan.groupKey;
+      if (req.body.rowSeq !== undefined) {
+        updateData.rowSeq = req.body.rowSeq;
+      }
     }
 
     // Mark as edited post-import and capture original imported snapshot if not yet set
@@ -1646,16 +1836,25 @@ exports.updatePlan = async (req, res) => {
       };
     }
 
+    if (req.body.brandId && (!updateData.brandName || req.body.brandId !== existingPlan.brandId?.toString())) {
+      const Brand = require('../models/Brand');
+      const bDoc = await Brand.findById(req.body.brandId);
+      if (bDoc) {
+        updateData.brandName = bDoc.name;
+      }
+    }
+
     const plan = await LacquerPlan.findByIdAndUpdate(
       req.params.id,
       updateData,
-      { returnDocument: 'after', runValidators: true }
+      { new: true, runValidators: true }
     );
 
     if (plan && newHistory) {
       plan.orderHistory.push(newHistory);
       await plan.save();
     }
+
     if (!plan || plan.isDeleted) {
       return res.status(404).json({ success: false, message: "Plan not found" });
     }
@@ -1669,38 +1868,16 @@ exports.updatePlan = async (req, res) => {
       await syncLacquerPlanStockDeduction(plan, newCoated, req.user?._id);
     }
 
-    // Sync plainStock across all plans sharing the same company and bottle on this planDate
-    if (req.body.plainStock !== undefined && req.body.plainStock !== null) {
-      const planBottle = (plan.plainBottle || plan.bottleName || '').trim();
-      const planComp = plan.canonicalCompanyId || plan.companyId;
-      if (planBottle && planComp && plan.planDate) {
-        const startOfDay = new Date(plan.planDate);
-        startOfDay.setUTCHours(0, 0, 0, 0);
-        const endOfDay = new Date(plan.planDate);
-        endOfDay.setUTCHours(23, 59, 59, 999);
-
-        await LacquerPlan.updateMany(
-          {
-            _id: { $ne: plan._id },
-            planDate: { $gte: startOfDay, $lte: endOfDay },
-            companyId: planComp,
-            $or: [
-              { bottleName: { $regex: new RegExp("^" + planBottle + "$", "i") } },
-              { plainBottle: { $regex: new RegExp("^" + planBottle + "$", "i") } }
-            ],
-            isDeleted: false
-          },
-          { $set: { plainStock: req.body.plainStock } }
-        );
-      }
+    // Sync live remaining plain stock across all same-day plans of this bottle
+    const pBottle = (plan.plainBottle || plan.bottleName || '').trim();
+    const pComp = plan.canonicalCompanyId || plan.companyId;
+    if (pBottle && pComp && plan.planDate) {
+      await syncSameDayPlansPlainStock(pBottle, pComp, plan.planDate, req.user?._id);
     }
-
-    // Recompute plain stock
-    await recomputePlainStock(plan.bottleName, plan.canonicalCompanyId || plan.companyId, req.user?._id);
 
     // Rule L4: If bottle changed on a saved row, recompute old bottle as well so usage moves cleanly
     if (oldBottleName && (oldBottleName.trim().toUpperCase() !== (plan.bottleName || '').trim().toUpperCase() || oldCompanyId?.toString() !== (plan.canonicalCompanyId || plan.companyId)?.toString())) {
-      await recomputePlainStock(oldBottleName, oldCompanyId, req.user?._id);
+      await syncSameDayPlansPlainStock(oldBottleName, oldCompanyId, plan.planDate, req.user?._id);
     }
 
     res.status(200).json({ success: true, data: plan });
@@ -1712,7 +1889,8 @@ exports.updatePlan = async (req, res) => {
 // Delete Plan
 exports.deletePlan = async (req, res) => {
   try {
-    const plan = await LacquerPlan.findByIdAndUpdate(req.params.id, { isDeleted: true }, { returnDocument: 'after' });
+    const plan = await LacquerPlan.findByIdAndUpdate(req.params.id, { isDeleted: true }, { new: true });
+
     if (!plan) {
       return res.status(404).json({ success: false, message: "Plan not found" });
     }
@@ -1723,8 +1901,22 @@ exports.deletePlan = async (req, res) => {
       { $set: { isDeleted: true } }
     );
 
-    // Recompute plain stock
-    await recomputePlainStock(plan.bottleName, plan.canonicalCompanyId || plan.companyId, req.user?._id);
+    // Renumber remaining rows in the group
+    if (plan.groupKey) {
+      const remaining = await LacquerPlan.find({ groupKey: plan.groupKey, isDeleted: false }).sort({ rowSeq: 1 });
+      for (let i = 0; i < remaining.length; i++) {
+        await LacquerPlan.findByIdAndUpdate(remaining[i]._id, { rowSeq: i + 1 });
+      }
+    }
+
+    // Recompute and sync live remaining plain stock for remaining same-day plans
+    const pBottle = (plan.plainBottle || plan.bottleName || '').trim();
+    const pComp = plan.canonicalCompanyId || plan.companyId;
+    if (pBottle && pComp && plan.planDate) {
+      await syncSameDayPlansPlainStock(pBottle, pComp, plan.planDate, req.user?._id);
+    } else {
+      await recomputePlainStock(plan.bottleName, plan.canonicalCompanyId || plan.companyId, req.user?._id);
+    }
 
     res.status(200).json({ success: true, message: "Plan deleted successfully" });
   } catch (error) {
@@ -1737,6 +1929,8 @@ exports.getComputedStats = async (req, res) => {
   try {
     const { bottleName, brandId, colour, companyId, planDate, excludePlanIds } = req.query;
     let plainStock = 0;
+    let openingStock = 0;
+    let totalCoatedToday = 0;
     let coatedQty = 0;
 
     let effectiveCompanyId = companyId;
@@ -1750,58 +1944,11 @@ exports.getComputedStats = async (req, res) => {
 
     // 1. Fetch live day-based plain stock (Rule L3)
     if (bottleName) {
-      plainStock = await computeLivePlainStock(bottleName, effectiveCompanyId, planDate);
-
-      let totalCoatedToday = 0;
-      if (planDate) {
-        const startOfDay = new Date(planDate);
-        startOfDay.setUTCHours(0, 0, 0, 0);
-        const endOfDay = new Date(planDate);
-        endOfDay.setUTCHours(23, 59, 59, 999);
-
-        const escapeRegex = (string) => string ? string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') : '';
-        const nameTrimmed = String(bottleName).trim();
-        const BottlePerBox = require("../models/BottlePerBox");
-        const bp = await BottlePerBox.findOne({
-          $or: [
-            { bottleName: new RegExp("^" + escapeRegex(nameTrimmed) + "$", "i") },
-            { plainBottleName: new RegExp("^" + escapeRegex(nameTrimmed) + "$", "i") },
-            { bottleNames: new RegExp("^" + escapeRegex(nameTrimmed) + "$", "i") }
-          ],
-          isDeleted: false
-        });
-
-        const bottleNames = [nameTrimmed];
-        if (bp) {
-          if (bp.bottleName) bottleNames.push(bp.bottleName);
-          if (bp.plainBottleName) bottleNames.push(bp.plainBottleName);
-          if (Array.isArray(bp.bottleNames)) bottleNames.push(...bp.bottleNames);
-        }
-        const bottleRegexes = Array.from(new Set(bottleNames.map(n => n.trim()))).map(n => new RegExp("^" + escapeRegex(n) + "$", "i"));
-
-        const dateQuery = {
-          bottleName: { $in: bottleRegexes },
-          planDate: { $gte: startOfDay, $lte: endOfDay },
-          isDeleted: false
-        };
-        if (effectiveCompanyId) {
-          dateQuery.$or = [
-            { canonicalCompanyId: effectiveCompanyId },
-            { companyId: effectiveCompanyId }
-          ];
-        }
-
-        const datePlans = await LacquerPlan.find(dateQuery).select('coatingCompletedQty coatedQty').lean();
-        totalCoatedToday = datePlans.reduce((sum, p) => {
-          const qty = (p.coatingCompletedQty !== undefined && p.coatingCompletedQty !== null)
-            ? p.coatingCompletedQty
-            : (p.coatedQty || 0);
-          return sum + (Number(qty) || 0);
-        }, 0);
-      }
-
-      const openingStock = plainStock + totalCoatedToday;
-      res.locals = { plainStock, openingStock, totalCoatedToday };
+      const canonicalBottle = await resolveCanonicalPlainBottle(bottleName, effectiveCompanyId);
+      const stockRes = await computeLivePlainStock(canonicalBottle, effectiveCompanyId, planDate, excludePlanIds);
+      plainStock = stockRes.plainStock !== undefined ? stockRes.plainStock : Number(stockRes);
+      openingStock = stockRes.openingStock !== undefined ? stockRes.openingStock : plainStock;
+      totalCoatedToday = stockRes.sameDayCoated || 0;
     }
 
     // 2. Fetch cumulative coatedQty
@@ -1840,8 +1987,15 @@ exports.getComputedStats = async (req, res) => {
       }
     }
 
-    const { openingStock = plainStock, totalCoatedToday = 0 } = res.locals || {};
-    res.status(200).json({ success: true, data: { plainStock, openingStock, totalCoatedToday, coatedQty } });
+    res.status(200).json({
+      success: true,
+      data: {
+        plainStock: Number(plainStock),
+        openingStock: Number(openingStock),
+        totalCoatedToday: Number(totalCoatedToday),
+        coatedQty: Number(coatedQty)
+      }
+    });
   } catch (error) {
     res.status(400).json({ success: false, message: error.message });
   }
@@ -3110,6 +3264,7 @@ exports.commitImportExcel = async (req, res) => {
       });
 
       if (toInsert.length > 0) {
+        await assignGroupsAndSequences(toInsert);
         const createdPlans = await LacquerPlan.insertMany(toInsert);
         for (const plan of createdPlans) {
           await syncLacquerPlanStockDeduction(plan, plan.coatingCompletedQty ?? plan.coatedQty, req.user?._id);

@@ -116,6 +116,15 @@ const lacquerPlanSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   },
+  groupKey: {
+    type: String,
+    index: true,
+    default: null
+  },
+  rowSeq: {
+    type: Number,
+    default: 1
+  },
   importGroupId: {
     type: String,
     default: null

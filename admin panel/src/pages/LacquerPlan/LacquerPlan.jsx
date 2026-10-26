@@ -14,7 +14,7 @@ import ImportExcelModal from './ImportExcelModal';
 import { useLacquerPlanLanguage } from '../../hooks/useLacquerPlanLanguage';
 import { sortLacquerPlans } from '../../utils/lacquerPlanSort';
 import { buildContiguousGroups, buildMultipleContiguousGroups } from '../../utils/tableGrouping';
-import { isPlanRowCompleted, checkRowStockWarning } from '../../utils/lacquerPlanUtils';
+import { isPlanRowCompleted, checkRowStockWarning, getCoatedQty } from '../../utils/lacquerPlanUtils';
 import ZoomControl from '../../components/ZoomControl';
 import { downloadLacquerPlanExcel } from '../../utils/lacquerPlanExport';
 
@@ -280,13 +280,14 @@ export default function LacquerPlan() {
       if (stock !== null && (entry.shownStock === null || stock > entry.shownStock)) {
         entry.shownStock = stock;
       }
-      entry.totalCoated += parseFloat(plan.coatingCompletedQty || plan.coatedQty) || 0;
+      entry.totalCoated += getCoatedQty(plan);
     });
 
     const result = new Map();
     map.forEach((entry, key) => {
-      const shown = entry.shownStock !== null ? entry.shownStock : 0;
-      result.set(key, shown + entry.totalCoated);
+      if (entry.shownStock !== null) {
+        result.set(key, entry.shownStock);
+      }
     });
     return result;
   }, [plans]);
@@ -503,72 +504,21 @@ export default function LacquerPlan() {
       groupedByCompany[compId].plans.push(plan);
     });
 
-    const companyColors = [
-      'linear-gradient(135deg, #00aeef, #008ecc)',
-      'linear-gradient(135deg, #007236, #008b45)',
-      'linear-gradient(135deg, #6366f1, #8b5cf6)',
-      'linear-gradient(135deg, #f59e0b, #d97706)',
-      'linear-gradient(135deg, #ec4899, #be185d)'
-    ];
-
     let currentSrNo = 0;
     const sortedCompIds = Object.keys(groupedByCompany).sort((a, b) =>
       groupedByCompany[a].name.localeCompare(groupedByCompany[b].name, undefined, { numeric: true, sensitivity: 'base' })
     );
 
-    return sortedCompIds.map((compId, idx) => {
+    return sortedCompIds.map((compId) => {
       const groupData = groupedByCompany[compId];
       const startSrNo = currentSrNo;
       currentSrNo += groupData.plans.length;
 
-      const totalOrder = groupData.plans.reduce((sum, p) => sum + (parseFloat(p.orderQty) || 0), 0);
-      const totalCoated = groupData.plans.reduce((sum, p) => sum + (parseFloat(p.coatingCompletedQty || p.coatedQty) || 0), 0);
-      const avatarBg = companyColors[idx % companyColors.length];
-
       return (
-        <div key={compId} className="mb-4 bg-white border border-light-subtle rounded-3 shadow-sm overflow-hidden">
-          <div
-            className="p-3 d-flex align-items-center justify-content-between flex-wrap gap-3"
-            style={{
-              background: '#f8fafc',
-              borderBottom: '2px solid #e2e8f0',
-              position: 'sticky',
-              left: 0,
-              zIndex: 12
-            }}
-          >
-            <div className="d-flex align-items-center gap-3">
-              <div
-                className="d-flex align-items-center justify-content-center text-white fw-bold shadow-sm"
-                style={{ width: 44, height: 44, borderRadius: '12px', background: avatarBg, fontSize: '1.2rem' }}
-              >
-                {groupData.name.charAt(0).toUpperCase()}
-              </div>
-              <div>
-                <div className="d-flex align-items-center gap-2">
-                  <h4 className="fw-bold text-dark mb-0" style={{ fontSize: '1.15rem' }}>
-                    {groupData.name}
-                  </h4>
-                  <span className="badge bg-soft-primary text-primary px-3 py-1 rounded-pill fw-semibold" style={{ fontSize: '12px' }}>
-                    {groupData.plans.length} {groupData.plans.length === 1 ? 'Plan' : 'Plans'}
-                  </span>
-                </div>
-                <div className="small text-muted mt-1">
-                  Total Order: <b className="text-dark">{totalOrder.toLocaleString()}</b> &nbsp;|&nbsp; Coated: <b className="text-dark">{totalCoated.toLocaleString()}</b>
-                </div>
-              </div>
-            </div>
-
-            <div className="d-flex align-items-center gap-2">
-              <Link
-                to={`/lacquer-plan/add?date=${selectedDate}&companyId=${compId !== 'UNASSIGNED' ? compId : ''}`}
-                className="btn btn-sm btn-outline-primary rounded-pill px-3 py-1 shadow-none fw-semibold"
-                title={`Add Plan for ${groupData.name}`}
-              >
-                <i className="bi bi-plus-lg me-1" /> Add Plan
-              </Link>
-            </div>
-          </div>
+        <div key={compId} className="mb-4">
+          <h5 className="text-center py-3 bg-light border-top border-bottom text-uppercase fw-bold text-dark tracking-wide mb-0" style={{ letterSpacing: '2px' }}>
+            {groupData.name}
+          </h5>
           {renderDailyTable(groupData.plans.sort(sortLacquerPlans), showDate, startSrNo)}
         </div>
       );
@@ -577,15 +527,16 @@ export default function LacquerPlan() {
 
   const renderDailyTable = (planList, showDate = false, startSrNo = 0) => {
 
-    // Calculate dynamic rowspans for groups based on contiguous sorted elements
-    const { contiguousList: initialContiguousList, visibleGroupSpans } = buildContiguousGroups(planList, r =>
-      r.importGroupId || `manual-${r.bottleName}-${r.brandId?._id || r.brandId || r.brandName}-${r.process}-${r.plainStock}-${r.boxQty ?? r.bottlePerBox}-${r.orderQty}`
+    // Group by server-defined groupKey
+    const { contiguousList: initialContiguousList, visibleGroupSpans } = buildContiguousGroups(
+      planList,
+      r => r.groupKey || `fallback_${r._id}`
     );
 
     const { contiguousList: contiguousPlanList, groupSpans: multiSpans } = buildMultipleContiguousGroups(initialContiguousList, [
       {
         idKey: '_bottleVisualId',
-        keySelector: r => `${r.bottleName}-${r.plainStock}-${r.boxQty ?? r.bottlePerBox}`
+        keySelector: r => r.groupKey || `fallback_${r._id}`
       }
     ]);
 
@@ -599,7 +550,7 @@ export default function LacquerPlan() {
       const bottle = (p.bottleName || '').toUpperCase();
       const day = p.planDate ? new Date(p.planDate).toISOString().split('T')[0] : '';
       const poolKey = `${compId}::${bottle}::${day}`;
-      const openingStock = poolOpeningStocks.get(poolKey) ?? 0;
+      const openingStock = poolOpeningStocks.get(poolKey);
       if (checkRowStockWarning(p.orderQty, openingStock)) {
         bottleVisualWarningSet.add(p._bottleVisualId);
       }
@@ -711,7 +662,7 @@ export default function LacquerPlan() {
                   const bottle = (plan.bottleName || '').toUpperCase();
                   const day = plan.planDate ? new Date(plan.planDate).toISOString().split('T')[0] : '';
                   const poolKey = `${compId}::${bottle}::${day}`;
-                  const openingStock = poolOpeningStocks.get(poolKey) ?? 0;
+                  const openingStock = poolOpeningStocks.get(poolKey);
                   const isExceeding = plan._bottleVisualId
                     ? bottleVisualWarningSet.has(plan._bottleVisualId)
                     : checkRowStockWarning(plan.orderQty, openingStock);
@@ -725,13 +676,13 @@ export default function LacquerPlan() {
                   const bottle = (plan.bottleName || '').toUpperCase();
                   const day = plan.planDate ? new Date(plan.planDate).toISOString().split('T')[0] : '';
                   const poolKey = `${compId}::${bottle}::${day}`;
-                  const openingStock = poolOpeningStocks.get(poolKey) ?? 0;
+                  const openingStock = poolOpeningStocks.get(poolKey);
                   const isExceeding = checkRowStockWarning(plan.orderQty, openingStock);
                   return (
                     <td className={`py-3 text-center fw-bold ${isExceeding ? 'bg-warning' : ''}`}>{plan.orderQty !== null && plan.orderQty !== undefined ? plan.orderQty : '-'}</td>
                   );
                 })()}
-                <td className="py-3 text-center">{plan.coatingCompletedQty !== null && plan.coatingCompletedQty !== undefined ? plan.coatingCompletedQty : (plan.coatedQty || 0)}</td>
+                <td className="py-3 text-center">{getCoatedQty(plan)}</td>
                 <td className={`py-3 text-center fw-bold ${plan.balanceToMake >= 0 ? 'text-success' : 'text-danger'}`}>
                   {plan.balanceToMake !== null && plan.balanceToMake !== undefined ? plan.balanceToMake : '-'}
                   {isPlanRowCompleted(plan) && <span className="d-block mt-1 badge bg-success" style={{ fontSize: 10 }}>COMPLETED</span>}
