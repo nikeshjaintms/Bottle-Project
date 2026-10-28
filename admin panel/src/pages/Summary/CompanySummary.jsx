@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useParams, Link, useNavigate, useSearchParams } from 'react-router-dom';
 import Select from 'react-select';
 import Swal from 'sweetalert2';
@@ -31,11 +31,45 @@ export default function CompanySummary() {
   const [grandTotals, setGrandTotals] = useState(null);
   const [overviewLoading, setOverviewLoading] = useState(false);
   const [sortField, setSortField] = useState('bottleName');
-  const [sortOrder, setSortOrder] = useState('asc'); // 'asc' or 'desc'
+  const [sortOrder, setSortOrder] = useState('asc');
 
-  // Bottle Logs Detail data
-  const [logsData, setLogsData] = useState(null);
-  const [logsLoading, setLogsLoading] = useState(false);
+  // Infinite scroll state for Incoming
+  const [incomingItems, setIncomingItems] = useState([]);
+  const [incomingTotals, setIncomingTotals] = useState(null);
+  const [incomingCursor, setIncomingCursor] = useState(null);
+  const [incomingHasMore, setIncomingHasMore] = useState(true);
+  const [incomingLoading, setIncomingLoading] = useState(false);
+  const [incomingError, setIncomingError] = useState(null);
+  const incomingAbortControllerRef = useRef(null);
+  const incomingRequestIdRef = useRef(0);
+  const incomingLoadedIdsRef = useRef(new Set());
+
+  // Infinite scroll state for Dispatch
+  const [dispatchItems, setDispatchItems] = useState([]);
+  const [dispatchTotals, setDispatchTotals] = useState(null);
+  const [dispatchCursor, setDispatchCursor] = useState(null);
+  const [dispatchHasMore, setDispatchHasMore] = useState(true);
+  const [dispatchLoading, setDispatchLoading] = useState(false);
+  const [dispatchError, setDispatchError] = useState(null);
+  const dispatchAbortControllerRef = useRef(null);
+  const dispatchRequestIdRef = useRef(0);
+  const dispatchLoadedIdsRef = useRef(new Set());
+
+  // Infinite scroll state for Packing Material (SHRENO only)
+  const [packingItems, setPackingItems] = useState([]);
+  const [packingTotals, setPackingTotals] = useState(null);
+  const [packingCursor, setPackingCursor] = useState(null);
+  const [packingHasMore, setPackingHasMore] = useState(true);
+  const [packingLoading, setPackingLoading] = useState(false);
+  const [packingError, setPackingError] = useState(null);
+  const packingAbortControllerRef = useRef(null);
+  const packingRequestIdRef = useRef(0);
+  const packingLoadedIdsRef = useRef(new Set());
+
+  // IntersectionObserver sentinels
+  const incomingSentinelRef = useRef(null);
+  const dispatchSentinelRef = useRef(null);
+  const packingSentinelRef = useRef(null);
 
   // 1. Fetch Bottles for this Company & determine default
   useEffect(() => {
@@ -51,7 +85,6 @@ export default function CompanySummary() {
         setCompany(data?.company);
         setIsShreno(Boolean(data?.company?.isShreno));
 
-        // Default to most recently saved bottle on first open (as SHRENO Incoming does)
         if (!hasInitializedBottle) {
           const defaultId = data?.mostRecentBottleId || (bList.length > 0 ? bList[0]._id : 'all');
           setSelectedBottleId(defaultId);
@@ -101,39 +134,334 @@ export default function CompanySummary() {
     return () => { isMounted = false; };
   }, [companyId, selectedBottleId, fromDate, toDate, searchFilter]);
 
-  // 3. Fetch Detail Logs when a specific bottle is selected
+  // ========== Infinite Scroll Helpers ==========
+
+  const fetchTotals = useCallback(async (section) => {
+    try {
+      let url = '';
+      if (section === 'incoming') {
+        url = '/summary/incoming-totals';
+      } else if (section === 'dispatch') {
+        url = '/summary/dispatch-totals';
+      } else if (section === 'packing') {
+        url = '/summary/shreno-incoming-totals';
+      }
+
+      if (!url) return null;
+
+      const params = {
+        fromDate,
+        toDate,
+        search: searchFilter
+      };
+
+      if (section !== 'packing') {
+        params.companyId = companyId;
+      }
+
+      const res = await api.get(url, { params });
+      return res.data?.data || null;
+    } catch (err) {
+      console.error(`Failed to fetch ${section} totals:`, err);
+      return null;
+    }
+  }, [companyId, fromDate, toDate, searchFilter]);
+
+  const fetchPaginatedItems = useCallback(async (section, cursor, requestId) => {
+    try {
+      let url = '';
+      if (section === 'incoming') {
+        url = '/summary/incoming-paginated';
+      } else if (section === 'dispatch') {
+        url = '/summary/dispatch-paginated';
+      } else if (section === 'packing') {
+        url = '/summary/shreno-incoming-paginated';
+      }
+
+      if (!url) return null;
+
+      const params = {
+        limit: 20,
+        fromDate,
+        toDate,
+        search: searchFilter
+      };
+
+      if (section !== 'packing') {
+        params.companyId = companyId;
+      }
+
+      if (cursor) {
+        params.cursor = cursor;
+      }
+
+      const abortController = section === 'incoming' 
+        ? incomingAbortControllerRef.current 
+        : section === 'dispatch' 
+        ? dispatchAbortControllerRef.current 
+        : packingAbortControllerRef.current;
+
+      const res = await api.get(url, {
+        params,
+        signal: abortController?.signal
+      });
+
+      // Check if this is a stale response
+      const currentRequestId = section === 'incoming' 
+        ? incomingRequestIdRef.current 
+        : section === 'dispatch' 
+        ? dispatchRequestIdRef.current 
+        : packingRequestIdRef.current;
+
+      if (requestId !== currentRequestId) {
+        return null;
+      }
+
+      return {
+        items: res.data?.data?.items || [],
+        nextCursor: res.data?.data?.nextCursor || null,
+        hasMore: res.data?.data?.hasMore || false
+      };
+    } catch (err) {
+      if (err.name === 'AbortError') {
+        return null;
+      }
+      console.error(`Failed to fetch ${section} items:`, err);
+      throw err;
+    }
+  }, [companyId, fromDate, toDate, searchFilter]);
+
+  const loadSectionStart = useCallback(async (section) => {
+    if (section === 'incoming') {
+      if (incomingAbortControllerRef.current) {
+        incomingAbortControllerRef.current.abort();
+      }
+      incomingAbortControllerRef.current = new AbortController();
+      incomingRequestIdRef.current += 1;
+      const requestId = incomingRequestIdRef.current;
+
+      setIncomingLoading(true);
+      setIncomingError(null);
+      setIncomingItems([]);
+      setIncomingCursor(null);
+      setIncomingHasMore(true);
+      incomingLoadedIdsRef.current = new Set();
+
+      try {
+        const [totals, pageData] = await Promise.all([
+          fetchTotals('incoming'),
+          fetchPaginatedItems('incoming', null, requestId)
+        ]);
+
+        if (requestId === incomingRequestIdRef.current && pageData) {
+          setIncomingTotals(totals);
+          setIncomingItems(pageData.items);
+          setIncomingCursor(pageData.nextCursor);
+          setIncomingHasMore(pageData.hasMore);
+          pageData.items.forEach(item => incomingLoadedIdsRef.current.add(item._id));
+        }
+      } catch (err) {
+        if (requestId === incomingRequestIdRef.current) {
+          setIncomingError(err.message);
+        }
+      } finally {
+        if (requestId === incomingRequestIdRef.current) {
+          setIncomingLoading(false);
+        }
+      }
+    } else if (section === 'dispatch') {
+      if (dispatchAbortControllerRef.current) {
+        dispatchAbortControllerRef.current.abort();
+      }
+      dispatchAbortControllerRef.current = new AbortController();
+      dispatchRequestIdRef.current += 1;
+      const requestId = dispatchRequestIdRef.current;
+
+      setDispatchLoading(true);
+      setDispatchError(null);
+      setDispatchItems([]);
+      setDispatchCursor(null);
+      setDispatchHasMore(true);
+      dispatchLoadedIdsRef.current = new Set();
+
+      try {
+        const [totals, pageData] = await Promise.all([
+          fetchTotals('dispatch'),
+          fetchPaginatedItems('dispatch', null, requestId)
+        ]);
+
+        if (requestId === dispatchRequestIdRef.current && pageData) {
+          setDispatchTotals(totals);
+          setDispatchItems(pageData.items);
+          setDispatchCursor(pageData.nextCursor);
+          setDispatchHasMore(pageData.hasMore);
+          pageData.items.forEach(item => dispatchLoadedIdsRef.current.add(item._id));
+        }
+      } catch (err) {
+        if (requestId === dispatchRequestIdRef.current) {
+          setDispatchError(err.message);
+        }
+      } finally {
+        if (requestId === dispatchRequestIdRef.current) {
+          setDispatchLoading(false);
+        }
+      }
+    } else if (section === 'packing') {
+      if (packingAbortControllerRef.current) {
+        packingAbortControllerRef.current.abort();
+      }
+      packingAbortControllerRef.current = new AbortController();
+      packingRequestIdRef.current += 1;
+      const requestId = packingRequestIdRef.current;
+
+      setPackingLoading(true);
+      setPackingError(null);
+      setPackingItems([]);
+      setPackingCursor(null);
+      setPackingHasMore(true);
+      packingLoadedIdsRef.current = new Set();
+
+      try {
+        const [totals, pageData] = await Promise.all([
+          fetchTotals('packing'),
+          fetchPaginatedItems('packing', null, requestId)
+        ]);
+
+        if (requestId === packingRequestIdRef.current && pageData) {
+          setPackingTotals(totals);
+          setPackingItems(pageData.items);
+          setPackingCursor(pageData.nextCursor);
+          setPackingHasMore(pageData.hasMore);
+          pageData.items.forEach(item => packingLoadedIdsRef.current.add(item._id));
+        }
+      } catch (err) {
+        if (requestId === packingRequestIdRef.current) {
+          setPackingError(err.message);
+        }
+      } finally {
+        if (requestId === packingRequestIdRef.current) {
+          setPackingLoading(false);
+        }
+      }
+    }
+  }, [fetchTotals, fetchPaginatedItems]);
+
+  const loadNextPage = useCallback(async (section) => {
+    const isIncoming = section === 'incoming';
+    const isDispatch = section === 'dispatch';
+    const isPacking = section === 'packing';
+
+    const loading = isIncoming ? incomingLoading : isDispatch ? dispatchLoading : packingLoading;
+    const hasMore = isIncoming ? incomingHasMore : isDispatch ? dispatchHasMore : packingHasMore;
+    const cursor = isIncoming ? incomingCursor : isDispatch ? dispatchCursor : packingCursor;
+    const requestIdRef = isIncoming ? incomingRequestIdRef : isDispatch ? dispatchRequestIdRef : packingRequestIdRef;
+
+    if (loading || !hasMore || !cursor) return;
+
+    const requestId = requestIdRef.current;
+
+    const setLoadingState = isIncoming ? setIncomingLoading : isDispatch ? setDispatchLoading : setPackingLoading;
+    const setItemsState = isIncoming ? setIncomingItems : isDispatch ? setDispatchItems : setPackingItems;
+    const setCursorState = isIncoming ? setIncomingCursor : isDispatch ? setDispatchCursor : setPackingCursor;
+    const setHasMoreState = isIncoming ? setIncomingHasMore : isDispatch ? setDispatchHasMore : setPackingHasMore;
+    const loadedIdsRef = isIncoming ? incomingLoadedIdsRef : isDispatch ? dispatchLoadedIdsRef : packingLoadedIdsRef;
+    const setErrorState = isIncoming ? setIncomingError : isDispatch ? setDispatchError : setPackingError;
+
+    setLoadingState(true);
+
+    try {
+      const pageData = await fetchPaginatedItems(section, cursor, requestId);
+
+      if (requestId === requestIdRef.current && pageData) {
+        const newItems = pageData.items.filter(item => !loadedIdsRef.current.has(item._id));
+        pageData.items.forEach(item => loadedIdsRef.current.add(item._id));
+
+        setItemsState(prev => [...prev, ...newItems]);
+        setCursorState(pageData.nextCursor);
+        setHasMoreState(pageData.hasMore);
+      }
+    } catch (err) {
+      if (requestId === requestIdRef.current) {
+        setErrorState(err.message);
+      }
+    } finally {
+      if (requestId === requestIdRef.current) {
+        setLoadingState(false);
+      }
+    }
+  }, [fetchPaginatedItems, incomingLoading, incomingHasMore, incomingCursor, dispatchLoading, dispatchHasMore, dispatchCursor, packingLoading, packingHasMore, packingCursor]);
+
+  const retryLoad = useCallback((section) => {
+    loadNextPage(section);
+  }, [loadNextPage]);
+
+  // ========== IntersectionObserver Setup ==========
+
+  useEffect(() => {
+    const observerOptions = {
+      root: null,
+      rootMargin: '600px',
+      threshold: 0.01
+    };
+
+    const incomingObserver = new IntersectionObserver((entries) => {
+      if (entries[0].isIntersecting && incomingHasMore && !incomingLoading) {
+        loadNextPage('incoming');
+      }
+    }, observerOptions);
+
+    const dispatchObserver = new IntersectionObserver((entries) => {
+      if (entries[0].isIntersecting && dispatchHasMore && !dispatchLoading) {
+        loadNextPage('dispatch');
+      }
+    }, observerOptions);
+
+    const packingObserver = new IntersectionObserver((entries) => {
+      if (entries[0].isIntersecting && packingHasMore && !packingLoading) {
+        loadNextPage('packing');
+      }
+    }, observerOptions);
+
+    if (incomingSentinelRef.current) {
+      incomingObserver.observe(incomingSentinelRef.current);
+    }
+    if (dispatchSentinelRef.current) {
+      dispatchObserver.observe(dispatchSentinelRef.current);
+    }
+    if (packingSentinelRef.current) {
+      packingObserver.observe(packingSentinelRef.current);
+    }
+
+    return () => {
+      incomingObserver.disconnect();
+      dispatchObserver.disconnect();
+      packingObserver.disconnect();
+    };
+  }, [incomingHasMore, incomingLoading, dispatchHasMore, dispatchLoading, packingHasMore, packingLoading, loadNextPage]);
+
+  // ========== Load sections when bottle detail changes ==========
+
   useEffect(() => {
     if (!selectedBottleId || selectedBottleId === 'all') return;
 
-    let isMounted = true;
-    const fetchLogs = async () => {
-      setLogsLoading(true);
-      try {
-        const res = await api.get('/summary/logs', {
-          params: {
-            companyId,
-            bottleId: selectedBottleId,
-            fromDate,
-            toDate
-          }
-        });
-        if (isMounted) {
-          setLogsData(res.data?.data || null);
-          if (res.data?.data?.company) {
-            setCompany(res.data.data.company);
-            setIsShreno(Boolean(res.data.data.company.isShreno));
-          }
-        }
-      } catch (err) {
-        console.error('Failed to load summary logs:', err);
-      } finally {
-        if (isMounted) setLogsLoading(false);
-      }
-    };
+    loadSectionStart('incoming');
+    loadSectionStart('dispatch');
+    if (isShreno) {
+      loadSectionStart('packing');
+    }
+  }, [selectedBottleId, loadSectionStart, isShreno]);
 
-    fetchLogs();
-    return () => { isMounted = false; };
-  }, [companyId, selectedBottleId, fromDate, toDate]);
+  // ========== Reload sections on filter change ==========
+
+  useEffect(() => {
+    if (!selectedBottleId || selectedBottleId === 'all') return;
+
+    loadSectionStart('incoming');
+    loadSectionStart('dispatch');
+    if (isShreno) {
+      loadSectionStart('packing');
+    }
+  }, [fromDate, toDate, searchFilter, loadSectionStart, isShreno, selectedBottleId]);
 
   const handleBottleChange = (newBottleId) => {
     setSelectedBottleId(newBottleId);
@@ -143,6 +471,18 @@ export default function CompanySummary() {
     setFromDate('');
     setToDate('');
     setSearchFilter('');
+  };
+
+  // Helper formatters
+  const formatNum = (num) => (Number(num) || 0).toLocaleString('en-IN');
+  const formatDate = (dateStr) => {
+    if (!dateStr) return '-';
+    try {
+      const d = new Date(dateStr);
+      return d.toLocaleDateString('en-GB');
+    } catch {
+      return dateStr;
+    }
   };
 
   // Sorted Overview data
@@ -171,18 +511,6 @@ export default function CompanySummary() {
     }
   };
 
-  // Helper formatters
-  const formatNum = (num) => (Number(num) || 0).toLocaleString('en-IN');
-  const formatDate = (dateStr) => {
-    if (!dateStr) return '-';
-    try {
-      const d = new Date(dateStr);
-      return d.toLocaleDateString('en-GB'); // DD/MM/YYYY
-    } catch {
-      return dateStr;
-    }
-  };
-
   const bottleSelectOptions = useMemo(() => {
     return [
       { value: 'all', label: `★ ${labels.allBottles}` },
@@ -190,7 +518,6 @@ export default function CompanySummary() {
         .sort((a, b) => {
           const nameA = (a.bottleName || a.plainBottleName || '').toLowerCase();
           const nameB = (b.bottleName || b.plainBottleName || '').toLowerCase();
-          // Natural sort: handle numbers numerically (3 ML before 8 ML before 20 ML)
           return nameA.localeCompare(nameB, undefined, { numeric: true, sensitivity: 'base' });
         })
         .map((b) => ({
@@ -204,7 +531,6 @@ export default function CompanySummary() {
 
   return (
     <div className="page-content summary-container">
-      {/* Top Breadcrumb & Header */}
       <div className="summary-header d-flex align-items-center justify-content-between flex-wrap gap-3">
         <div className="summary-company-heading d-flex align-items-center gap-3">
           <button
@@ -257,7 +583,6 @@ export default function CompanySummary() {
           </div>
         </div>
 
-        {/* Language Toggle */}
         <div className="d-flex align-items-center gap-2">
           <button
             onClick={toggleLanguage}
@@ -270,10 +595,8 @@ export default function CompanySummary() {
         </div>
       </div>
 
-      {/* Filter Toolbar Card */}
       <div className="summary-filter-card">
         <div className="row g-3 align-items-end">
-          {/* Bottle Selector (lists only that company's bottles + All bottles option) */}
           <div className="col-12 col-md-4 col-lg-4">
             <label className="summary-filter-label">
               <i className="bi bi-funnel me-1" /> {labels.bottle}
@@ -319,7 +642,6 @@ export default function CompanySummary() {
             />
           </div>
 
-          {/* Date Range: From */}
           <div className="col-6 col-md-2 col-lg-2">
             <label className="summary-filter-label">{labels.fromDate}</label>
             <input
@@ -330,7 +652,6 @@ export default function CompanySummary() {
             />
           </div>
 
-          {/* Date Range: To */}
           <div className="col-6 col-md-2 col-lg-2">
             <label className="summary-filter-label">{labels.toDate}</label>
             <input
@@ -341,7 +662,6 @@ export default function CompanySummary() {
             />
           </div>
 
-          {/* Search Box */}
           <div className="col-8 col-md-3 col-lg-3">
             <label className="summary-filter-label">
               <i className="bi bi-search me-1" /> Search
@@ -355,7 +675,6 @@ export default function CompanySummary() {
             />
           </div>
 
-          {/* Reset Action */}
           <div className="col-4 col-md-1 col-lg-1 d-flex">
             <button
               className="btn btn-light border summary-input w-100 d-flex align-items-center justify-content-center"
@@ -368,9 +687,6 @@ export default function CompanySummary() {
         </div>
       </div>
 
-      {/* ========================================================================= */}
-      {/* VIEW 1: OVERVIEW (ALL BOTTLES)                                             */}
-      {/* ========================================================================= */}
       {selectedBottleId === 'all' ? (
         <div className="overview-card">
           <div className="p-3 border-bottom d-flex align-items-center justify-content-between flex-wrap gap-2 bg-light">
@@ -540,78 +856,58 @@ export default function CompanySummary() {
           </div>
         </div>
       ) : (
-        /* ========================================================================= */
-        /* VIEW 2: BOTTLE DETAIL (SIDE-BY-SIDE EXCEL BLOCKS)                         */
-        /* ========================================================================= */
         <div>
-          {/* KPI Strip */}
           <div className="summary-kpi-strip">
-            {/* Total Incoming */}
             <div className="summary-kpi-card theme-incoming">
               <div className="kpi-title">{labels.totalIncoming}</div>
               <div className="kpi-val">
-                {formatNum(logsData?.kpis?.incomingTotal || 0)}
+                {formatNum(incomingTotals?.totalQty || 0)}
               </div>
               <div className="kpi-subtext">
-                {formatNum(logsData?.kpis?.incomingBoxes || 0)} {labels.boxes} (
-                {formatNum(logsData?.incoming?.total || 0)} {labels.records})
+                {formatNum(incomingTotals?.totalBoxes || 0)} {labels.boxes} (
+                {formatNum(incomingItems.length)} {labels.records} loaded)
               </div>
             </div>
 
-            {/* Total Dispatch */}
             <div className="summary-kpi-card theme-dispatch">
               <div className="kpi-title">{labels.totalDispatch}</div>
               <div className="kpi-val">
-                {formatNum(logsData?.kpis?.dispatchTotal || 0)}
+                {formatNum(dispatchTotals?.totalQty || 0)}
               </div>
               <div className="kpi-subtext">
-                {formatNum(logsData?.kpis?.dispatchBoxes || 0)} {labels.boxes} (
-                {formatNum(logsData?.dispatch?.total || 0)} {labels.records})
+                {formatNum(dispatchTotals?.totalBoxes || 0)} {labels.boxes} (
+                {formatNum(dispatchItems.length)} {labels.records} loaded)
               </div>
             </div>
 
-            {/* Net Stock Balance: Incoming − Dispatch */}
             <div
-              className={`summary-kpi-card theme-difference ${(logsData?.kpis?.netDifference || 0) < 0 ? 'negative' : ''
+              className={`summary-kpi-card theme-difference ${((incomingTotals?.totalQty || 0) - (dispatchTotals?.totalQty || 0)) < 0 ? 'negative' : ''
                 }`}
             >
-              <div className="kpi-title">
-                {language === 'gu'
-                  ? logsData?.kpis?.differenceLabelGu || labels.netDifference
-                  : logsData?.kpis?.differenceLabel || labels.netDifference}
-              </div>
+              <div className="kpi-title">{labels.netDifference}</div>
               <div className="kpi-val">
-                {formatNum(logsData?.kpis?.netDifference || 0)}
+                {formatNum((incomingTotals?.totalQty || 0) - (dispatchTotals?.totalQty || 0))}
               </div>
               <div className="kpi-subtext">
-                {formatNum(logsData?.kpis?.incomingBoxes || 0) -
-                  formatNum(logsData?.kpis?.dispatchBoxes || 0)}{' '}
-                {labels.boxes} net
+                {formatNum((incomingTotals?.totalBoxes || 0) - (dispatchTotals?.totalBoxes || 0))} {labels.boxes} net
               </div>
             </div>
 
-            {/* If SHRENO: Packing Material Total */}
             {isShreno && (
               <div className="summary-kpi-card theme-shreno">
                 <div className="kpi-title">{labels.totalPackingMaterial}</div>
                 <div className="kpi-val">
-                  {formatNum(logsData?.kpis?.shrenoIncomingTotal || 0)}
+                  {formatNum(packingTotals?.totalQty || 0)}
                 </div>
                 <div className="kpi-subtext">
-                  {formatNum(logsData?.shrenoIncoming?.total || 0)} {labels.records}
+                  {formatNum(packingItems.length)} {labels.records} loaded
                 </div>
               </div>
             )}
           </div>
 
-          {/* Side by Side Blocks Grid */}
-          <div
-            className={`summary-blocks-grid ${isShreno ? 'three-blocks' : 'two-blocks'
-              }`}
-          >
-            {/* ------------------------------------------------------------- */}
-            {/* 1ST: Incoming (sr no, po date, po no, po qty, date, challan no, no of box, qty, total) */}
-            {/* ------------------------------------------------------------- */}
+          <div className={`summary-blocks-grid ${isShreno ? 'three-blocks' : 'two-blocks'}`}>
+            {/* INCOMING BLOCK */}
             <div className="summary-block-card">
               <div className="block-header incoming-header">
                 <h3 className="block-header-title">
@@ -619,7 +915,7 @@ export default function CompanySummary() {
                   <span>{labels.blockIncoming}</span>
                 </h3>
                 <span className="block-header-pill">
-                  {formatNum(logsData?.incoming?.totals?.totalQty || 0)} {labels.pcs}
+                  {formatNum(incomingTotals?.totalQty || 0)} {labels.pcs}
                 </span>
               </div>
 
@@ -643,66 +939,74 @@ export default function CompanySummary() {
                     </tr>
                   </thead>
                   <tbody>
-                    {logsLoading ? (
-                      <tr>
-                        <td colSpan={isShreno ? 9 : 6} className="py-5 text-center text-muted">
-                          <div className="spinner-border text-success mb-2" />
-                          <div>{labels.loading}</div>
+                    {incomingItems.map((row, idx) => (
+                      <tr key={row._id}>
+                        <td className="text-muted fw-semibold">
+                          {idx + 1}
+                        </td>
+                        {isShreno && (
+                          <>
+                            <td>{formatDate(row.poDate)}</td>
+                            <td className="text-muted">{row.poNo}</td>
+                            <td className="num-col">{row.poOrderQty ? formatNum(row.poOrderQty) : '-'}</td>
+                          </>
+                        )}
+                        <td>{formatDate(row.date)}</td>
+                        <td className="fw-bold text-dark">{row.challanNo}</td>
+                        <td className="num-col">{formatNum(row.box)}</td>
+                        <td className="num-col text-muted">{formatNum(row.qty)}</td>
+                        <td className="num-col bold-num text-success">
+                          {formatNum(row.totalQty)}
                         </td>
                       </tr>
-                    ) : logsData?.incoming?.data?.length === 0 ? (
+                    ))}
+                    {incomingLoading && (
                       <tr>
-                        <td colSpan={isShreno ? 9 : 6} className="p-0">
-                          <div className="summary-empty-state">
-                            <i className="bi bi-inbox text-success" />
-                            <div>{labels.noIncomingRecords}</div>
-                          </div>
+                        <td colSpan={isShreno ? 9 : 6} className="py-3 text-center">
+                          <div className="spinner-border spinner-border-sm text-success" />
                         </td>
                       </tr>
-                    ) : (
-                      logsData?.incoming?.data?.map((row, idx) => (
-                        <tr key={row._id}>
-                          <td className="text-muted fw-semibold">
-                            {idx + 1}
-                          </td>
-                          {isShreno && (
-                            <>
-                              <td>{formatDate(row.poDate)}</td>
-                              <td className="text-muted">{row.poNo}</td>
-                              <td className="num-col">{row.poOrderQty ? formatNum(row.poOrderQty) : '-'}</td>
-                            </>
-                          )}
-                          <td>{formatDate(row.date)}</td>
-                          <td className="fw-bold text-dark">{row.challanNo}</td>
-                          <td className="num-col">{formatNum(row.box)}</td>
-                          <td className="num-col text-muted">{formatNum(row.qty)}</td>
-                          <td className="num-col bold-num text-success">
-                            {formatNum(row.totalQty)}
-                          </td>
-                        </tr>
-                      ))
+                    )}
+                    {incomingError && (
+                      <tr>
+                        <td colSpan={isShreno ? 9 : 6} className="py-2 text-center">
+                          <button
+                            className="btn btn-sm btn-link text-danger"
+                            onClick={() => retryLoad('incoming')}
+                          >
+                            Couldn't load - Retry
+                          </button>
+                        </td>
+                      </tr>
+                    )}
+                    {!incomingHasMore && incomingItems.length > 0 && (
+                      <tr>
+                        <td colSpan={isShreno ? 9 : 6} className="py-2 text-center text-muted small">
+                          No more records
+                        </td>
+                      </tr>
                     )}
                   </tbody>
-                  <tfoot>
-                    <tr>
-                      <td colSpan={isShreno ? 6 : 3}>TOTAL</td>
-                      <td className="num-col bold-num">
-                        {formatNum(logsData?.incoming?.totals?.totalBoxes || 0)}
-                      </td>
-                      <td />
-                      <td className="num-col bold-num text-success">
-                        {formatNum(logsData?.incoming?.totals?.totalQty || 0)}
-                      </td>
-                    </tr>
-                  </tfoot>
+                  {incomingItems.length > 0 && (
+                    <tfoot>
+                      <tr>
+                        <td colSpan={isShreno ? 6 : 3}>TOTAL</td>
+                        <td className="num-col bold-num">
+                          {formatNum(incomingTotals?.totalBoxes || 0)}
+                        </td>
+                        <td />
+                        <td className="num-col bold-num text-success">
+                          {formatNum(incomingTotals?.totalQty || 0)}
+                        </td>
+                      </tr>
+                    </tfoot>
+                  )}
                 </table>
               </div>
-
+              <div ref={incomingSentinelRef} style={{ height: '1px' }} />
             </div>
 
-            {/* ------------------------------------------------------------- */}
-            {/* 2ND: Dispatch (Date, D C NO, Product name, Box, Qty, Dispatch Qty) */}
-            {/* ------------------------------------------------------------- */}
+            {/* DISPATCH BLOCK */}
             <div className="summary-block-card">
               <div className="block-header dispatch-header">
                 <h3 className="block-header-title">
@@ -710,7 +1014,7 @@ export default function CompanySummary() {
                   <span>{labels.blockDispatch}</span>
                 </h3>
                 <span className="block-header-pill">
-                  {formatNum(logsData?.dispatch?.totals?.totalQty || 0)} {labels.pcs}
+                  {formatNum(dispatchTotals?.totalQty || 0)} {labels.pcs}
                 </span>
               </div>
 
@@ -737,101 +1041,84 @@ export default function CompanySummary() {
                     </tr>
                   </thead>
                   <tbody>
-                    {logsLoading ? (
-                      <tr>
-                        <td colSpan={isShreno ? 8 : 10} className="py-5 text-center text-muted">
-                          <div className="spinner-border text-indigo mb-2" />
-                          <div>{labels.loading}</div>
+                    {dispatchItems.map((row, idx) => (
+                      <tr key={row._id}>
+                        <td className="text-muted fw-semibold" style={{ width: 45 }}>
+                          {idx + 1}
+                        </td>
+                        <td>{formatDate(row.date || row.dispatchDate)}</td>
+                        <td className="fw-bold text-dark">{row.gatePassNo || row.dcNo || '-'}</td>
+                        {isShreno ? (
+                          <td style={{ textAlign: 'center', minWidth: '120px' }}>
+                            {row.coating || '-'} - {row.printing || '-'} - {row.detectedTextColor || '-'}
+                          </td>
+                        ) : (
+                          <>
+                            <td style={{ textAlign: 'center', minWidth: '120px' }}>{row.coating || '-'}</td>
+                            <td style={{ textAlign: 'center', minWidth: '120px' }}>{row.printing || '-'}</td>
+                            <td style={{ textAlign: 'center', minWidth: '120px' }}>{row.detectedTextColor || '-'}</td>
+                          </>
+                        )}
+                        <td className="num-col">{formatNum(row.box || 0)}</td>
+                        <td className="num-col text-muted">{formatNum(row.qty || 0)}</td>
+                        <td className="num-col bold-num text-indigo">
+                          {formatNum(row.totalQty || 0)}
+                        </td>
+                        <td>
+                          <span className="badge bg-light text-dark cursor-pointer" style={{ cursor: 'pointer', padding: '4px 8px', fontSize: '11px' }}>
+                            {row.remarks && row.remarks !== '-' ? `📝 ${row.remarks.substring(0, 15)}...` : '+ Add'}
+                          </span>
                         </td>
                       </tr>
-                    ) : logsData?.dispatch?.data?.length === 0 ? (
+                    ))}
+                    {dispatchLoading && (
                       <tr>
-                        <td colSpan={isShreno ? 8 : 10} className="p-0">
-                          <div className="summary-empty-state">
-                            <i className="bi bi-truck text-indigo" />
-                            <div>{labels.noDispatchRecords}</div>
-                          </div>
+                        <td colSpan={isShreno ? 8 : 10} className="py-3 text-center">
+                          <div className="spinner-border spinner-border-sm text-indigo" />
                         </td>
                       </tr>
-                    ) : (
-                      logsData?.dispatch?.data?.map((row, idx) => (
-                        <tr key={row._id}>
-                          <td className="text-muted fw-semibold" style={{ width: 45 }}>
-                            {idx + 1}
-                          </td>
-                          <td>{formatDate(row.date || row.dispatchDate)}</td>
-                          <td className="fw-bold text-dark">{row.gatePassNo || row.dcNo || '-'}</td>
-                          {isShreno ? (
-                            <td style={{ textAlign: 'center', minWidth: '120px' }}>
-                              {row.coating || '-'} - {row.printing || '-'} - {row.detectedTextColor || '-'}
-                            </td>
-                          ) : (
-                            <>
-                              <td style={{ textAlign: 'center', minWidth: '120px' }}>{row.coating || '-'}</td>
-                              <td style={{ textAlign: 'center', minWidth: '120px' }}>{row.printing || '-'}</td>
-                              <td style={{ textAlign: 'center', minWidth: '120px' }}>{row.detectedTextColor || '-'}</td>
-                            </>
-                          )}
-                          <td className="num-col">{formatNum(row.box || 0)}</td>
-                          <td className="num-col text-muted">{formatNum(row.qty || 0)}</td>
-                          <td className="num-col bold-num text-indigo">
-                            {formatNum(row.totalQty || 0)}
-                          </td>
-                          <td>
-                            <span
-                              className="badge bg-light text-dark cursor-pointer"
-                              style={{ cursor: 'pointer', padding: '4px 8px', fontSize: '11px' }}
-                              onClick={() => {
-                                Swal.fire({
-                                  title: 'Enter Remark',
-                                  input: 'textarea',
-                                  inputValue: row.remarks && row.remarks !== '-' ? row.remarks : '',
-                                  inputPlaceholder: 'Type your remark here...',
-                                  showCancelButton: true,
-                                  confirmButtonText: 'Save',
-                                  confirmButtonColor: '#0d6efd',
-                                  cancelButtonColor: '#6c757d',
-                                  inputAttributes: {
-                                    'aria-label': 'Enter remark'
-                                  }
-                                }).then((result) => {
-                                  if (result.isConfirmed && result.value) {
-                                    console.log('Update remark for', row.docId, ':', result.value);
-                                    // TODO: Implement API call to update dispatch remarks
-                                    Swal.fire('Success!', 'Remark saved.', 'success');
-                                  }
-                                });
-                              }}
-                              title={row.remarks && row.remarks !== '-' ? row.remarks : 'Click to add remark'}
-                            >
-                              {row.remarks && row.remarks !== '-' ? `📝 ${row.remarks.substring(0, 15)}...` : '+ Add'}
-                            </span>
-                          </td>
-                        </tr>
-                      ))
+                    )}
+                    {dispatchError && (
+                      <tr>
+                        <td colSpan={isShreno ? 8 : 10} className="py-2 text-center">
+                          <button
+                            className="btn btn-sm btn-link text-danger"
+                            onClick={() => retryLoad('dispatch')}
+                          >
+                            Couldn't load - Retry
+                          </button>
+                        </td>
+                      </tr>
+                    )}
+                    {!dispatchHasMore && dispatchItems.length > 0 && (
+                      <tr>
+                        <td colSpan={isShreno ? 8 : 10} className="py-2 text-center text-muted small">
+                          No more records
+                        </td>
+                      </tr>
                     )}
                   </tbody>
-                  <tfoot>
-                    <tr>
-                      <td colSpan={isShreno ? 4 : 6}>TOTAL</td>
-                      <td className="num-col bold-num">
-                        {formatNum(logsData?.dispatch?.totals?.totalBoxes || 0)}
-                      </td>
-                      <td />
-                      <td className="num-col bold-num text-indigo">
-                        {formatNum(logsData?.dispatch?.totals?.totalQty || 0)}
-                      </td>
-                      <td />
-                    </tr>
-                  </tfoot>
+                  {dispatchItems.length > 0 && (
+                    <tfoot>
+                      <tr>
+                        <td colSpan={isShreno ? 4 : 6}>TOTAL</td>
+                        <td className="num-col bold-num">
+                          {formatNum(dispatchTotals?.totalBoxes || 0)}
+                        </td>
+                        <td />
+                        <td className="num-col bold-num text-indigo">
+                          {formatNum(dispatchTotals?.totalQty || 0)}
+                        </td>
+                        <td />
+                      </tr>
+                    </tfoot>
+                  )}
                 </table>
               </div>
-
+              <div ref={dispatchSentinelRef} style={{ height: '1px' }} />
             </div>
 
-            {/* ------------------------------------------------------------- */}
-            {/* 3RD: Packing Material (item type, configurations, Qty)       */}
-            {/* ------------------------------------------------------------- */}
+            {/* PACKING MATERIAL BLOCK (SHRENO ONLY) */}
             {isShreno && (
               <div className="summary-block-card">
                 <div className="block-header shreno-header">
@@ -840,7 +1127,7 @@ export default function CompanySummary() {
                     <span>{labels.blockPackingMaterial}</span>
                   </h3>
                   <span className="block-header-pill">
-                    {formatNum(logsData?.shrenoIncoming?.totals?.totalQty || 0)} {labels.pcs}
+                    {formatNum(packingTotals?.totalQty || 0)} {labels.pcs}
                   </span>
                 </div>
 
@@ -855,46 +1142,56 @@ export default function CompanySummary() {
                       </tr>
                     </thead>
                     <tbody>
-                      {logsLoading ? (
-                        <tr>
-                          <td colSpan={4} className="py-5 text-center text-muted">
-                            <div className="spinner-border text-warning mb-2" />
-                            <div>{labels.loading}</div>
+                      {packingItems.map((row) => (
+                        <tr key={row._id}>
+                          <td>{formatDate(row.date)}</td>
+                          <td>{row.itemType}</td>
+                          <td>{row.configuration}</td>
+                          <td className="num-col bold-num text-warning-emphasis">
+                            {formatNum(row.quantity)}
                           </td>
                         </tr>
-                      ) : logsData?.shrenoIncoming?.data?.length === 0 ? (
+                      ))}
+                      {packingLoading && (
                         <tr>
-                          <td colSpan={4} className="p-0">
-                            <div className="summary-empty-state">
-                              <i className="bi bi-box-seam text-warning" />
-                              <div>{labels.noPackingMaterialRecords}</div>
-                            </div>
+                          <td colSpan={4} className="py-3 text-center">
+                            <div className="spinner-border spinner-border-sm text-warning" />
                           </td>
                         </tr>
-                      ) : (
-                        logsData?.shrenoIncoming?.data?.map((row) => (
-                          <tr key={row._id}>
-                            <td>{formatDate(row.date)}</td>
-                            <td>{row.itemType}</td>
-                            <td>{row.configuration}</td>
-                            <td className="num-col bold-num text-warning-emphasis">
-                              {formatNum(row.quantity)}
-                            </td>
-                          </tr>
-                        ))
+                      )}
+                      {packingError && (
+                        <tr>
+                          <td colSpan={4} className="py-2 text-center">
+                            <button
+                              className="btn btn-sm btn-link text-danger"
+                              onClick={() => retryLoad('packing')}
+                            >
+                              Couldn't load - Retry
+                            </button>
+                          </td>
+                        </tr>
+                      )}
+                      {!packingHasMore && packingItems.length > 0 && (
+                        <tr>
+                          <td colSpan={4} className="py-2 text-center text-muted small">
+                            No more records
+                          </td>
+                        </tr>
                       )}
                     </tbody>
-                    <tfoot>
-                      <tr>
-                        <td colSpan={3}>TOTAL</td>
-                        <td className="num-col bold-num text-warning-emphasis">
-                          {formatNum(logsData?.shrenoIncoming?.totals?.totalQty || 0)}
-                        </td>
-                      </tr>
-                    </tfoot>
+                    {packingItems.length > 0 && (
+                      <tfoot>
+                        <tr>
+                          <td colSpan={3}>TOTAL</td>
+                          <td className="num-col bold-num text-warning-emphasis">
+                            {formatNum(packingTotals?.totalQty || 0)}
+                          </td>
+                        </tr>
+                      </tfoot>
+                    )}
                   </table>
                 </div>
-
+                <div ref={packingSentinelRef} style={{ height: '1px' }} />
               </div>
             )}
           </div>
