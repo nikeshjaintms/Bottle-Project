@@ -159,7 +159,7 @@ exports.getCompaniesSummary = async (req, res) => {
   try {
     const { search } = req.query;
 
-    const companyFilter = { isDeleted: { $ne: true } };
+    const companyFilter = { isDeleted: { $ne: true }, isStockSupplier: { $ne: true } };
     if (search && search.trim()) {
       companyFilter.name = { $regex: search.trim(), $options: "i" };
     }
@@ -224,29 +224,56 @@ exports.getPlainBottleOptions = async (req, res) => {
   try {
     const { companyId } = req.query;
 
+    const bpbs = await BottlePerBox.find({ isDeleted: { $ne: true } }).lean();
+    const bpbMap = buildBpbLookupMap(bpbs);
+
+    const buildAllMasterBottles = () => {
+      const allMasterMap = new Map();
+      for (const b of bpbs) {
+        const plainName = (b.plainBottleName || (typeof derivePlainBottleName === 'function' && derivePlainBottleName(b.bottleName)?.plainBottleName) || b.bottleName || '').trim();
+        if (!plainName) continue;
+        const norm = normalizeRollOn(plainName);
+        if (!allMasterMap.has(norm)) {
+          allMasterMap.set(norm, {
+            id: b._id.toString(),
+            name: b.plainBottleName || plainName,
+            plainBottleName: b.plainBottleName || plainName,
+            bottlePerBox: b.bottlePerBox !== undefined ? b.bottlePerBox : null,
+            boxWeight: b.boxWeight !== undefined ? b.boxWeight : null,
+            variantCount: 0,
+            specCount: 0,
+          });
+        }
+      }
+      return Array.from(allMasterMap.values()).sort((a, b) =>
+        (a.name || "").localeCompare(b.name || "", undefined, { numeric: true, sensitivity: "base" })
+      );
+    };
+
     if (!companyId || !mongoose.isValidObjectId(companyId)) {
-      return res.json({ success: true, data: [], total: 0 });
+      const allMasterList = buildAllMasterBottles();
+      return res.json({ success: true, data: allMasterList, otherBottles: [], total: allMasterList.length });
     }
 
     const company = await Company.findById(companyId).lean();
-    if (!company || company.isDeleted) {
-      return res.json({ success: true, data: [], total: 0 });
+    if (!company || company.isDeleted || company.isStockSupplier) {
+      const allMasterList = buildAllMasterBottles();
+      return res.json({ success: true, data: allMasterList, otherBottles: [], total: allMasterList.length });
     }
 
     const brands = await Brand.find({ companyId, isDeleted: { $ne: true } }).select('_id name').lean();
     if (!brands.length) {
-      return res.json({ success: true, data: [], total: 0 });
+      const allMasterList = buildAllMasterBottles();
+      return res.json({ success: true, data: [], otherBottles: allMasterList, total: 0 });
     }
     const brandIds = brands.map((b) => b._id);
     const brandMap = new Map(brands.map((b) => [b._id.toString(), b.name]));
 
     const specs = await BottleSpec.find({ brandId: { $in: brandIds }, isDeleted: { $ne: true } }).lean();
     if (!specs.length) {
-      return res.json({ success: true, data: [], total: 0 });
+      const allMasterList = buildAllMasterBottles();
+      return res.json({ success: true, data: [], otherBottles: allMasterList, total: 0 });
     }
-
-    const bpbs = await BottlePerBox.find({ isDeleted: { $ne: true } }).lean();
-    const bpbMap = buildBpbLookupMap(bpbs);
 
     // Group specs by resolved plain bottle
     const pbMap = new Map(); // pbId -> { pb, printingSpecs: [], coatingSpecs: [] }
@@ -297,10 +324,13 @@ exports.getPlainBottleOptions = async (req, res) => {
       variantById.set(v._id.toString(), v);
     }
 
-    const result = [];
+    // Deduplicate company plain bottles by normalized name (ROLL ON/ROLL-ON -> ROLLON)
+    const normResultMap = new Map();
     for (const [pbId, data] of pbMap.entries()) {
-      const uniqueVariants = new Map();
+      const plainName = (data.pb.plainBottleName || (typeof derivePlainBottleName === 'function' && derivePlainBottleName(data.pb.bottleName)?.plainBottleName) || data.pb.bottleName || '').trim();
+      const norm = normalizeRollOn(plainName);
 
+      const uniqueVariants = new Map();
       for (const ps of data.printingSpecs) {
         const psVars = variantsBySpecId.get(ps._id.toString()) || [];
         for (const v of psVars) {
@@ -324,24 +354,57 @@ exports.getPlainBottleOptions = async (req, res) => {
         }
       }
 
-      result.push({
-        id: pbId,
-        name: data.pb.plainBottleName || data.pb.bottleName,
-        variantCount: uniqueVariants.size,
-        bottlePerBox: data.pb.bottlePerBox !== undefined ? data.pb.bottlePerBox : null,
-        boxWeight: data.pb.boxWeight !== undefined ? data.pb.boxWeight : null,
-        specCount: data.printingSpecs.length + data.coatingSpecs.length,
-      });
+      if (!normResultMap.has(norm)) {
+        normResultMap.set(norm, {
+          id: pbId,
+          name: data.pb.plainBottleName || plainName,
+          plainBottleName: data.pb.plainBottleName || plainName,
+          variantCount: uniqueVariants.size,
+          bottlePerBox: data.pb.bottlePerBox !== undefined ? data.pb.bottlePerBox : null,
+          boxWeight: data.pb.boxWeight !== undefined ? data.pb.boxWeight : null,
+          specCount: data.printingSpecs.length + data.coatingSpecs.length,
+        });
+      } else {
+        // Merge counts if multiple specs resolve to same normalized plain bottle
+        const existing = normResultMap.get(norm);
+        existing.variantCount += uniqueVariants.size;
+        existing.specCount += (data.printingSpecs.length + data.coatingSpecs.length);
+      }
     }
 
-    // Sort in natural ascending order (e.g. 3 ML, 8 ML, 10 ML, 100 ML)
-    result.sort((a, b) =>
+    const result = Array.from(normResultMap.values()).sort((a, b) =>
+      (a.name || "").localeCompare(b.name || "", undefined, { numeric: true, sensitivity: "base" })
+    );
+
+    // Build otherBottles: all master plain bottles not in company's list
+    const companyNormSet = new Set(result.map(r => normalizeRollOn(r.plainBottleName || r.name)));
+    const otherNormSet = new Set();
+    const otherBottles = [];
+    for (const b of bpbs) {
+      const pName = (b.plainBottleName || (typeof derivePlainBottleName === 'function' && derivePlainBottleName(b.bottleName)?.plainBottleName) || b.bottleName || '').trim();
+      if (!pName) continue;
+      const norm = normalizeRollOn(pName);
+      if (!companyNormSet.has(norm) && !otherNormSet.has(norm)) {
+        otherNormSet.add(norm);
+        otherBottles.push({
+          id: b._id.toString(),
+          name: b.plainBottleName || pName,
+          plainBottleName: b.plainBottleName || pName,
+          bottlePerBox: b.bottlePerBox !== undefined ? b.bottlePerBox : null,
+          boxWeight: b.boxWeight !== undefined ? b.boxWeight : null,
+          variantCount: 0,
+          specCount: 0,
+        });
+      }
+    }
+    otherBottles.sort((a, b) =>
       (a.name || "").localeCompare(b.name || "", undefined, { numeric: true, sensitivity: "base" })
     );
 
     res.json({
       success: true,
       data: result,
+      otherBottles,
       total: result.length,
     });
   } catch (err) {
@@ -434,6 +497,7 @@ exports.getVariantOptions = async (req, res) => {
           brandName,
           bottleSpecId: specId,
           variantName: v.variantName || v.productName || '',
+          materialCode: v.materialCode || '',
           coatingShade: v.coatingShade || '',
           textColor: (v.detectedTextColor && v.detectedTextColor !== 'Not Detected') ? v.detectedTextColor : '',
           specCode: ps.code || '',
@@ -466,6 +530,7 @@ exports.getVariantOptions = async (req, res) => {
           brandName,
           bottleSpecId: specId,
           variantName: v.variantName || v.productName || '',
+          materialCode: v.materialCode || '',
           coatingShade: cs.coatingShade || v.coatingShade || '',
           textColor: (v.detectedTextColor && v.detectedTextColor !== 'Not Detected') ? v.detectedTextColor : '',
           specCode: cs.code || '',
@@ -475,13 +540,58 @@ exports.getVariantOptions = async (req, res) => {
       }
     }
 
-    const result = Array.from(variantRows.values());
-    // Sort by brandName, then variantName
-    result.sort((a, b) => {
-      const bComp = (a.brandName || "").localeCompare(b.brandName || "");
-      if (bComp !== 0) return bComp;
-      return (a.variantName || "").localeCompare(b.variantName || "");
-    });
+    let result = Array.from(variantRows.values());
+    if (req.query.forChallan === "true") {
+      const uniqueVariants = new Map();
+      result.forEach((row) => {
+        if (!uniqueVariants.has(row.variantId)) uniqueVariants.set(row.variantId, row);
+      });
+
+      result = Array.from(uniqueVariants.values());
+      const normalizeLabel = (value) => String(value || "")
+        .trim()
+        .replace(/\s+/g, " ")
+        .normalize("NFKC")
+        .toLocaleLowerCase();
+      const makeLabel = (row) =>
+        [row.coatingShade, row.variantName, row.textColor]
+          .map((part) => String(part || "").trim().replace(/\s+/g, " "))
+          .filter(Boolean)
+          .join(" - ");
+      const labelCounts = new Map();
+      result.forEach((row) => {
+        const label = makeLabel(row);
+        const key = normalizeLabel(label);
+        labelCounts.set(key, (labelCounts.get(key) || 0) + 1);
+      });
+
+      result = result.map((row) => {
+        const variantName = String(row.variantName || "").trim().replace(/\s+/g, " ");
+        const label = makeLabel(row) || variantName;
+        const labelKey = normalizeLabel(label);
+        return {
+          ...row,
+          variantName,
+          label: labelCounts.get(labelKey) > 1 && row.brandName
+            ? `${label} (${String(row.brandName).trim()})`
+            : label,
+        };
+      });
+
+      result.sort((a, b) =>
+        (a.coatingShade || "").localeCompare(b.coatingShade || "", undefined, { numeric: true, sensitivity: "base" }) ||
+        (a.variantName || "").localeCompare(b.variantName || "", undefined, { numeric: true, sensitivity: "base" }) ||
+        (a.textColor || "").localeCompare(b.textColor || "", undefined, { numeric: true, sensitivity: "base" })
+      );
+    } else {
+      // Preserve the existing Ready To Dispatch option order.
+      result = result.map(({ materialCode, ...row }) => row);
+      result.sort((a, b) => {
+        const brandCompare = (a.brandName || "").localeCompare(b.brandName || "");
+        if (brandCompare !== 0) return brandCompare;
+        return (a.variantName || "").localeCompare(b.variantName || "");
+      });
+    }
 
     res.json({
       success: true,
@@ -1101,7 +1211,7 @@ const getBottlePerBoxData = async (plainBottleName) => {
 // 6. CREATE FROM PLAN - Main endpoint
 // IDEMPOTENT: If same plan row sent multiple times, only one line is created
 exports.createFromPlan = async (req, res) => {
-  const { source, planId } = req.body;
+  const { source, planId, qty } = req.body;
 
   // Validate input
   if (!source || !["lacquer", "printing"].includes(source)) {
@@ -1128,18 +1238,6 @@ exports.createFromPlan = async (req, res) => {
       await new Promise((r) => setTimeout(r, 100));
       waited += 100;
     }
-    const reloaded = await Model.findById(planId).lean();
-    if (reloaded && reloaded.readyToDispatch?.sheetId) {
-      return res.json({
-        success: true,
-        message: "Already sent",
-        data: {
-          sheetId: reloaded.readyToDispatch.sheetId,
-          lineId: reloaded.readyToDispatch.lineId,
-          isExisting: true,
-        },
-      });
-    }
   }
 
   inFlightPlanSends.add(lockKey);
@@ -1158,6 +1256,55 @@ exports.createFromPlan = async (req, res) => {
 
     if (planRow.isDeleted) {
       return res.status(400).json({ success: false, message: "Plan row is deleted" });
+    }
+
+    // Rule 1: For lacquer source, ONLY process C is allowed
+    if (source === "lacquer") {
+      const process = (planRow.process || "").trim().toUpperCase();
+      if (process !== "C") {
+        return res.status(400).json({
+          success: false,
+          message: "Only Process C rows can be sent to Ready To Dispatch",
+        });
+      }
+    }
+
+    // Calculate sendable quantity
+    let sendQty = null;
+    let coated = 0;
+    let alreadySent = 0;
+    let sendable = 0;
+
+    if (source === "lacquer") {
+      coated = Number(planRow.coatingCompletedQty ?? planRow.coatedQty ?? 0);
+      alreadySent = Number(planRow.sentToReadyQty || 0);
+      sendable = Math.max(0, coated - alreadySent);
+
+      if (sendable <= 0) {
+        return res.status(400).json({
+          success: false,
+          message: "No sendable quantity remaining",
+        });
+      }
+
+      if (qty !== undefined && qty !== null && qty !== "") {
+        const parsedQty = Number(qty);
+        if (isNaN(parsedQty) || !Number.isInteger(parsedQty) || parsedQty <= 0) {
+          return res.status(400).json({
+            success: false,
+            message: "Invalid quantity. Must be a positive integer.",
+          });
+        }
+        if (parsedQty > sendable) {
+          return res.status(400).json({
+            success: false,
+            message: `Quantity (${parsedQty}) cannot exceed sendable quantity (${sendable})`,
+          });
+        }
+        sendQty = parsedQty;
+      } else {
+        sendQty = sendable;
+      }
     }
 
     // Normalized plain bottle name
@@ -1202,93 +1349,48 @@ exports.createFromPlan = async (req, res) => {
       variantDescription = shade;
     }
 
-    // IDEMPOTENT GUARD 1: Check plan row mark
-    if (planRow.readyToDispatch && planRow.readyToDispatch.sheetId) {
-      const { sheetId, lineId } = planRow.readyToDispatch;
+    // IDEMPOTENT GUARD for printing source:
+    if (source === "printing") {
+      if (planRow.readyToDispatch && planRow.readyToDispatch.sheetId) {
+        const { sheetId, lineId } = planRow.readyToDispatch;
+        if (mongoose.isValidObjectId(sheetId)) {
+          const sheet = await ReadyToDispatch.findOne({
+            _id: sheetId,
+            isDeleted: false,
+          });
 
-      if (mongoose.isValidObjectId(sheetId)) {
-        const sheet = await ReadyToDispatch.findOne({
-          _id: sheetId,
-          isDeleted: false,
-        });
-
-        if (sheet) {
-          let existingLine = null;
-          for (const grp of sheet.groups) {
-            for (const line of grp.variantLines) {
-              if (
-                (lineId && line._id?.toString() === lineId.toString()) ||
-                (line.sourcePlanId?.toString() === planId.toString() && line.sourcePlanType === source)
-              ) {
-                existingLine = line;
-                break;
+          if (sheet) {
+            let existingLine = null;
+            for (const grp of sheet.groups) {
+              for (const line of grp.variantLines) {
+                if (
+                  (lineId && line._id?.toString() === lineId.toString()) ||
+                  (line.sourcePlanId?.toString() === planId.toString() && line.sourcePlanType === source)
+                ) {
+                  existingLine = line;
+                  break;
+                }
               }
+              if (existingLine) break;
             }
-            if (existingLine) break;
-          }
 
-          if (existingLine) {
-            return res.json({
-              success: true,
-              message: "Already sent",
-              data: {
-                sheetId,
-                lineId: existingLine._id,
-                isExisting: true,
-                bottleName: plainBottleName,
-                variantName: existingLine.description || variantDescription,
-                brandName: existingLine.brandName || brandName || "N/A",
-              },
-            });
-          }
-        }
-      }
-
-      // Mark stale - line was deleted, clear and proceed to recreate
-      await exports.clearPlanRowMark(source, planId);
-    }
-
-    // IDEMPOTENT GUARD 2: Search by sourcePlanId in active sheets
-    const existingSheetWithLine = await ReadyToDispatch.findOne({
-      companyId: planRow.companyId,
-      isDeleted: false,
-      "groups.variantLines.sourcePlanId": planRow._id,
-      "groups.variantLines.sourcePlanType": source,
-    });
-
-    if (existingSheetWithLine) {
-      let existingLine = null;
-      for (const grp of existingSheetWithLine.groups) {
-        for (const line of grp.variantLines) {
-          if (line.sourcePlanId?.toString() === planId.toString() && line.sourcePlanType === source) {
-            existingLine = line;
-            break;
+            if (existingLine) {
+              return res.json({
+                success: true,
+                message: "Already sent",
+                data: {
+                  sheetId,
+                  lineId: existingLine._id,
+                  isExisting: true,
+                  bottleName: plainBottleName,
+                  variantName: existingLine.description || variantDescription,
+                  brandName: existingLine.brandName || brandName || "N/A",
+                },
+              });
+            }
           }
         }
-        if (existingLine) break;
-      }
-
-      if (existingLine) {
-        await Model.findByIdAndUpdate(planId, {
-          readyToDispatch: {
-            sheetId: existingSheetWithLine._id,
-            lineId: existingLine._id,
-            sentAt: new Date(),
-          },
-        });
-
-        return res.json({
-          success: true,
-          message: "Already sent",
-          data: {
-            sheetId: existingSheetWithLine._id,
-            lineId: existingLine._id,
-            isExisting: true,
-            bottleName: plainBottleName,
-            variantName: existingLine.description || variantDescription,
-            brandName: existingLine.brandName || brandName || "N/A",
-          },
-        });
+        await exports.clearPlanRowMark(source, planId);
       }
     }
 
@@ -1297,18 +1399,18 @@ exports.createFromPlan = async (req, res) => {
     const unit = bottleMaster.unit || 0;
     const boxWeight = bottleMaster.weight; // null if no weight
 
-    // Calculate number of boxes
     let noOfBoxes = 0;
+    let producedQtyCalc = 0;
     let hasZeroBoxWarning = false;
 
     if (source === "lacquer") {
-      if (planRow.noOfBoxes !== null && planRow.noOfBoxes !== undefined && Number(planRow.noOfBoxes) > 0) {
-        noOfBoxes = Number(planRow.noOfBoxes);
-      } else if (unit > 0 && planRow.coatingCompletedQty > 0) {
-        noOfBoxes = Math.ceil(planRow.coatingCompletedQty / unit);
+      if (unit > 0) {
+        noOfBoxes = Math.ceil(sendQty / unit);
+        producedQtyCalc = noOfBoxes * unit;
       } else {
-        noOfBoxes = 0;
-        hasZeroBoxWarning = true;
+        noOfBoxes = planRow.noOfBoxes !== null && planRow.noOfBoxes !== undefined ? Number(planRow.noOfBoxes) : 0;
+        producedQtyCalc = sendQty;
+        if (noOfBoxes === 0) hasZeroBoxWarning = true;
       }
     } else {
       if (planRow.readyBoxes !== null && planRow.readyBoxes !== undefined && Number(planRow.readyBoxes) > 0) {
@@ -1321,10 +1423,9 @@ exports.createFromPlan = async (req, res) => {
         noOfBoxes = 0;
         hasZeroBoxWarning = true;
       }
+      producedQtyCalc = unit > 0 ? noOfBoxes * unit : 0;
     }
 
-    // Calculations
-    const producedQtyCalc = unit > 0 ? noOfBoxes * unit : 0;
     const totalWeightCalc =
       boxWeight !== null && boxWeight > 0 && noOfBoxes > 0
         ? parseFloat((noOfBoxes * boxWeight).toFixed(3))
@@ -1342,7 +1443,6 @@ exports.createFromPlan = async (req, res) => {
       warnings.push(`Weight missing for ${plainBottleName}`);
     }
 
-    // Find or create sheet for (companyId, dispatchDate)
     const companyId = planRow.companyId;
     const dispatchDate = planRow.planDate;
 
@@ -1368,41 +1468,70 @@ exports.createFromPlan = async (req, res) => {
       await sheet.save();
     }
 
-    // Find or create group for plain bottle
-    let group = sheet.groups.find(
-      (g) => g.plainBottleName.trim().toLowerCase() === plainBottleName.toLowerCase()
-    );
+    // Check if a line already exists for this sourcePlanId in this sheet
+    let existingLine = null;
+    let targetGroup = null;
 
-    if (!group) {
-      sheet.groups.push({
-        _id: new mongoose.Types.ObjectId(),
-        plainBottleName,
-        bottleSpecId: null,
-        unit: unit > 0 ? unit : 0,
-        variantLines: [],
-      });
-      group = sheet.groups[sheet.groups.length - 1];
-    } else if (unit > 0 && (!group.unit || group.unit === 0)) {
-      group.unit = unit;
+    for (const grp of sheet.groups) {
+      for (const line of grp.variantLines) {
+        if (line.sourcePlanId?.toString() === planId.toString() && line.sourcePlanType === source && !line.isDeleted) {
+          existingLine = line;
+          targetGroup = grp;
+          break;
+        }
+      }
+      if (existingLine) break;
     }
 
-    // Create line with explicit _id
-    const variantLineId = new mongoose.Types.ObjectId();
-    const newLine = {
-      _id: variantLineId,
-      sourcePlanType: source,
-      sourcePlanId: planRow._id,
-      variantId: variantId,
-      brandId: brandId,
-      brandName: brandName,
-      description: variantDescription,
-      noOfBoxes: noOfBoxes,
-      producedQty: producedQtyCalc,
-      weight: boxWeight,
-      totalWeight: totalWeightCalc,
-    };
+    let variantLineId = null;
+    let isExisting = false;
 
-    group.variantLines.push(newLine);
+    if (existingLine && source === "lacquer") {
+      // Add to existing line
+      existingLine.noOfBoxes = (existingLine.noOfBoxes || 0) + noOfBoxes;
+      existingLine.producedQty = (existingLine.producedQty || 0) + producedQtyCalc;
+      existingLine.totalWeight =
+        boxWeight !== null && boxWeight > 0 && existingLine.noOfBoxes > 0
+          ? parseFloat((existingLine.noOfBoxes * boxWeight).toFixed(3))
+          : null;
+      variantLineId = existingLine._id;
+      isExisting = true;
+    } else {
+      // Find or create group for plain bottle
+      let group = sheet.groups.find(
+        (g) => g.plainBottleName.trim().toLowerCase() === plainBottleName.toLowerCase()
+      );
+
+      if (!group) {
+        sheet.groups.push({
+          _id: new mongoose.Types.ObjectId(),
+          plainBottleName,
+          bottleSpecId: null,
+          unit: unit > 0 ? unit : 0,
+          variantLines: [],
+        });
+        group = sheet.groups[sheet.groups.length - 1];
+      } else if (unit > 0 && (!group.unit || group.unit === 0)) {
+        group.unit = unit;
+      }
+
+      variantLineId = new mongoose.Types.ObjectId();
+      const newLine = {
+        _id: variantLineId,
+        sourcePlanType: source,
+        sourcePlanId: planRow._id,
+        variantId: variantId,
+        brandId: brandId,
+        brandName: brandName,
+        description: variantDescription,
+        noOfBoxes: noOfBoxes,
+        producedQty: producedQtyCalc,
+        weight: boxWeight,
+        totalWeight: totalWeightCalc,
+      };
+
+      group.variantLines.push(newLine);
+    }
 
     // Recalculate summary
     const { summary } = computeGroupsAndSummary(sheet.groups);
@@ -1411,17 +1540,24 @@ exports.createFromPlan = async (req, res) => {
     await sheet.save();
 
     // Update plan row mark
-    await Model.findByIdAndUpdate(planId, {
+    const updateFields = {
       readyToDispatch: {
         sheetId: sheet._id,
         lineId: variantLineId,
         sentAt: new Date(),
       },
-    });
+    };
+    if (source === "lacquer") {
+      updateFields.sentToReadyQty = alreadySent + sendQty;
+    }
+
+    await Model.findByIdAndUpdate(planId, updateFields);
 
     res.json({
       success: true,
-      message: "Row sent to Ready To Dispatch successfully",
+      message: isExisting
+        ? "Quantity added to Ready To Dispatch successfully"
+        : "Row sent to Ready To Dispatch successfully",
       data: {
         sheetId: sheet._id,
         lineId: variantLineId,
@@ -1429,6 +1565,8 @@ exports.createFromPlan = async (req, res) => {
         bottleName: plainBottleName,
         variantName: variantDescription,
         brandName: brandName || "N/A",
+        sentQty: source === "lacquer" ? sendQty : producedQtyCalc,
+        totalSentQty: source === "lacquer" ? (alreadySent + sendQty) : producedQtyCalc,
         warnings: warnings.length > 0 ? warnings : undefined,
       },
     });
@@ -1437,5 +1575,186 @@ exports.createFromPlan = async (req, res) => {
     res.status(500).json({ success: false, message: err.message });
   } finally {
     inFlightPlanSends.delete(lockKey);
+  }
+};
+
+// Sync lacquer plan to Ready To Dispatch (auto-send on completed & update on coated changes)
+exports.syncLacquerPlanReadyToDispatch = async (planDocOrId) => {
+  try {
+    const planId = (typeof planDocOrId === 'object' && planDocOrId?._id) ? planDocOrId._id : planDocOrId;
+    if (!planId) return;
+    const plan = await LacquerPlan.findById(planId).populate('brandId').populate('variantId');
+    if (!plan || plan.isDeleted) return;
+
+    const process = (plan.process || '').trim().toUpperCase();
+    if (process !== 'C') return;
+
+    const orderQty = Number(plan.orderQty || 0);
+    const coated = Number(plan.coatingCompletedQty ?? plan.coatedQty ?? 0);
+    const isCompleted = orderQty > 0 && coated >= orderQty;
+    const currentSent = Number(plan.sentToReadyQty || 0);
+
+    // If completed and sendable balance remains, auto-send
+    if (isCompleted && coated > currentSent) {
+      const diffToSend = coated - currentSent;
+
+      const plainBottleName = (plan.plainBottle || plan.plainBottleName || plan.bottleName || "").trim().replace(/\s+/g, " ");
+      let brandId = plan.brandId?._id || plan.brandId || null;
+      let brandName = plan.brandName || plan.brandId?.name || null;
+      if (!brandName && brandId) {
+        const bDoc = await Brand.findById(brandId).lean();
+        if (bDoc) brandName = bDoc.name;
+      }
+
+      let variantId = null;
+      let vName = "";
+      let textColor = "";
+      let variantDoc = plan.variantId;
+      if (variantDoc && typeof variantDoc === "object" && variantDoc._id) {
+        variantId = variantDoc._id;
+      } else if (variantDoc && mongoose.isValidObjectId(variantDoc)) {
+        variantId = variantDoc;
+        variantDoc = await Variant.findById(variantDoc).lean();
+      }
+      vName = plan.variantName || (variantDoc ? (variantDoc.variantName || variantDoc.name) : "") || "";
+      textColor = variantDoc && variantDoc.detectedTextColor && variantDoc.detectedTextColor !== "Not Detected" ? variantDoc.detectedTextColor : "";
+      const shade = plan.coatingShade || plan.colour || "";
+      const descParts = [shade, vName, textColor].map((s) => String(s || "").trim()).filter(Boolean);
+      let variantDescription = descParts.join(" - ") || shade;
+
+      const bottleMaster = await getBottlePerBoxData(plainBottleName);
+      const unit = bottleMaster.unit || 0;
+      const boxWeight = bottleMaster.weight;
+
+      const addedBoxes = unit > 0 ? Math.ceil(diffToSend / unit) : (Number(plan.noOfBoxes) || 0);
+      const addedProduced = unit > 0 ? addedBoxes * unit : diffToSend;
+      const addedWeight = (boxWeight !== null && boxWeight > 0 && addedBoxes > 0) ? parseFloat((addedBoxes * boxWeight).toFixed(3)) : null;
+
+      const companyId = plan.companyId;
+      const dispatchDate = plan.planDate;
+
+      let sheet = await ReadyToDispatch.findOne({ companyId, dispatchDate, isDeleted: false });
+      if (!sheet) {
+        const company = await Company.findById(companyId);
+        const defaultTitle = `${company?.shortName || company?.name || "TPP"} - ready to dispatch material`;
+        sheet = new ReadyToDispatch({
+          companyId,
+          dispatchDate,
+          sheetTitle: defaultTitle,
+          remarks: "",
+          groups: [],
+          summary: { totalBoxes: 0, totalProducedQty: 0, totalWeight: null },
+        });
+        await sheet.save();
+      }
+
+      let existingLine = null;
+      for (const grp of sheet.groups) {
+        for (const line of grp.variantLines) {
+          if (line.sourcePlanId?.toString() === plan._id.toString() && line.sourcePlanType === 'lacquer' && !line.isDeleted) {
+            existingLine = line;
+            break;
+          }
+        }
+        if (existingLine) break;
+      }
+
+      let variantLineId = null;
+      if (existingLine) {
+        existingLine.noOfBoxes = (existingLine.noOfBoxes || 0) + addedBoxes;
+        existingLine.producedQty = (existingLine.producedQty || 0) + addedProduced;
+        existingLine.totalWeight = (boxWeight !== null && boxWeight > 0 && existingLine.noOfBoxes > 0)
+          ? parseFloat((existingLine.noOfBoxes * boxWeight).toFixed(3))
+          : null;
+        variantLineId = existingLine._id;
+      } else {
+        let group = sheet.groups.find(
+          (g) => g.plainBottleName.trim().toLowerCase() === plainBottleName.toLowerCase()
+        );
+        if (!group) {
+          sheet.groups.push({
+            _id: new mongoose.Types.ObjectId(),
+            plainBottleName,
+            bottleSpecId: null,
+            unit: unit > 0 ? unit : 0,
+            variantLines: [],
+          });
+          group = sheet.groups[sheet.groups.length - 1];
+        } else if (unit > 0 && (!group.unit || group.unit === 0)) {
+          group.unit = unit;
+        }
+
+        variantLineId = new mongoose.Types.ObjectId();
+        group.variantLines.push({
+          _id: variantLineId,
+          sourcePlanType: 'lacquer',
+          sourcePlanId: plan._id,
+          variantId,
+          brandId,
+          brandName,
+          description: variantDescription,
+          noOfBoxes: addedBoxes,
+          producedQty: addedProduced,
+          weight: boxWeight,
+          totalWeight: addedWeight,
+        });
+      }
+
+      const { summary } = computeGroupsAndSummary(sheet.groups);
+      sheet.summary = summary;
+      await sheet.save();
+
+      await LacquerPlan.findByIdAndUpdate(plan._id, {
+        sentToReadyQty: currentSent + diffToSend,
+        readyToDispatch: {
+          sheetId: sheet._id,
+          lineId: variantLineId,
+          sentAt: new Date(),
+        },
+      });
+    } else if (currentSent > coated) {
+      // Coated was lowered below what was sent
+      const diffToReduce = currentSent - coated;
+
+      if (plan.readyToDispatch?.sheetId) {
+        const sheet = await ReadyToDispatch.findOne({ _id: plan.readyToDispatch.sheetId, isDeleted: false });
+        if (sheet) {
+          let foundLine = null;
+          for (const grp of sheet.groups) {
+            for (const line of grp.variantLines) {
+              if (line.sourcePlanId?.toString() === plan._id.toString() && line.sourcePlanType === 'lacquer' && !line.isDeleted) {
+                foundLine = line;
+                break;
+              }
+            }
+            if (foundLine) break;
+          }
+
+          if (foundLine) {
+            const plainBottleName = (plan.plainBottle || plan.plainBottleName || plan.bottleName || "").trim().replace(/\s+/g, " ");
+            const bottleMaster = await getBottlePerBoxData(plainBottleName);
+            const unit = bottleMaster.unit || 0;
+            const boxWeight = bottleMaster.weight;
+
+            const reductionQty = Math.min(foundLine.producedQty, diffToReduce);
+            foundLine.producedQty = Math.max(0, foundLine.producedQty - reductionQty);
+            foundLine.noOfBoxes = unit > 0 ? Math.ceil(foundLine.producedQty / unit) : 0;
+            foundLine.totalWeight = (boxWeight !== null && boxWeight > 0 && foundLine.noOfBoxes > 0)
+              ? parseFloat((foundLine.noOfBoxes * boxWeight).toFixed(3))
+              : null;
+
+            const { summary } = computeGroupsAndSummary(sheet.groups);
+            sheet.summary = summary;
+            await sheet.save();
+          }
+        }
+      }
+
+      await LacquerPlan.findByIdAndUpdate(plan._id, {
+        sentToReadyQty: Math.max(0, coated),
+      });
+    }
+  } catch (err) {
+    console.error("Error in syncLacquerPlanReadyToDispatch:", err);
   }
 };

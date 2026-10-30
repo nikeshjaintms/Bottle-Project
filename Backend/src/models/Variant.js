@@ -16,6 +16,12 @@ const variantSchema = new mongoose.Schema({
     type: String
   },
 
+  materialCode: {
+    type: String,
+    trim: true,
+    default: ''
+  },
+
   coatingShade: {
     type: String,
     trim: true

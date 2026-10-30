@@ -1,21 +1,52 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Swal from 'sweetalert2';
 import api from '../../services/api';
 import Select from 'react-select';
-import { fetchCompanies } from '../../redux/slices/companySlice';
+import CreatableSelect from 'react-select/creatable';
 import { useSelector, useDispatch } from 'react-redux';
-import { fetchItemTypes } from '../../redux/slices/itemTypeSlice';
-import { fetchBottlePerBoxes } from '../../redux/slices/bottlePerBoxSlice';
+import { fetchItemTypes, updateItemType } from '../../redux/slices/itemTypeSlice';
 import { parseShrenoChallan } from '../../redux/slices/visionSlice';
+import { fetchIncomingPlainBottleOptions } from '../../redux/slices/incomingSlice';
+import { PO_REQUIRED_COMPANY } from '../../config/incomingConfig';
+
+// Simple debounce utility
+const debounce = (fn, wait) => {
+  let timeout;
+  const debounced = (...args) => {
+    clearTimeout(timeout);
+    timeout = setTimeout(() => fn(...args), wait);
+  };
+  debounced.cancel = () => clearTimeout(timeout);
+  return debounced;
+};
+
+const normalizeBottleName = (value) => String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
+
+const getCleanScannedBottleName = (value) => String(value || '')
+  .trim()
+  .replace(/\s+/g, ' ')
+  .replace(/^of\b\s*/i, '')
+  .replace(/\bPkgs\s+Glass\s+Bottles\b/gi, '')
+  .replace(/\bGlass\s+Bottles\b/gi, '')
+  .replace(/\s+/g, ' ')
+  .trim()
+  .replace(/(\d)([a-z])/gi, '$1 $2')
+  .toUpperCase();
+
+const escapeHtml = (value) => String(value || '')
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;')
+  .replace(/'/g, '&#39;');
 
 export default function AddShrenoIncoming() {
   const navigate = useNavigate();
   const dispatch = useDispatch();
   const { itemTypes } = useSelector(state => state.itemTypes);
   const { loading: visionLoading } = useSelector(state => state.vision);
-  const { items: bottlePerBoxes } = useSelector(state => state.bottlePerBox);
-  const { companies } = useSelector(state => state.companies || { companies: [] });
+  const { plainBottleOptionsByCompany } = useSelector(state => state.incoming);
 
   const [formData, setFormData] = useState({
     date: new Date().toISOString().split('T')[0],
@@ -29,36 +60,139 @@ export default function AddShrenoIncoming() {
       plainBottle: '', 
       itemType: '', 
       configuration: '', 
-      quantity: '',
-      sharedGroupId: 'grp_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5)
+      quantity: ''
     }
   ]);
+  const itemsRef = useRef(items);
+  const nextScanRowId = useRef(0);
+  const shownWarningKeys = useRef(new Set());
+  useEffect(() => {
+    itemsRef.current = items;
+  }, [items]);
+  
+  const [otherBottles, setOtherBottles] = useState([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [createErrors, setCreateErrors] = useState({});
+  const [newBottlesToCreate, setNewBottlesToCreate] = useState({});
   const [imageFiles, setImageFiles] = useState([]);
   const [scannedImageFiles, setScannedImageFiles] = useState([]);
   const [cameraSource, setCameraSource] = useState(null);
   const [mode, setMode] = useState('manual');
   const [loading, setLoading] = useState(false);
+  const [plainBottleDialog, setPlainBottleDialog] = useState(null);
+  const [plainBottleDialogTab, setPlainBottleDialogTab] = useState('create');
+  const [plainBottleName, setPlainBottleName] = useState('');
+  const [plainBottlePerBox, setPlainBottlePerBox] = useState('');
+  const [plainBottleSelection, setPlainBottleSelection] = useState(null);
+  const [plainBottleDialogError, setPlainBottleDialogError] = useState('');
+  const [savingPlainBottle, setSavingPlainBottle] = useState(false);
 
   useEffect(() => {
-    dispatch(fetchCompanies({ pagination: "false" }));
-    dispatch(fetchBottlePerBoxes({ pagination: "false" }));
     dispatch(fetchItemTypes({ page: 1, limit: 1000 }));
+    dispatch(fetchIncomingPlainBottleOptions(PO_REQUIRED_COMPANY.id));
   }, [dispatch]);
 
-  const plainBottleOptions = useMemo(() => {
-    if (!bottlePerBoxes || bottlePerBoxes.length === 0) return [];
-    
-    // Show all bottles since SHRENO module is already company-scoped
-    const unique = new Map();
-    bottlePerBoxes.forEach(b => {
-      const id = b._id;
-      const name = (b.plainBottleName || b.bottleName || '').trim();
-      if (name && !unique.has(id)) {
-        unique.set(id, { value: id, label: name });
+  // Cleanup state on mount (reset search results)
+  useEffect(() => {
+    setOtherBottles([]);
+    setSearchLoading(false);
+    setCreateErrors({});
+    setNewBottlesToCreate({});
+  }, []);
+
+  const companyBottleOptions = plainBottleOptionsByCompany[PO_REQUIRED_COMPANY.id] || {};
+  const plainBottleOptions = companyBottleOptions.options || [];
+
+  // Debounced global bottle search
+  const debouncedSearch = useMemo(() => {
+    const fn = async (inputValue) => {
+      if (!inputValue || inputValue.trim().length < 2) {
+        setOtherBottles([]);
+        return;
       }
-    });
-    return Array.from(unique.values()).sort((a, b) => a.label.localeCompare(b.label));
-  }, [bottlePerBoxes]);
+      setSearchLoading(true);
+      try {
+        const url = `/api/bottle-per-box/search?q=${encodeURIComponent(inputValue)}&limit=10`;
+        const res = await fetch(url);
+        
+        if (!res.ok) {
+          setOtherBottles([]);
+          return;
+        }
+        
+        const data = await res.json();
+        const items = data.data || data.items || (Array.isArray(data) ? data : []);
+        if (!Array.isArray(items)) {
+          setOtherBottles([]);
+          return;
+        }
+        
+        const companyBottleValues = new Set(plainBottleOptions.map(b => (b.plainBottleName || b.value || '').toLowerCase()));
+        const otherBottlesList = (items || []).filter(item => {
+          const itemName = (item.plainBottleName || item.bottleName || item.name || '').toLowerCase();
+          return !companyBottleValues.has(itemName);
+        }).map(item => ({
+          value: item.plainBottleName || item.bottleName || item.name,
+          label: item.plainBottleName || item.bottleName || item.name,
+          plainBottleName: item.plainBottleName || item.bottleName || item.name,
+          isOtherBottle: true,
+          bottlePerBoxData: item
+        }));
+        
+        setOtherBottles(otherBottlesList);
+      } catch (err) {
+        setOtherBottles([]);
+      } finally {
+        setSearchLoading(false);
+      }
+    };
+    const debounced = debounce(fn, 300);
+    return debounced;
+  }, [plainBottleOptions]);
+
+  const handleInputChangeBottle = (inputValue) => {
+    if (!inputValue || inputValue.trim().length < 2) {
+      setOtherBottles([]);
+      if (debouncedSearch.cancel) {
+        debouncedSearch.cancel();
+      }
+    } else {
+      const companyMatches = plainBottleOptions.filter(opt => 
+        (opt.label || '').toLowerCase().includes(inputValue.toLowerCase())
+      );
+      
+      if (companyMatches.length > 0) {
+        setOtherBottles([]);
+        if (debouncedSearch.cancel) {
+          debouncedSearch.cancel();
+        }
+      } else {
+        debouncedSearch(inputValue);
+      }
+    }
+  };
+
+  // Memoize combined + deduplicated bottle options
+  const optionsList = useMemo(() => {
+    const combined = [...plainBottleOptions, ...otherBottles];
+    const seen = new Set();
+    return combined
+      .filter(opt => {
+        if (seen.has(opt.value)) return false;
+        seen.add(opt.value);
+        return true;
+      })
+      .sort((a, b) => {
+        if (a.isOtherBottle !== b.isOtherBottle) {
+          return a.isOtherBottle ? 1 : -1;
+        }
+        return (a.label || '').localeCompare(b.label || '', undefined, { numeric: true, sensitivity: 'base' });
+      });
+  }, [plainBottleOptions, otherBottles]);
+  const optionsListRef = useRef(optionsList);
+  useEffect(() => {
+    optionsListRef.current = optionsList;
+  }, [optionsList]);
 
   // Group items by plainBottle to show "add item type" button
   const itemsByBottle = useMemo(() => {
@@ -74,13 +208,309 @@ export default function AddShrenoIncoming() {
     return grouped;
   }, [items]);
 
+  // Get configuration options for a selected itemType
+  const getConfigurationOptions = (selectedItemTypeId) => {
+    if (!selectedItemTypeId || !itemTypes) return [];
+    const itemType = itemTypes.find(it => it._id === selectedItemTypeId);
+    if (!itemType || !itemType.options) return [];
+    return itemType.options.map(opt => ({ value: opt, label: opt }));
+  };
+
+  const setPlainBottleQueueStep = (rowIds, position, availableOptions = optionsListRef.current) => {
+    let nextPosition = position;
+    let nextItem;
+    while (nextPosition < rowIds.length) {
+      nextItem = itemsRef.current.find((item) => item.scanRowId === rowIds[nextPosition]);
+      if (nextItem && !nextItem.plainBottle) break;
+      nextPosition += 1;
+    }
+
+    if (nextPosition >= rowIds.length || !nextItem) {
+      setPlainBottleDialog(null);
+      setPlainBottleDialogError('');
+      return;
+    }
+
+    const index = itemsRef.current.findIndex((item) => item.scanRowId === rowIds[nextPosition]);
+    const scannedText = nextItem.scanBottleText || nextItem.bottleHint || '';
+    const cleanedName = getCleanScannedBottleName(scannedText);
+    const matchingOption = availableOptions.find(
+      (option) => normalizeBottleName(option.label) === normalizeBottleName(cleanedName)
+    );
+    setPlainBottleDialog({ rowIds, position: nextPosition, index, scannedText });
+    setPlainBottleDialogTab('create');
+    setPlainBottleName(cleanedName);
+    setPlainBottlePerBox(
+      Number.isInteger(Number(nextItem.scanBottlePerBox)) && Number(nextItem.scanBottlePerBox) > 0
+        ? String(nextItem.scanBottlePerBox)
+        : ''
+    );
+    setPlainBottleSelection(matchingOption || null);
+    setPlainBottleDialogError('');
+  };
+
+  const openPlainBottleQueue = (rows, availableOptions = optionsListRef.current) => {
+    const rowIds = rows.map(({ item }) => item.scanRowId).filter(Boolean);
+    if (!rowIds.length) return;
+    setPlainBottleQueueStep(rowIds, 0, availableOptions);
+  };
+
+  const showPlainBottleWarning = (rows, deliveryNumberMissing = false) => {
+    const rowIds = rows.map(({ item }) => item.scanRowId).filter(Boolean).sort();
+    const warningKey = `${PO_REQUIRED_COMPANY.id}:${rowIds.join(',')}`;
+    if (!rowIds.length || shownWarningKeys.current.has(warningKey)) return;
+    shownWarningKeys.current.add(warningKey);
+
+    const visibleRows = rows.slice(0, 5);
+    const rowList = visibleRows.map(({ item, index }) =>
+      `<li>Row ${index + 1}: ${escapeHtml(item.scanBottleText || item.bottleHint)}</li>`
+    ).join('');
+    const remaining = rows.length > 5
+      ? `<li>and ${rows.length - 5} more</li>`
+      : '';
+    const deliveryWarning = deliveryNumberMissing
+      ? '<p class="text-danger small mt-3 mb-0">Could not detect a valid Challan or Delivery Number.</p>'
+      : '';
+
+    Swal.fire({
+      icon: 'warning',
+      title: 'Plain bottle not available',
+      html: `<div class="text-start"><p>These bottles are not available for ${escapeHtml(PO_REQUIRED_COMPANY.name)}:</p><ul class="mb-0">${rowList}${remaining}</ul>${deliveryWarning}</div>`,
+      showDenyButton: true,
+      confirmButtonText: 'Okay',
+      denyButtonText: 'Add',
+      allowEscapeKey: true,
+      allowOutsideClick: true,
+      reverseButtons: true,
+      customClass: { popup: 'incoming-bottle-warning-popup' },
+    }).then((result) => {
+      if (result.isDenied) openPlainBottleQueue(rows);
+    });
+  };
+
+  const advancePlainBottleQueue = (position = (plainBottleDialog?.position || 0) + 1, availableOptions) => {
+    if (!plainBottleDialog) return;
+    setPlainBottleQueueStep(plainBottleDialog.rowIds, position, availableOptions);
+  };
+
+  const closePlainBottleDialog = () => {
+    if (savingPlainBottle) return;
+    setPlainBottleDialog(null);
+    setPlainBottleDialogError('');
+  };
+
+  const applyBottleToScannedRow = (bottle, rowIndex, fallbackName) => {
+    const bottleId = String(bottle._id || bottle.id || '');
+    const bottleLabel = bottle.plainBottleName || bottle.bottleName || bottle.name || fallbackName || '';
+    const bottleOption = {
+      value: bottleId,
+      label: bottleLabel,
+      plainBottleName: bottleLabel,
+      bottlePerBoxData: bottle,
+      isOtherBottle: true,
+    };
+    const availableOptions = [
+      ...optionsListRef.current.filter((option) => option.value !== bottleId),
+      bottleOption,
+    ];
+    optionsListRef.current = availableOptions;
+    setOtherBottles((current) => [
+      ...current.filter((option) => option.value !== bottleId),
+      bottleOption,
+    ]);
+
+    const nextItems = itemsRef.current.map((item, index) => index === rowIndex
+      ? {
+          ...item,
+          plainBottle: bottleId,
+          bottleLabel,
+          bottleHint: '',
+          scanUserResolved: true,
+        }
+      : item);
+    itemsRef.current = nextItems;
+    setItems(nextItems);
+    return availableOptions;
+  };
+
+  const handleCreateScannedBottle = async (event) => {
+    event?.preventDefault();
+    if (!plainBottleDialog || savingPlainBottle) return;
+
+    const name = plainBottleName.trim().replace(/\s+/g, ' ');
+    const bottlePerBox = Number(plainBottlePerBox);
+    if (!name) {
+      setPlainBottleDialogError('Plain bottle name is required.');
+      return;
+    }
+    if (!Number.isInteger(bottlePerBox) || bottlePerBox <= 0) {
+      setPlainBottleDialogError('Bottle per box must be a positive whole number.');
+      return;
+    }
+
+    setSavingPlainBottle(true);
+    setPlainBottleDialogError('');
+    try {
+      const response = await api.post('/incoming/create-bottle', {
+        companyId: PO_REQUIRED_COMPANY.id,
+        plainBottleName: name,
+        bottlePerBox,
+      });
+      const bottle = response.data?.data;
+      if (!bottle?._id) throw new Error('Bottle creation did not return a plain bottle record.');
+
+      const availableOptions = applyBottleToScannedRow(
+        bottle,
+        plainBottleDialog.index,
+        name
+      );
+      advancePlainBottleQueue(plainBottleDialog.position + 1, availableOptions);
+    } catch (error) {
+      setPlainBottleDialogError(
+        error.response?.data?.message || error.message || 'Could not create the plain bottle.'
+      );
+    } finally {
+      setSavingPlainBottle(false);
+    }
+  };
+
+  const handleSelectScannedBottle = async () => {
+    if (!plainBottleDialog || !plainBottleSelection || savingPlainBottle) return;
+    setSavingPlainBottle(true);
+    setPlainBottleDialogError('');
+
+    try {
+      let bottle = plainBottleSelection.bottlePerBoxData;
+      if (plainBottleSelection.isOtherBottle || !/^[a-f\d]{24}$/i.test(String(plainBottleSelection.value))) {
+        const response = await api.post('/incoming/create-bottle', {
+          companyId: PO_REQUIRED_COMPANY.id,
+          plainBottleName: plainBottleSelection.label,
+        });
+        bottle = response.data?.data;
+        if (!bottle?._id) throw new Error('Bottle selection did not return a plain bottle record.');
+      } else if (!bottle?._id) {
+        bottle = {
+          _id: plainBottleSelection.value,
+          plainBottleName: plainBottleSelection.label,
+        };
+      }
+
+      const availableOptions = applyBottleToScannedRow(
+        bottle,
+        plainBottleDialog.index,
+        plainBottleSelection.label
+      );
+      advancePlainBottleQueue(plainBottleDialog.position + 1, availableOptions);
+    } catch (error) {
+      setPlainBottleDialogError(
+        error.response?.data?.message || error.message || 'Could not select this plain bottle.'
+      );
+    } finally {
+      setSavingPlainBottle(false);
+    }
+  };
+
   const handleChange = (e) => {
     setFormData({ ...formData, [e.target.name]: e.target.value });
+  };
+
+  // Handle creating new configuration
+  const handleCreateConfiguration = async (inputValue, itemTypeId, index) => {
+    const configName = inputValue.trim();
+    if (!configName || configName.length < 1) {
+      return;
+    }
+
+    try {
+      // Find the ItemType to get current data
+      const itemType = itemTypes.find(it => it._id === itemTypeId);
+      if (!itemType) return;
+
+      // Check if configuration already exists
+      if (itemType.options && itemType.options.includes(configName)) {
+        return;
+      }
+
+      // Update ItemType with new configuration via Redux
+      const updatedOptions = [...(itemType.options || []), configName];
+      const result = await dispatch(updateItemType({
+        id: itemTypeId,
+        data: {
+          name: itemType.name,
+          status: itemType.status,
+          options: updatedOptions
+        }
+      })).unwrap();
+
+      // Show success toast
+      Swal.fire({
+        position: 'top-right',
+        icon: 'success',
+        title: 'Configuration Created',
+        text: `"${configName}" added to ${itemType.name}`,
+        timer: 1500,
+        timerProgressBar: true,
+        showConfirmButton: false,
+        toast: true
+      });
+    } catch (err) {
+      Swal.fire({
+        position: 'top-right',
+        icon: 'error',
+        title: 'Error',
+        text: 'Failed to create configuration',
+        timer: 1500,
+        timerProgressBar: true,
+        showConfirmButton: false,
+        toast: true
+      });
+    }
+  };
+
+  // Handle CreatableSelect "Create" option - store bottle name, don't create yet
+  const handleCreateBottle = (inputValue, index) => {
+    const bottleName = inputValue.trim();
+    if (!bottleName || bottleName.length < 2) {
+      setCreateErrors(prev => ({
+        ...prev,
+        [index]: 'Bottle name must be at least 2 characters'
+      }));
+      return;
+    }
+
+    // Show toast notification for bottle creation
+    Swal.fire({
+      position: 'top-right',
+      icon: 'info',
+      title: 'Plain Bottle Created',
+      text: `"${bottleName}" created successfully`,
+      timer: 2000,
+      timerProgressBar: true,
+      showConfirmButton: false,
+      toast: true
+    });
+
+    // Store the bottle name to create later on submit
+    setNewBottlesToCreate(prev => ({
+      ...prev,
+      [index]: bottleName
+    }));
+
+    // Set plainBottle to the bottle name
+    handleItemChange(index, 'plainBottle', bottleName);
+    
+    // Clear any previous error for this item
+    setCreateErrors(prev => {
+      const updated = { ...prev };
+      delete updated[index];
+      return updated;
+    });
   };
 
   const handleItemChange = (index, field, value) => {
     const newItems = [...items];
     newItems[index][field] = value;
+    if (field === 'plainBottle') newItems[index].bottleHint = '';
     setItems(newItems);
   };
 
@@ -89,19 +519,7 @@ export default function AddShrenoIncoming() {
       plainBottle: '', 
       itemType: '', 
       configuration: '', 
-      quantity: '',
-      sharedGroupId: 'grp_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5)
-    }]);
-  };
-
-  // Add another item type for the same bottle (copy bottle selection)
-  const addItemTypeForBottle = (bottleId, sharedGroupId) => {
-    setItems([...items, { 
-      plainBottle: bottleId, 
-      itemType: '', 
-      configuration: '', 
-      quantity: '',
-      sharedGroupId: sharedGroupId
+      quantity: ''
     }]);
   };
 
@@ -129,15 +547,33 @@ export default function AddShrenoIncoming() {
       data.append('challanNo', formData.challanNo);
       data.append('poNo', formData.poNo);
       data.append('poDate', formData.poDate);
-      data.append('items', JSON.stringify(items));
+      data.append('items', JSON.stringify(items.map((item) => {
+        const savedItem = { ...item };
+        delete savedItem.bottleHint;
+        delete savedItem.bottleLabel;
+        delete savedItem.scanModeRow;
+        delete savedItem.scanBottleText;
+        delete savedItem.scanBottlePerBox;
+        delete savedItem.scanUserResolved;
+        delete savedItem.scanRowId;
+        return savedItem;
+      })));
       imageFiles.forEach(file => {
         data.append('images', file);
       });
 
       const res = await api.post('/shreno-incoming', data);
       if (res.data.success) {
-        Swal.fire('Success', 'Shreno incoming added successfully', 'success');
-        navigate('/shreno-incoming');
+        // Show success SweetAlert modal (centered, not toast)
+        Swal.fire({
+          position: 'center',
+          icon: 'success',
+          title: 'Success!',
+          text: 'Shreno incoming added successfully',
+          confirmButtonText: 'OK'
+        }).then(() => {
+          navigate('/shreno-incoming');
+        });
       }
     } catch (err) {
       Swal.fire('Error', err.response?.data?.message || 'Server error', 'error');
@@ -165,12 +601,29 @@ export default function AddShrenoIncoming() {
         poDate: res.poDate || ''
       }));
 
+      const { options: allowedBottleOptions } = await dispatch(
+        fetchIncomingPlainBottleOptions(PO_REQUIRED_COMPANY.id)
+      ).unwrap();
+      const allowedBottleIds = new Set(allowedBottleOptions.map(option => option.value));
       const itemsToSet = (res.items || []).map(item => {
-        // The API returns a bottleId (BottlePerBox), use it directly
         const bottlePerBoxId = item.bottleId?._id || item.bottleId;
+        const bottleId = allowedBottleIds.has(String(bottlePerBoxId || '')) ? String(bottlePerBoxId) : '';
+        const bottleOption = allowedBottleOptions.find((option) => option.value === bottleId);
+        const scannedText = item.bottleName ||
+          item.suggestedName ||
+          item.bottleId?.plainBottleName ||
+          item.bottleId?.bottleName ||
+          '';
         
         return {
-          plainBottle: bottlePerBoxId || '',
+          plainBottle: bottleId,
+          bottleLabel: bottleOption?.label || '',
+          bottleHint: bottleId ? '' : scannedText,
+          scanModeRow: true,
+          scanBottleText: scannedText,
+          scanBottlePerBox: item.qty || item.bottlePerBox || '',
+          scanUserResolved: false,
+          scanRowId: `shreno-scan-${++nextScanRowId.current}`,
           itemType: item.itemType || '',
           configuration: item.configuration || '',
           quantity: item.totalQty || item.qty || '',
@@ -180,8 +633,15 @@ export default function AddShrenoIncoming() {
 
       if (res.unmatchedItems && res.unmatchedItems.length > 0) {
         res.unmatchedItems.forEach(uItem => {
+          const scannedText = uItem.suggestedName || uItem.bottleName || '';
           itemsToSet.push({
             plainBottle: '',
+            bottleHint: scannedText,
+            scanModeRow: true,
+            scanBottleText: scannedText,
+            scanBottlePerBox: uItem.qty || '',
+            scanUserResolved: false,
+            scanRowId: `shreno-scan-${++nextScanRowId.current}`,
             itemType: uItem.itemType || '',
             configuration: uItem.configuration || '',
             quantity: uItem.totalQty || uItem.qty || '',
@@ -190,23 +650,22 @@ export default function AddShrenoIncoming() {
         });
       }
 
-      let warningText = '';
-      if (!res.deliveryNumber) {
-        warningText += `<br/><br/><b style='color:#e63946;'>Warning:</b> Could not detect a valid Challan or Delivery Number.`;
-      }
-      if (res.unmatchedItems && res.unmatchedItems.length > 0) {
-        const unmatchedNames = res.unmatchedItems.map(i => i.suggestedName).join(', ');
-        warningText += `<br/><br/><b style='color:#e63946;'>Warning:</b> Found ${res.unmatchedItems.length} item(s) that do not match: ${unmatchedNames}.`;
-      }
-
       if (itemsToSet.length > 0) {
+        itemsRef.current = itemsToSet;
         setItems(itemsToSet);
-        Swal.fire({
-          icon: (res.unmatchedItems && res.unmatchedItems.length > 0) ? 'warning' : 'success',
-          title: 'Challan Parsed',
-          html: `Found Challan No: <b>${res.deliveryNumber || 'N/A'}</b>.<br/>Matched ${res.items?.length || 0} items! ${warningText}`,
-        });
         setMode('manual');
+        const unmatchedRows = itemsToSet
+          .map((item, index) => ({ item, index }))
+          .filter(({ item }) => item.scanModeRow && !item.plainBottle && item.scanBottleText);
+        if (unmatchedRows.length) {
+          showPlainBottleWarning(unmatchedRows, !res.deliveryNumber);
+        } else {
+          Swal.fire({
+            icon: res.deliveryNumber ? 'success' : 'warning',
+            title: 'Challan Parsed',
+            html: `Found Challan No: <b>${escapeHtml(res.deliveryNumber || 'N/A')}</b>.<br/>Matched ${res.items?.length || 0} items!${res.deliveryNumber ? '' : '<br/><br/><b style="color:#e63946;">Warning:</b> Could not detect a valid Challan or Delivery Number.'}`,
+          });
+        }
       } else {
         Swal.fire('Warning', 'No items could be detected from this challan.', 'warning').then(() => setMode('manual'));
       }
@@ -234,11 +693,29 @@ export default function AddShrenoIncoming() {
     try {
       const res = await dispatch(parseShrenoChallan(files)).unwrap();
       
+      const { options: allowedBottleOptions } = await dispatch(
+        fetchIncomingPlainBottleOptions(PO_REQUIRED_COMPANY.id)
+      ).unwrap();
+      const allowedBottleIds = new Set(allowedBottleOptions.map(option => option.value));
       const newItemsToAppend = (res.items || []).map(item => {
         const bottlePerBoxId = item.bottleId?._id || item.bottleId;
+        const bottleId = allowedBottleIds.has(String(bottlePerBoxId || '')) ? String(bottlePerBoxId) : '';
+        const bottleOption = allowedBottleOptions.find((option) => option.value === bottleId);
+        const scannedText = item.bottleName ||
+          item.suggestedName ||
+          item.bottleId?.plainBottleName ||
+          item.bottleId?.bottleName ||
+          '';
         
         return {
-          plainBottle: bottlePerBoxId || '',
+          plainBottle: bottleId,
+          bottleLabel: bottleOption?.label || '',
+          bottleHint: bottleId ? '' : scannedText,
+          scanModeRow: true,
+          scanBottleText: scannedText,
+          scanBottlePerBox: item.qty || item.bottlePerBox || '',
+          scanUserResolved: false,
+          scanRowId: `shreno-scan-${++nextScanRowId.current}`,
           itemType: item.itemType || '',
           configuration: item.configuration || '',
           quantity: item.totalQty || item.qty || '',
@@ -248,8 +725,15 @@ export default function AddShrenoIncoming() {
 
       if (res.unmatchedItems && res.unmatchedItems.length > 0) {
         res.unmatchedItems.forEach(uItem => {
+          const scannedText = uItem.suggestedName || uItem.bottleName || '';
           newItemsToAppend.push({
             plainBottle: '',
+            bottleHint: scannedText,
+            scanModeRow: true,
+            scanBottleText: scannedText,
+            scanBottlePerBox: uItem.qty || '',
+            scanUserResolved: false,
+            scanRowId: `shreno-scan-${++nextScanRowId.current}`,
             itemType: '',
             configuration: '',
             quantity: uItem.totalQty || uItem.qty || '',
@@ -259,20 +743,33 @@ export default function AddShrenoIncoming() {
       }
 
       if (newItemsToAppend.length > 0) {
-        setItems(prevItems => {
-          // If the only item is a completely empty default row, overwrite it. Otherwise append.
-  if (prevItems.length === 1 && !prevItems[0].plainBottle && !prevItems[0].itemType && !prevItems[0].configuration && !prevItems[0].quantity) {
-            return newItemsToAppend;
-          }
-          return [...prevItems, ...newItemsToAppend];
-        });
-        
-        Swal.fire({
-          icon: 'success',
-          title: 'Document Parsed',
-          text: `Added ${newItemsToAppend.length} new items from the document.`
-        });
+        const existingItems = itemsRef.current;
+        const replaceEmptyRow = existingItems.length === 1 &&
+          !existingItems[0].plainBottle &&
+          !existingItems[0].itemType &&
+          !existingItems[0].configuration &&
+          !existingItems[0].quantity;
+        const nextItems = replaceEmptyRow
+          ? newItemsToAppend
+          : [...existingItems, ...newItemsToAppend];
+        const firstNewIndex = replaceEmptyRow ? 0 : existingItems.length;
+        itemsRef.current = nextItems;
+        setItems(nextItems);
+        Swal.close();
+        const unmatchedRows = newItemsToAppend
+          .map((item, index) => ({ item, index: firstNewIndex + index }))
+          .filter(({ item }) => item.scanModeRow && !item.plainBottle && item.scanBottleText);
+        if (unmatchedRows.length) {
+          showPlainBottleWarning(unmatchedRows);
+        } else {
+          Swal.fire({
+            icon: 'success',
+            title: 'Document Parsed',
+            text: `Added ${newItemsToAppend.length} new items from the document.`
+          });
+        }
       } else {
+        Swal.close();
         Swal.fire('Warning', 'No new items could be detected from this document.', 'warning');
       }
     } catch (error) {
@@ -281,6 +778,7 @@ export default function AddShrenoIncoming() {
   };
 
   return (
+    <>
     <div className="page-content">
       <div className="page-header d-flex align-items-center justify-content-between user-form-page-header">
         <div className="d-flex align-items-center gap-3">
@@ -476,64 +974,171 @@ export default function AddShrenoIncoming() {
               </thead>
               <tbody className="border-top-0">
                 {items.map((item, index) => {
-                  const plainBottleOption = plainBottleOptions.find(opt => opt.value === item.plainBottle);
+                  const plainBottleOption = optionsList.find(opt => opt.value === item.plainBottle) ||
+                    (item.plainBottle && item.bottleLabel
+                      ? { value: item.plainBottle, label: item.bottleLabel }
+                      : null);
+                  const bottleGroupKey = item.plainBottle || (item.scanModeRow ? item.scanRowId : '');
+                  const itemTypeGroupKey = `${bottleGroupKey}:${item.itemType || ''}`;
                   
-                  // Check if this is the first item in its group
-                  const isFirstInGroup = !items.slice(0, index).some(i => i.sharedGroupId === item.sharedGroupId);
+                  // Check if this is the first item in its bottle group (for rowSpan)
+                  const isFirstInBottleGroup = !items.slice(0, index).some(
+                    (previous) => (previous.plainBottle || (previous.scanModeRow ? previous.scanRowId : '')) === bottleGroupKey
+                  );
                   
-                  // Count total items in this group
-                  const itemsInGroup = items.filter(i => i.sharedGroupId === item.sharedGroupId).length;
+                  // Check if this is the first item in its itemType group (for rowSpan)
+                  const isFirstInItemTypeGroup = !items.slice(0, index).some((previous) => {
+                    const previousBottleKey = previous.plainBottle || (previous.scanModeRow ? previous.scanRowId : '');
+                    return `${previousBottleKey}:${previous.itemType || ''}` === itemTypeGroupKey;
+                  });
                   
-                  // Calculate rowSpan for bottle column (only show on first item of group)
-                  let bottleRowSpan = 1;
-                  if (isFirstInGroup && itemsInGroup > 1) {
-                    bottleRowSpan = itemsInGroup;
-                  }
+                  // Count total items in this bottle group
+                  const itemsInBottleGroup = items.filter(
+                    (other) => (other.plainBottle || (other.scanModeRow ? other.scanRowId : '')) === bottleGroupKey
+                  ).length;
+                  
+                  // Count total items in this itemType group (same bottle AND same itemType)
+                  const itemsInItemTypeGroup = items.filter((other) => {
+                    const otherBottleKey = other.plainBottle || (other.scanModeRow ? other.scanRowId : '');
+                    return `${otherBottleKey}:${other.itemType || ''}` === itemTypeGroupKey;
+                  }).length;
+                  
+                  // Calculate rowSpan for bottle column
+                  const bottleRowSpan = isFirstInBottleGroup ? itemsInBottleGroup : 0;
+                  
+                  // Calculate rowSpan for itemType column
+                  const itemTypeRowSpan = isFirstInItemTypeGroup ? itemsInItemTypeGroup : 0;
 
                   return (
                   <tr key={index}>
                     <td className="text-center text-muted">{index + 1}</td>
-                    {isFirstInGroup && (
+                    {isFirstInBottleGroup && (
                       <td rowSpan={bottleRowSpan}>
-                        <Select 
-                          options={plainBottleOptions}
+                        <CreatableSelect 
+                          options={optionsList}
                           value={plainBottleOption || null}
                           onChange={(selected) => {
                             const newBottleId = selected?.value || '';
                             handleItemChange(index, 'plainBottle', newBottleId);
                           }}
-                          placeholder="Select Plain Bottle"
+                          onCreateOption={(inputValue) => handleCreateBottle(inputValue, index)}
+                          placeholder={companyBottleOptions.loading || !companyBottleOptions.loaded
+                            ? 'Loading SHRENO plain bottles...'
+                            : 'Select or Create Plain Bottle'}
                           isClearable
+                          isDisabled={companyBottleOptions.loading || !companyBottleOptions.loaded || Boolean(companyBottleOptions.error)}
                           menuPortalTarget={document.body}
+                          formatCreateLabel={(inputValue) => `Create "${inputValue}"`}
                           styles={{
                             menuPortal: base => ({ ...base, zIndex: 9999 }),
-                            control: (base) => ({ ...base, borderRadius: '8px', backgroundColor: 'var(--bs-light)', borderColor: 'var(--bs-border-color-translucent)', minHeight: '38px' })
+                            control: (base) => ({
+                              ...base,
+                              borderRadius: '8px',
+                              backgroundColor: 'var(--bs-light)',
+                              borderColor: item.scanModeRow && !item.plainBottle
+                                ? '#dc3545'
+                                : 'var(--bs-border-color-translucent)',
+                              boxShadow: item.scanModeRow && !item.plainBottle
+                                ? '0 0 0 1px #dc3545'
+                                : 'none',
+                              minHeight: '38px',
+                            })
                           }}
                         />
+                        {createErrors[index] && (
+                          <small className="text-danger d-block mt-1">{createErrors[index]}</small>
+                        )}
+                        {item.bottleHint && !item.scanModeRow && (
+                          <small className="text-warning-emphasis d-block mt-1">
+                            Scanned bottle: {item.bottleHint}. Choose a plain bottle for SHRENO.
+                          </small>
+                        )}
+                        {companyBottleOptions.error && (
+                          <small className="text-danger d-block mt-1">{companyBottleOptions.error}</small>
+                        )}
+                      </td>
+                    )}
+                    {isFirstInItemTypeGroup && (
+                      <td rowSpan={itemTypeRowSpan}>
+                        <select 
+                          className="form-select shadow-none" 
+                          style={{ borderRadius: 8, backgroundColor: 'var(--bs-light)', borderColor: 'var(--bs-border-color-translucent)' }} 
+                          value={item.itemType} 
+                          onChange={(e) => handleItemChange(index, 'itemType', e.target.value)}
+                        >
+                          <option value="">Select Type</option>
+                          {itemTypes?.map(it => (
+                            <option key={it._id} value={it._id}>{it.name}</option>
+                          ))}
+                        </select>
                       </td>
                     )}
                     <td>
-                      <select 
-                        className="form-select shadow-none" 
-                        style={{ borderRadius: 8, backgroundColor: 'var(--bs-light)', borderColor: 'var(--bs-border-color-translucent)' }} 
-                        value={item.itemType} 
-                        onChange={(e) => handleItemChange(index, 'itemType', e.target.value)}
-                      >
-                        <option value="">Select Type</option>
-                        {itemTypes?.map(it => (
-                          <option key={it._id} value={it._id}>{it.name}</option>
-                        ))}
-                      </select>
-                    </td>
-                    <td>
-                      <input 
-                        type="text" 
-                        className="form-control shadow-none" 
-                        style={{ borderRadius: 8 }} 
-                        placeholder="e.g. 2PC, 64x1" 
-                        value={item.configuration} 
-                        onChange={(e) => handleItemChange(index, 'configuration', e.target.value)} 
-                      />
+                      {(() => {
+                        // Get all configurations for this itemType group
+                        const itemTypeGroupItems = items.filter(i => i.plainBottle === item.plainBottle && i.itemType === item.itemType);
+                        const selectedConfigs = new Set(itemTypeGroupItems.map(gi => gi.configuration).filter(Boolean));
+                        
+                        // Filter out already selected configurations
+                        const availableOptions = getConfigurationOptions(item.itemType).filter(
+                          opt => !selectedConfigs.has(opt.value) || opt.value === item.configuration
+                        );
+                        
+                        return (
+                          <CreatableSelect 
+                            options={availableOptions}
+                            value={item.configuration ? { value: item.configuration, label: item.configuration } : null}
+                            onChange={(selected) => {
+                              if (selected && Array.isArray(selected)) {
+                                // Multiple selections - create rows for each configuration
+                                const newRows = selected.map((config, idx) => ({
+                                  plainBottle: item.plainBottle,
+                                  itemType: item.itemType,
+                                  configuration: config.value,
+                                  quantity: idx === 0 ? item.quantity : '',
+                                }));
+                                // Replace current item and add rest of the new rows
+                                const beforeItems = items.slice(0, index);
+                                const afterItems = items.slice(index + 1);
+                                setItems([...beforeItems, ...newRows, ...afterItems]);
+                              } else if (selected) {
+                                // Single selection
+                                handleItemChange(index, 'configuration', selected.value);
+                              } else {
+                                // Clear selection
+                                handleItemChange(index, 'configuration', '');
+                              }
+                            }}
+                            onCreateOption={(inputValue) => {
+                              handleCreateConfiguration(inputValue, item.itemType, index);
+                              
+                              // Smart placement: if current field is empty, use it
+                              if (!item.configuration) {
+                                handleItemChange(index, 'configuration', inputValue);
+                              } else {
+                                // Find empty field in same itemType group
+                                const itemTypeGroupItems = items.filter(i => i.plainBottle === item.plainBottle && i.itemType === item.itemType);
+                                const emptyFieldIndex = itemTypeGroupItems.findIndex(gi => !gi.configuration);
+                                
+                                if (emptyFieldIndex !== -1) {
+                                  const actualIndex = items.indexOf(itemTypeGroupItems[emptyFieldIndex]);
+                                  handleItemChange(actualIndex, 'configuration', inputValue);
+                                }
+                              }
+                            }}
+                            placeholder={!item.itemType ? 'Select Item Type first' : 'Select or Create Configuration(s)'}
+                            isClearable
+                            isDisabled={!item.itemType}
+                            isMulti
+                            formatCreateLabel={(inputValue) => `Create "${inputValue}"`}
+                            menuPortalTarget={document.body}
+                            styles={{
+                              menuPortal: base => ({ ...base, zIndex: 9999 }),
+                              control: (base) => ({ ...base, borderRadius: '8px', backgroundColor: 'var(--bs-light)', borderColor: 'var(--bs-border-color-translucent)' })
+                            }}
+                          />
+                        );
+                      })()}
                     </td>
                     <td>
                       <input 
@@ -549,12 +1154,19 @@ export default function AddShrenoIncoming() {
                     </td>
                     <td className="text-center">
                       <div className="d-flex gap-1 justify-content-center">
-                        {isFirstInGroup && item.plainBottle && (
+                        {isFirstInItemTypeGroup && item.plainBottle && (
                           <button
                             type="button"
                             className="btn btn-sm btn-outline-info border-0 rounded-3 shadow-none p-2"
                             title="Add another item type for this bottle"
-                            onClick={() => addItemTypeForBottle(item.plainBottle, item.sharedGroupId)}
+                            onClick={() => {
+                              setItems([...items, { 
+                                plainBottle: item.plainBottle, 
+                                itemType: '', 
+                                configuration: '', 
+                                quantity: ''
+                              }]);
+                            }}
                           >
                             <i className="bi bi-plus-lg fs-6"></i>
                           </button>
@@ -571,7 +1183,8 @@ export default function AddShrenoIncoming() {
                       </div>
                     </td>
                   </tr>
-                )})}
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -616,5 +1229,172 @@ export default function AddShrenoIncoming() {
         </div>
       </div>
     </div>
+    {plainBottleDialog && (
+      <div
+        className="position-fixed top-0 start-0 w-100 h-100 d-flex align-items-center justify-content-center p-3"
+        style={{ zIndex: 1060, background: 'rgba(15, 23, 42, 0.55)' }}
+        onMouseDown={(event) => {
+          if (event.target === event.currentTarget) advancePlainBottleQueue();
+        }}
+      >
+        <div
+          className="incoming-scan-bottle-dialog rounded-4 shadow-lg p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="shreno-plain-bottle-dialog-title"
+          onKeyDownCapture={(event) => {
+            if (event.key === 'Escape') {
+              event.preventDefault();
+              advancePlainBottleQueue();
+            }
+          }}
+          style={{ width: '100%', maxWidth: 560, maxHeight: 'calc(100vh - 24px)', overflowY: 'auto' }}
+        >
+          <div className="d-flex align-items-start justify-content-between gap-3 mb-3">
+            <div>
+              <h5 id="shreno-plain-bottle-dialog-title" className="fw-bold mb-1">Resolve scanned plain bottle</h5>
+              <div className="text-primary small fw-semibold mb-2">
+                Row {plainBottleDialog.position + 1} of {plainBottleDialog.rowIds.length}
+              </div>
+              <div className="text-muted small">
+                Original scanned text: <span className="fw-semibold">{plainBottleDialog.scannedText}</span>
+              </div>
+            </div>
+            <button
+              type="button"
+              className="incoming-scan-bottle-close"
+              aria-label="Close"
+              onClick={closePlainBottleDialog}
+              disabled={savingPlainBottle}
+            >
+              <i className="bi bi-x-lg" aria-hidden="true" />
+            </button>
+          </div>
+
+          <div className="btn-group w-100 mb-3" role="tablist" aria-label="Resolve scanned plain bottle">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={plainBottleDialogTab === 'create'}
+              className={`btn incoming-scan-bottle-tab ${plainBottleDialogTab === 'create' ? 'active' : ''}`}
+              onClick={() => { setPlainBottleDialogTab('create'); setPlainBottleDialogError(''); }}
+            >
+              Create new plain bottle
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={plainBottleDialogTab === 'select'}
+              className={`btn incoming-scan-bottle-tab ${plainBottleDialogTab === 'select' ? 'active' : ''}`}
+              onClick={() => { setPlainBottleDialogTab('select'); setPlainBottleDialogError(''); }}
+            >
+              Select a different bottle
+            </button>
+          </div>
+
+          {plainBottleDialogTab === 'create' ? (
+            <form onSubmit={handleCreateScannedBottle}>
+              <div className="mb-3">
+                <label htmlFor="shreno-plain-bottle-name" className="form-label fw-semibold">
+                  Plain Bottle name <span className="text-danger">*</span>
+                </label>
+                <input
+                  autoFocus
+                  id="shreno-plain-bottle-name"
+                  className="form-control incoming-scan-bottle-input"
+                  value={plainBottleName}
+                  onChange={(event) => { setPlainBottleName(event.target.value); setPlainBottleDialogError(''); }}
+                  required
+                />
+              </div>
+              <div className="mb-3">
+                <label htmlFor="shreno-plain-bottle-per-box" className="form-label fw-semibold">
+                  Bottle per Box <span className="text-danger">*</span>
+                </label>
+                <input
+                  id="shreno-plain-bottle-per-box"
+                  type="number"
+                  className="form-control incoming-scan-bottle-input"
+                  value={plainBottlePerBox}
+                  onChange={(event) => { setPlainBottlePerBox(event.target.value); setPlainBottleDialogError(''); }}
+                  min="1"
+                  step="1"
+                  required
+                />
+              </div>
+              {plainBottleDialogError && <div className="alert alert-danger py-2" role="alert">{plainBottleDialogError}</div>}
+              <div className="d-flex flex-wrap justify-content-end gap-2">
+                <button type="button" className="btn incoming-scan-bottle-secondary" onClick={() => advancePlainBottleQueue()} disabled={savingPlainBottle}>
+                  Skip
+                </button>
+                <button type="button" className="btn incoming-scan-bottle-secondary" onClick={closePlainBottleDialog} disabled={savingPlainBottle}>
+                  Close
+                </button>
+                <button type="submit" className="btn incoming-scan-bottle-primary" disabled={savingPlainBottle}>
+                  {savingPlainBottle ? 'Saving...' : 'Create and select'}
+                </button>
+              </div>
+            </form>
+          ) : (
+            <div>
+              <label className="form-label fw-semibold">Plain Bottle name</label>
+              <Select
+                autoFocus
+                options={[
+                  { label: `SHRENO bottles`, options: plainBottleOptions },
+                  ...(otherBottles.length ? [{ label: 'Other bottles', options: otherBottles }] : []),
+                ]}
+                value={plainBottleSelection}
+                onChange={(selection) => { setPlainBottleSelection(selection); setPlainBottleDialogError(''); }}
+                onInputChange={handleInputChangeBottle}
+                isLoading={searchLoading || companyBottleOptions.loading}
+                isSearchable
+                placeholder="Search company bottles or other bottles..."
+                noOptionsMessage={() => searchLoading ? 'Searching...' : 'No bottles found'}
+                menuPortalTarget={document.body}
+                menuPosition="fixed"
+                styles={{
+                  menuPortal: (base) => ({ ...base, zIndex: 1080 }),
+                  menu: (base) => ({ ...base, zIndex: 1080, backgroundColor: 'var(--card-bg)', border: '1px solid var(--card-border)' }),
+                  control: (base, state) => ({
+                    ...base,
+                    backgroundColor: 'var(--card-bg)',
+                    borderColor: state.isFocused ? 'var(--accent)' : 'var(--card-border)',
+                    boxShadow: state.isFocused ? '0 0 0 0.2rem var(--accent-glow)' : 'none',
+                  }),
+                  input: (base) => ({ ...base, color: 'var(--text-primary)' }),
+                  singleValue: (base) => ({ ...base, color: 'var(--text-primary)' }),
+                  placeholder: (base) => ({ ...base, color: 'var(--text-muted)' }),
+                  groupHeading: (base) => ({ ...base, color: 'var(--text-muted)' }),
+                  option: (base, state) => ({
+                    ...base,
+                    backgroundColor: state.isSelected ? 'var(--accent)' : state.isFocused ? 'var(--body-bg)' : 'var(--card-bg)',
+                    color: state.isSelected ? '#ffffff' : 'var(--text-primary)',
+                  }),
+                }}
+              />
+              {plainBottleDialogError && <div className="alert alert-danger py-2 mt-3" role="alert">{plainBottleDialogError}</div>}
+              <div className="d-flex flex-wrap justify-content-end gap-2 mt-4">
+                <button type="button" className="btn incoming-scan-bottle-secondary" onClick={() => advancePlainBottleQueue()} disabled={savingPlainBottle}>
+                  Skip
+                </button>
+                <button type="button" className="btn incoming-scan-bottle-secondary" onClick={closePlainBottleDialog} disabled={savingPlainBottle}>
+                  Close
+                </button>
+                <button
+                  type="button"
+                  className="btn incoming-scan-bottle-primary"
+                  onClick={handleSelectScannedBottle}
+                  disabled={!plainBottleSelection || savingPlainBottle}
+                >
+                  {savingPlainBottle ? 'Saving...' : 'Select bottle'}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    )}
+    </>
   );
 }

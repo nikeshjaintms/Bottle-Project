@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+﻿import { useState, useEffect } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
 import {
@@ -143,7 +143,7 @@ export default function ShernoChallanList() {
             <table className="data-table mb-0 w-100">
               <thead>
                 <tr>
-                  <th className="py-3 text-uppercase small fw-bold text-muted ps-5 text-start" style={{ width: 60 }}>#</th>
+                  <th className="py-3 text-uppercase small fw-bold text-muted ps-5 text-start" style={{ width: 80 }}>Sr No</th>
                   <th className="py-3 text-uppercase small fw-bold text-muted text-center" style={{ width: 140 }}>Gate Pass No</th>
                   <th className="py-3 text-uppercase small fw-bold text-muted text-center" style={{ width: 140 }}>Date &amp; Time</th>
                   <th className="py-3 text-uppercase small fw-bold text-muted text-center">P.O. Details</th>
@@ -296,7 +296,7 @@ export default function ShernoChallanList() {
               return pages.map((p, idx) =>
                 p === '...' ? (
                   <span key={`e-${idx}`} className="px-1 text-muted" style={{ fontSize: 13 }}>
-                    …
+                    ΓÇª
                   </span>
                 ) : (
                   <button

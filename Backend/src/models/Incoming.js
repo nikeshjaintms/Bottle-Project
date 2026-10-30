@@ -72,4 +72,9 @@ const incomingSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+// Indexes for incoming queries with common filters
+incomingSchema.index({ billToId: 1, isDeleted: 1, documentDate: -1 });
+incomingSchema.index({ billToId: 1, createdAt: -1 });
+incomingSchema.index({ deliveryNumber: 1, isDeleted: 1 });
+
 module.exports = mongoose.model("Incoming", incomingSchema);

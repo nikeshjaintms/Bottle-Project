@@ -4,7 +4,13 @@ const bottleSpecSchema = new mongoose.Schema({
   brandId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: "Brand",
-    required: true
+    required: false  // Changed to false to allow creating without brand initially
+  },
+
+  companyId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Company",
+    default: null
   },
 
   bottleName: {

@@ -1,6 +1,35 @@
 import { createSlice, createAsyncThunk } from '@reduxjs/toolkit';
 import API from '../../services/api';
 
+const normalizeBottleName = (value) => String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
+
+export const fetchIncomingPlainBottleOptions = createAsyncThunk(
+  'incoming/fetchPlainBottleOptions',
+  async (companyId, { rejectWithValue }) => {
+    try {
+      const response = await API.get('/ready-to-dispatch/options/plain-bottles', {
+        params: { companyId },
+      });
+      const optionsByName = new Map();
+      (response.data?.data || []).forEach((bottle) => {
+        const name = String(bottle.name || '').trim().replace(/\s+/g, ' ');
+        const normalizedName = normalizeBottleName(name);
+        if (!bottle.id || !name || !normalizedName || normalizedName === 'unknown' || optionsByName.has(normalizedName)) return;
+        optionsByName.set(normalizedName, { value: String(bottle.id), label: name });
+      });
+
+      const options = Array.from(optionsByName.values()).sort((a, b) =>
+        a.label.localeCompare(b.label, undefined, { numeric: true, sensitivity: 'base' })
+      );
+      return { companyId: String(companyId), options };
+    } catch (error) {
+      return rejectWithValue(
+        error.response?.data?.message || 'Could not load plain bottles for this company.'
+      );
+    }
+  }
+);
+
 export const fetchIncoming = createAsyncThunk('incoming/fetchIncoming', async ({ page = 1, limit = 10, search = '', status = '', companyId = '', fromDate = '', toDate = '', bottleName = '', pagination }, { rejectWithValue }) => {
   try {
     const params = new URLSearchParams();
@@ -67,6 +96,7 @@ const incomingSlice = createSlice({
     currentIncoming: null,
     loading: false,
     error: null,
+    plainBottleOptionsByCompany: {},
   },
   reducers: {
     clearCurrentIncoming: (state) => { state.currentIncoming = null; }
@@ -84,7 +114,33 @@ const incomingSlice = createSlice({
       .addCase(fetchIncoming.rejected, (state, action) => { state.loading = false; state.error = action.payload; })
       .addCase(fetchIncomingById.pending, (state) => { state.loading = true; state.error = null; })
       .addCase(fetchIncomingById.fulfilled, (state, action) => { state.loading = false; state.currentIncoming = action.payload; })
-      .addCase(fetchIncomingById.rejected, (state, action) => { state.loading = false; state.error = action.payload; });
+      .addCase(fetchIncomingById.rejected, (state, action) => { state.loading = false; state.error = action.payload; })
+      .addCase(fetchIncomingPlainBottleOptions.pending, (state, action) => {
+        const companyId = String(action.meta.arg);
+        state.plainBottleOptionsByCompany[companyId] = {
+          ...(state.plainBottleOptionsByCompany[companyId] || {}),
+          loading: true,
+          error: '',
+        };
+      })
+      .addCase(fetchIncomingPlainBottleOptions.fulfilled, (state, action) => {
+        const { companyId, options } = action.payload;
+        state.plainBottleOptionsByCompany[companyId] = {
+          options,
+          loading: false,
+          loaded: true,
+          error: '',
+        };
+      })
+      .addCase(fetchIncomingPlainBottleOptions.rejected, (state, action) => {
+        const companyId = String(action.meta.arg);
+        state.plainBottleOptionsByCompany[companyId] = {
+          options: [],
+          loading: false,
+          loaded: true,
+          error: action.payload || 'Could not load plain bottles for this company.',
+        };
+      });
   },
 });
 

@@ -11,6 +11,7 @@ export default function EditCompany() {
   const { companies, loading } = useSelector((state) => state.companies);
   const [name, setName] = useState('');
   const [status, setStatus] = useState('active');
+  const [isStockSupplier, setIsStockSupplier] = useState(false);
   const [error, setError] = useState('');
 
   const validateField = (value) => {
@@ -57,6 +58,7 @@ export default function EditCompany() {
     if (company) {
       setName(company.name);
       setStatus(company.status === true ? 'active' : 'inactive');
+      setIsStockSupplier(Boolean(company.isStockSupplier));
     }
   }, [id, companies]);
 
@@ -67,7 +69,7 @@ export default function EditCompany() {
       return Swal.fire('Validation Error', msg, 'error');
     }
 
-    dispatch(updateCompany({ id, formData: { name, status } })).then((res) => {
+    dispatch(updateCompany({ id, formData: { name, status, isStockSupplier } })).then((res) => {
       if (!res.error) {
         Swal.fire('Updated!', 'company updated successfully!', 'success');
         navigate('/companies');
@@ -121,6 +123,19 @@ export default function EditCompany() {
                     <option value="active">Active</option>
                     <option value="inactive">Inactive</option>
                   </select>
+                </div>
+
+                <div className="mb-4 form-check">
+                  <input
+                    type="checkbox"
+                    className="form-check-input"
+                    id="isStockSupplierCheck"
+                    checked={isStockSupplier}
+                    onChange={(e) => setIsStockSupplier(e.target.checked)}
+                  />
+                  <label className="form-check-label fw-600 small text-muted" htmlFor="isStockSupplierCheck">
+                    Stock supplier (stock only: used for Incoming and as a plain stock source; not selectable in Dispatch, Lacquer Plan or Printing Plan)
+                  </label>
                 </div>
 
                 <div className="d-flex gap-2 mt-4 user-form-actions">

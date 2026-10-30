@@ -100,7 +100,7 @@ export default function EditBottleSpec() {
     const spec = bottleSpecs.find(s => s._id === id);
     if (spec) {
       setFormData({
-        companyId: spec.brandId?.companyId?._id || spec.brandId?.companyId || '',
+        companyId: spec.brandId?.companyId?._id || spec.companyId?._id || spec.companyId || '',
         brandId: spec.brandId?._id || spec.brandId || '',
         bottleName: spec.bottleName || '',
         code: spec.code || '',

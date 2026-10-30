@@ -10,6 +10,10 @@ const companySchema = new mongoose.Schema({
     type: Boolean,
     default: true
   },
+  isStockSupplier: {
+    type: Boolean,
+    default: false
+  },
   isDeleted: {
     type: Boolean,
     default: false

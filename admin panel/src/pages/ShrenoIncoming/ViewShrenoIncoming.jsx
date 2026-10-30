@@ -16,7 +16,7 @@ export default function ViewShrenoIncoming() {
           setData(res.data.data);
         }
       } catch (err) {
-        console.error(err);
+        // Silently handle fetch error
       } finally {
         setLoading(false);
       }

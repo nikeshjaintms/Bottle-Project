@@ -236,7 +236,7 @@ export default function IncomingList() {
                       'Company': inc.billToId?.name || inc.companyId?.name || 'N/A',
                       'PO No': inc.poNo || 'N/A',
                       'PO Date': inc.poDate ? new Date(inc.poDate).toLocaleDateString() : 'N/A',
-                      'Bottle Name': item.bottleId?.bottleName || 'N/A',
+                      'Bottle Name': item.bottleId?.plainBottleName || item.bottleId?.bottleName || 'N/A',
                       'Box': item.box || 0,
                       'Qty/Box': item.qty || 0,
                       'Total Qty': item.totalQty || 0

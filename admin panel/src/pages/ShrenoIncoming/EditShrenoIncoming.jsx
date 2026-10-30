@@ -1,14 +1,28 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import Swal from 'sweetalert2';
 import api from '../../services/api';
 import Select from 'react-select';
+import CreatableSelect from 'react-select/creatable';
 import { useSelector, useDispatch } from 'react-redux';
-import { fetchCompanies } from '../../redux/slices/companySlice';
-import { fetchItemTypes } from '../../redux/slices/itemTypeSlice';
+import { fetchItemTypes, updateItemType } from '../../redux/slices/itemTypeSlice';
 import { fetchBottlePerBoxes } from '../../redux/slices/bottlePerBoxSlice';
 import { parseShrenoChallan } from '../../redux/slices/visionSlice';
-import { fetchBottleSpecs } from '../../redux/slices/bottleSpecSlice';
+import { fetchIncomingPlainBottleOptions } from '../../redux/slices/incomingSlice';
+import { PO_REQUIRED_COMPANY } from '../../config/incomingConfig';
+
+// Simple debounce utility
+const debounce = (fn, wait) => {
+  let timeout;
+  const debounced = (...args) => {
+    clearTimeout(timeout);
+    timeout = setTimeout(() => fn(...args), wait);
+  };
+  debounced.cancel = () => clearTimeout(timeout);
+  return debounced;
+};
+
+const normalizeBottleName = (value) => String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
 
 export default function EditShrenoIncoming() {
   const { id } = useParams();
@@ -16,7 +30,7 @@ export default function EditShrenoIncoming() {
   const dispatch = useDispatch();
   const { itemTypes } = useSelector(state => state.itemTypes || { itemTypes: [] });
   const { items: bottlePerBoxes } = useSelector(state => state.bottlePerBox || { items: [] });
-  const { bottleSpecs } = useSelector(state => state.bottleSpecs || { bottleSpecs: [] });
+  const { plainBottleOptionsByCompany } = useSelector(state => state.incoming);
 
   const [formData, setFormData] = useState({
     date: new Date().toISOString().split('T')[0],
@@ -27,16 +41,32 @@ export default function EditShrenoIncoming() {
   });
 
   const [items, setItems] = useState([
-    { plainBottle: '', itemType: '', configuration: '', quantity: '', sharedGroupId: 'grp_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5) }
+    { plainBottle: '', itemType: '', configuration: '', quantity: '' }
   ]);
+  const itemsRef = useRef(items);
+  useEffect(() => {
+    itemsRef.current = items;
+  }, [items]);
+
+  const [otherBottles, setOtherBottles] = useState([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [createErrors, setCreateErrors] = useState({});
+  const [newBottlesToCreate, setNewBottlesToCreate] = useState({});
   const [imageFiles, setImageFiles] = useState([]);
   const [loading, setLoading] = useState(false);
 
+  // Cleanup state on mount (reset search results)
   useEffect(() => {
-    dispatch(fetchCompanies({ pagination: "false" }));
-    dispatch(fetchBottleSpecs({ pagination: "false", type: "all" }));
+    setOtherBottles([]);
+    setSearchLoading(false);
+    setCreateErrors({});
+    setNewBottlesToCreate({});
+  }, []);
+
+  useEffect(() => {
     dispatch(fetchBottlePerBoxes({ pagination: "false" }));
     dispatch(fetchItemTypes({ page: 1, limit: 1000 }));
+    dispatch(fetchIncomingPlainBottleOptions(PO_REQUIRED_COMPANY.id));
     
     // Fetch record data
     const fetchRecord = async () => {
@@ -61,49 +91,209 @@ export default function EditShrenoIncoming() {
           }
         }
       } catch (err) {
-        console.error(err);
+        // Silently handle fetch error - could show error state if needed
       }
     };
     
     fetchRecord();
   }, [dispatch, id]);
 
-  const plainBottleOptions = useMemo(() => {
-    if (!bottlePerBoxes || bottlePerBoxes.length === 0) return [];
-    return bottlePerBoxes.map(b => ({ 
-      value: b._id, 
-      label: (b.plainBottleName || b.bottleName || '').trim() 
-    })).filter(opt => opt.label).sort((a, b) => a.label.localeCompare(b.label));
-  }, [bottlePerBoxes]);
+  const companyBottleOptions = plainBottleOptionsByCompany[PO_REQUIRED_COMPANY.id] || {};
+  const plainBottleOptions = companyBottleOptions.options || [];
 
-  const uniqueShrenoBottles = useMemo(() => {
-    if (!bottleSpecs || !bottlePerBoxes) return [];
-    
-    // Deduplicate bottleSpecs by bottleName, return as-is without company filtering
-    const unique = [];
-    const seen = new Set();
-    for (const spec of bottleSpecs) {
-      if (!seen.has(spec.bottleName)) {
-        seen.add(spec.bottleName);
-        unique.push(spec);
+  // Debounced global bottle search
+  const debouncedSearch = useMemo(() => {
+    const fn = async (inputValue) => {
+      if (!inputValue || inputValue.trim().length < 2) {
+        setOtherBottles([]);
+        return;
+      }
+      setSearchLoading(true);
+      try {
+        const url = `/api/bottle-per-box/search?q=${encodeURIComponent(inputValue)}&limit=10`;
+        const res = await fetch(url);
+        
+        if (!res.ok) {
+          setOtherBottles([]);
+          return;
+        }
+        
+        const data = await res.json();
+        const items = data.data || data.items || (Array.isArray(data) ? data : []);
+        if (!Array.isArray(items)) {
+          setOtherBottles([]);
+          return;
+        }
+        
+        const companyBottleValues = new Set(plainBottleOptions.map(b => (b.plainBottleName || b.value || '').toLowerCase()));
+        const otherBottlesList = (items || []).filter(item => {
+          const itemName = (item.plainBottleName || item.bottleName || item.name || '').toLowerCase();
+          return !companyBottleValues.has(itemName);
+        }).map(item => ({
+          value: item.plainBottleName || item.bottleName || item.name,
+          label: item.plainBottleName || item.bottleName || item.name,
+          plainBottleName: item.plainBottleName || item.bottleName || item.name,
+          isOtherBottle: true,
+          bottlePerBoxData: item
+        }));
+        
+        setOtherBottles(otherBottlesList);
+      } catch (err) {
+        setOtherBottles([]);
+      } finally {
+        setSearchLoading(false);
+      }
+    };
+    const debounced = debounce(fn, 300);
+    return debounced;
+  }, [plainBottleOptions]);
+
+  const handleInputChangeBottle = (inputValue) => {
+    if (!inputValue || inputValue.trim().length < 2) {
+      setOtherBottles([]);
+      if (debouncedSearch.cancel) {
+        debouncedSearch.cancel();
+      }
+    } else {
+      const companyMatches = plainBottleOptions.filter(opt => 
+        (opt.label || '').toLowerCase().includes(inputValue.toLowerCase())
+      );
+      
+      if (companyMatches.length > 0) {
+        setOtherBottles([]);
+        if (debouncedSearch.cancel) {
+          debouncedSearch.cancel();
+        }
+      } else {
+        debouncedSearch(inputValue);
       }
     }
-    return unique;
-  }, [bottleSpecs, bottlePerBoxes]);
+  };
 
+  // Memoize combined + deduplicated bottle options
+  const optionsList = useMemo(() => {
+    const combined = [...plainBottleOptions, ...otherBottles];
+    const seen = new Set();
+    return combined
+      .filter(opt => {
+        if (seen.has(opt.value)) return false;
+        seen.add(opt.value);
+        return true;
+      })
+      .sort((a, b) => {
+        if (a.isOtherBottle !== b.isOtherBottle) {
+          return a.isOtherBottle ? 1 : -1;
+        }
+        return (a.label || '').localeCompare(b.label || '', undefined, { numeric: true, sensitivity: 'base' });
+      });
+  }, [plainBottleOptions, otherBottles]);
 
   const handleChange = (e) => {
     setFormData({ ...formData, [e.target.name]: e.target.value });
   };
 
+  // Handle CreatableSelect "Create" option - store bottle name, don't create yet
+  const handleCreateBottle = (inputValue, index) => {
+    const bottleName = inputValue.trim();
+    if (!bottleName || bottleName.length < 2) {
+      setCreateErrors(prev => ({
+        ...prev,
+        [index]: 'Bottle name must be at least 2 characters'
+      }));
+      return;
+    }
+
+    // Show toast notification for bottle creation
+    Swal.fire({
+      position: 'top-right',
+      icon: 'info',
+      title: 'Plain Bottle Created',
+      text: `"${bottleName}" created successfully`,
+      timer: 2000,
+      timerProgressBar: true,
+      showConfirmButton: false,
+      toast: true
+    });
+
+    // Store the bottle name to create later on submit
+    setNewBottlesToCreate(prev => ({
+      ...prev,
+      [index]: bottleName
+    }));
+
+    // Set plainBottle to the bottle name
+    handleItemChange(index, 'plainBottle', bottleName);
+    
+    // Clear any previous error for this item
+    setCreateErrors(prev => {
+      const updated = { ...prev };
+      delete updated[index];
+      return updated;
+    });
+  };
+
   const handleItemChange = (index, field, value) => {
     const newItems = [...items];
     newItems[index][field] = value;
+    if (field === 'plainBottle') newItems[index].bottleHint = '';
     setItems(newItems);
   };
 
+  // Handle creating new configuration
+  const handleCreateConfiguration = async (inputValue, itemTypeId, index) => {
+    const configName = inputValue.trim();
+    if (!configName || configName.length < 1) {
+      return;
+    }
+
+    try {
+      // Find the ItemType to get current data
+      const itemType = itemTypes.find(it => it._id === itemTypeId);
+      if (!itemType) return;
+
+      // Check if configuration already exists
+      if (itemType.options && itemType.options.includes(configName)) {
+        return;
+      }
+
+      // Update ItemType with new configuration via Redux
+      const updatedOptions = [...(itemType.options || []), configName];
+      const result = await dispatch(updateItemType({
+        id: itemTypeId,
+        data: {
+          name: itemType.name,
+          status: itemType.status,
+          options: updatedOptions
+        }
+      })).unwrap();
+
+      // Show success toast
+      Swal.fire({
+        position: 'top-right',
+        icon: 'success',
+        title: 'Configuration Created',
+        text: `"${configName}" added to ${itemType.name}`,
+        timer: 1500,
+        timerProgressBar: true,
+        showConfirmButton: false,
+        toast: true
+      });
+    } catch (err) {
+      Swal.fire({
+        position: 'top-right',
+        icon: 'error',
+        title: 'Error',
+        text: 'Failed to create configuration',
+        timer: 1500,
+        timerProgressBar: true,
+        showConfirmButton: false,
+        toast: true
+      });
+    }
+  };
+
   const addItem = () => {
-    setItems([...items, { plainBottle: '', itemType: '', configuration: '', quantity: '', sharedGroupId: 'grp_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5) }]);
+    setItems([...items, { plainBottle: '', itemType: '', configuration: '', quantity: '' }]);
   };
 
   const removeItem = (index) => {
@@ -129,10 +319,17 @@ export default function EditShrenoIncoming() {
     try {
       const res = await dispatch(parseShrenoChallan(files)).unwrap();
       
+      const { options: allowedBottleOptions } = await dispatch(
+        fetchIncomingPlainBottleOptions(PO_REQUIRED_COMPANY.id)
+      ).unwrap();
+      const allowedBottleIds = new Set(allowedBottleOptions.map(option => option.value));
       const newItemsToAppend = (res.items || []).map(item => {
         // Item should have bottleId (BottlePerBox ObjectId) from vision parser
+        const bottleId = item.bottleId?._id || item.bottleId;
+        const allowedBottleId = allowedBottleIds.has(String(bottleId || '')) ? String(bottleId) : '';
         return {
-          plainBottle: item.bottleId || '',
+          plainBottle: allowedBottleId,
+          bottleHint: allowedBottleId ? '' : item.bottleName || item.suggestedName || '',
           itemType: '',
           configuration: '',
           quantity: item.qty || item.totalQty || ''
@@ -143,6 +340,7 @@ export default function EditShrenoIncoming() {
         res.unmatchedItems.forEach(u => {
           newItemsToAppend.push({
             plainBottle: '',
+            bottleHint: u.suggestedName || '',
             itemType: '',
             configuration: '',
             quantity: u.qty || u.totalQty || ''
@@ -188,15 +386,27 @@ export default function EditShrenoIncoming() {
       data.append('challanNo', formData.challanNo);
       data.append('poNo', formData.poNo);
       data.append('poDate', formData.poDate);
-      data.append('items', JSON.stringify(items));
+      data.append('items', JSON.stringify(items.map((item) => {
+        const savedItem = { ...item };
+        delete savedItem.bottleHint;
+        return savedItem;
+      })));
       if (imageFiles && imageFiles.length > 0) {
         imageFiles.forEach(file => data.append('images', file));
       }
 
       const res = await api.put(`/shreno-incoming/${id}`, data);
       if (res.data.success) {
-        Swal.fire('Success', 'Shreno incoming updated successfully', 'success');
-        navigate('/shreno-incoming');
+        // Show success SweetAlert modal (centered, not toast)
+        Swal.fire({
+          position: 'center',
+          icon: 'success',
+          title: 'Success!',
+          text: 'Shreno incoming updated successfully',
+          confirmButtonText: 'OK'
+        }).then(() => {
+          navigate('/shreno-incoming');
+        });
       }
     } catch (err) {
       Swal.fire('Error', err.response?.data?.message || 'Server error', 'error');
@@ -219,9 +429,12 @@ export default function EditShrenoIncoming() {
     return grouped;
   }, [items]);
 
-  // Add another item type for the same bottle (copy bottle selection)
-  const addItemTypeForBottle = (bottleId, sharedGroupId) => {
-    setItems([...items, { plainBottle: bottleId, itemType: '', configuration: '', quantity: '', sharedGroupId: sharedGroupId }]);
+  // Get configuration options for a selected itemType
+  const getConfigurationOptions = (selectedItemTypeId) => {
+    if (!selectedItemTypeId || !itemTypes) return [];
+    const itemType = itemTypes.find(it => it._id === selectedItemTypeId);
+    if (!itemType || !itemType.options) return [];
+    return itemType.options.map(opt => ({ value: opt, label: opt }));
   };
 
   return (
@@ -278,64 +491,168 @@ export default function EditShrenoIncoming() {
               </thead>
               <tbody className="border-top-0">
                 {items.map((item, index) => {
-                  const plainBottleOption = plainBottleOptions.find(opt => opt.value === item.plainBottle);
+                  const plainBottleOption = plainBottleOptions.find(opt => opt.value === String(item.plainBottle)) || (
+                    item.plainBottle
+                      ? {
+                          value: String(item.plainBottle),
+                          label: bottlePerBoxes.find(bottle => String(bottle._id) === String(item.plainBottle))?.plainBottleName ||
+                            bottlePerBoxes.find(bottle => String(bottle._id) === String(item.plainBottle))?.bottleName ||
+                            'Previously saved bottle',
+                        }
+                      : null
+                  );
                   
-                  // Check if this is the first item in its group
-                  const isFirstInGroup = !items.slice(0, index).some(i => i.sharedGroupId === item.sharedGroupId);
+                  // Check if this is the first item in its bottle group (for rowSpan)
+                  const isFirstInBottleGroup = !items.slice(0, index).some(i => i.plainBottle === item.plainBottle);
                   
-                  // Count total items in this group
-                  const itemsInGroup = items.filter(i => i.sharedGroupId === item.sharedGroupId).length;
+                  // Check if this is the first item in its itemType group (for rowSpan)
+                  const isFirstInItemTypeGroup = !items.slice(0, index).some(i => i.plainBottle === item.plainBottle && i.itemType === item.itemType);
                   
-                  // Calculate rowSpan for bottle column (only show on first item of group)
-                  let bottleRowSpan = 1;
-                  if (isFirstInGroup && itemsInGroup > 1) {
-                    bottleRowSpan = itemsInGroup;
-                  }
+                  // Count total items in this bottle group
+                  const itemsInBottleGroup = items.filter(i => i.plainBottle === item.plainBottle).length;
+                  
+                  // Count total items in this itemType group (same bottle AND same itemType)
+                  const itemsInItemTypeGroup = items.filter(i => i.plainBottle === item.plainBottle && i.itemType === item.itemType).length;
+                  
+                  // Calculate rowSpan for bottle column
+                  const bottleRowSpan = isFirstInBottleGroup ? itemsInBottleGroup : 0;
+                  
+                  // Calculate rowSpan for itemType column
+                  const itemTypeRowSpan = isFirstInItemTypeGroup ? itemsInItemTypeGroup : 0;
 
                   return (
                   <tr key={index}>
                     <td className="text-center text-muted">{index + 1}</td>
-                    {isFirstInGroup && (
+                    {isFirstInBottleGroup && (
                       <td rowSpan={bottleRowSpan}>
-                        <Select 
-                          options={plainBottleOptions}
+                        <CreatableSelect 
+                          options={optionsList}
                           value={plainBottleOption || null}
                           onChange={(selected) => {
                             const newBottleId = selected?.value || '';
                             handleItemChange(index, 'plainBottle', newBottleId);
                           }}
-                          placeholder="Select Plain Bottle"
+                          onCreateOption={(inputValue) => handleCreateBottle(inputValue, index)}
+                          placeholder={companyBottleOptions.loading || !companyBottleOptions.loaded
+                            ? 'Loading SHRENO plain bottles...'
+                            : 'Select or Create Plain Bottle'}
                           isClearable
+                          isDisabled={companyBottleOptions.loading || !companyBottleOptions.loaded || Boolean(companyBottleOptions.error)}
                           menuPortalTarget={document.body}
+                          formatCreateLabel={(inputValue) => `Create "${inputValue}"`}
                           styles={{
                             menuPortal: base => ({ ...base, zIndex: 9999 }),
                             control: (base) => ({ ...base, borderRadius: '8px', backgroundColor: 'var(--bs-light)', borderColor: 'var(--bs-border-color-translucent)', minHeight: '38px' })
                           }}
                         />
+                        {createErrors[index] && (
+                          <small className="text-danger d-block mt-1">{createErrors[index]}</small>
+                        )}
+                        {item.bottleHint && (
+                          <small className="text-warning-emphasis d-block mt-1">
+                            Scanned bottle: {item.bottleHint}. Choose a plain bottle for SHRENO.
+                          </small>
+                        )}
+                        {companyBottleOptions.error && (
+                          <small className="text-danger d-block mt-1">{companyBottleOptions.error}</small>
+                        )}
+                      </td>
+                    )}
+                    {isFirstInItemTypeGroup && (
+                      <td rowSpan={itemTypeRowSpan}>
+                        <select className="form-select shadow-none" style={{ borderRadius: 8, backgroundColor: 'var(--bs-light)', borderColor: 'var(--bs-border-color-translucent)' }} value={item.itemType} onChange={(e) => handleItemChange(index, 'itemType', e.target.value)} required>
+                          <option value="">Select Type</option>
+                          {itemTypes?.map(it => (
+                            <option key={it._id} value={it._id}>{it.name}</option>
+                          ))}
+                        </select>
                       </td>
                     )}
                     <td>
-                      <select className="form-select shadow-none" style={{ borderRadius: 8, backgroundColor: 'var(--bs-light)', borderColor: 'var(--bs-border-color-translucent)' }} value={item.itemType} onChange={(e) => handleItemChange(index, 'itemType', e.target.value)} required>
-                        <option value="">Select Type</option>
-                        {itemTypes?.map(it => (
-                          <option key={it._id} value={it._id}>{it.name}</option>
-                        ))}
-                      </select>
-                    </td>
-                    <td>
-                      <input type="text" className="form-control shadow-none" style={{ borderRadius: 8 }} placeholder="e.g. 2PC, 64x1" value={item.configuration} onChange={(e) => handleItemChange(index, 'configuration', e.target.value)} required />
+                      {(() => {
+                        // Get all configurations for this itemType group
+                        const itemTypeGroupItems = items.filter(i => i.plainBottle === item.plainBottle && i.itemType === item.itemType);
+                        const selectedConfigs = new Set(itemTypeGroupItems.map(gi => gi.configuration).filter(Boolean));
+                        
+                        // Filter out already selected configurations
+                        const availableOptions = getConfigurationOptions(item.itemType).filter(
+                          opt => !selectedConfigs.has(opt.value) || opt.value === item.configuration
+                        );
+                        
+                        return (
+                          <CreatableSelect 
+                            options={availableOptions}
+                            value={item.configuration ? { value: item.configuration, label: item.configuration } : null}
+                            onChange={(selected) => {
+                              if (selected && Array.isArray(selected)) {
+                                // Multiple selections - create rows for each configuration
+                                const newRows = selected.map((config, idx) => ({
+                                  plainBottle: item.plainBottle,
+                                  itemType: item.itemType,
+                                  configuration: config.value,
+                                  quantity: idx === 0 ? item.quantity : '',
+                                }));
+                                // Replace current item and add rest of the new rows
+                                const beforeItems = items.slice(0, index);
+                                const afterItems = items.slice(index + 1);
+                                setItems([...beforeItems, ...newRows, ...afterItems]);
+                              } else if (selected) {
+                                // Single selection
+                                handleItemChange(index, 'configuration', selected.value);
+                              } else {
+                                // Clear selection
+                                handleItemChange(index, 'configuration', '');
+                              }
+                            }}
+                            onCreateOption={(inputValue) => {
+                              handleCreateConfiguration(inputValue, item.itemType, index);
+                              
+                              // Smart placement: if current field is empty, use it
+                              if (!item.configuration) {
+                                handleItemChange(index, 'configuration', inputValue);
+                              } else {
+                                // Find empty field in same itemType group
+                                const itemTypeGroupItems = items.filter(i => i.plainBottle === item.plainBottle && i.itemType === item.itemType);
+                                const emptyFieldIndex = itemTypeGroupItems.findIndex(gi => !gi.configuration);
+                                
+                                if (emptyFieldIndex !== -1) {
+                                  const actualIndex = items.indexOf(itemTypeGroupItems[emptyFieldIndex]);
+                                  handleItemChange(actualIndex, 'configuration', inputValue);
+                                }
+                              }
+                            }}
+                            placeholder={!item.itemType ? 'Select Item Type first' : 'Select or Create Configuration(s)'}
+                            isClearable
+                            isDisabled={!item.itemType}
+                            isMulti
+                            formatCreateLabel={(inputValue) => `Create "${inputValue}"`}
+                            menuPortalTarget={document.body}
+                            styles={{
+                              menuPortal: base => ({ ...base, zIndex: 9999 }),
+                              control: (base) => ({ ...base, borderRadius: '8px', backgroundColor: 'var(--bs-light)', borderColor: 'var(--bs-border-color-translucent)' })
+                            }}
+                          />
+                        );
+                      })()}
                     </td>
                     <td>
                       <input type="number" min="0" step="0.01" className="form-control text-end shadow-none" style={{ borderRadius: 8 }} value={item.quantity} onChange={(e) => handleItemChange(index, 'quantity', e.target.value)} required />
                     </td>
                     <td className="text-center">
                       <div className="d-flex gap-1 justify-content-center">
-                        {isFirstInGroup && item.plainBottle && (
+                        {isFirstInItemTypeGroup && item.plainBottle && (
                           <button
                             type="button"
                             className="btn btn-sm btn-outline-info border-0 rounded-3 shadow-none p-2"
                             title="Add another item type for this bottle"
-                            onClick={() => addItemTypeForBottle(item.plainBottle, item.sharedGroupId)}
+                            onClick={() => {
+                              setItems([...items, { 
+                                plainBottle: item.plainBottle, 
+                                itemType: '', 
+                                configuration: '', 
+                                quantity: ''
+                              }]);
+                            }}
                           >
                             <i className="bi bi-plus-lg fs-6"></i>
                           </button>
@@ -351,7 +668,8 @@ export default function EditShrenoIncoming() {
                       </div>
                     </td>
                   </tr>
-                )})}
+                  );
+                })}
               </tbody>
             </table>
           </div>

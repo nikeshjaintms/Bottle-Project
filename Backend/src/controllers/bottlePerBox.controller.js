@@ -9,7 +9,7 @@ const escapeRegex = (string) => string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 // CREATE
 exports.createBottlePerBox = async (req, res) => {
   try {
-    let { bottleName, bottleNames, plainBottleName, ...rest } = req.body;
+    let { bottleName, bottleNames, plainBottleName, brandId, printingTypeId, printingColorId, ...rest } = req.body;
     if (typeof rest.status === 'string') {
       rest.status = rest.status === 'active';
     }
@@ -51,7 +51,41 @@ exports.createBottlePerBox = async (req, res) => {
     };
 
     const doc = await BottlePerBox.findOneAndUpdate(filter, update, { upsert: true, returnDocument: 'after' });
-    res.json({ success: true, data: doc });
+
+    // Also automatically create or update BottleSpec if brandId is supplied
+    let specDoc = null;
+    if (brandId) {
+      const BottleSpec = require("../models/Bottlespecs");
+      const specFilter = {
+        brandId,
+        bottleName: new RegExp(`^${escapeRegex(targetPlain)}$`, 'i'),
+        isDeleted: { $ne: true }
+      };
+
+      const specUpdate = {
+        $set: {
+          brandId,
+          bottleName: targetPlain,
+          isCoating: true,
+          isPrinting: true,
+          status: true,
+          isDeleted: false
+        }
+      };
+      if (printingTypeId) {
+        specUpdate.$set.printingTypeId = printingTypeId;
+      }
+      if (printingColorId) {
+        specUpdate.$set.printingColorId = printingColorId;
+      }
+
+      specDoc = await BottleSpec.findOneAndUpdate(specFilter, specUpdate, {
+        upsert: true,
+        returnDocument: 'after'
+      });
+    }
+
+    res.json({ success: true, data: doc, spec: specDoc });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -160,6 +194,50 @@ exports.getBottlePerBoxDropdown = async (req, res) => {
       data: items,
       names: items.map(i => i.name)
     });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// SEARCH - Search all bottles globally (for "Other bottles" list)
+exports.searchBottlePerBox = async (req, res) => {
+  try {
+    const { q, limit = 20, normalized = false } = req.query;
+    
+    if (!q || q.trim().length === 0) {
+      return res.json({ success: true, data: [] });
+    }
+
+    const searchQuery = q.trim().toLowerCase();
+    const searchRegex = new RegExp(searchQuery, 'i');
+
+    const docs = await BottlePerBox.find({
+      isDeleted: { $ne: true },
+      $or: [
+        { plainBottleName: searchRegex },
+        { bottleName: searchRegex },
+        { bottleNames: searchRegex }
+      ]
+    })
+      .select("_id plainBottleName bottleName bottlePerBox bottleNames")
+      .limit(parseInt(limit))
+      .lean();
+
+    // Normalize: deduplicate by normalized plainBottleName
+    if (normalized === 'true' || normalized === true) {
+      const seen = new Set();
+      const deduped = [];
+      for (const doc of docs) {
+        const norm = (doc.plainBottleName || doc.bottleName || '').trim().toUpperCase().replace(/\s+/g, ' ');
+        if (!seen.has(norm)) {
+          seen.add(norm);
+          deduped.push(doc);
+        }
+      }
+      return res.json({ success: true, data: deduped });
+    }
+
+    res.json({ success: true, data: docs });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }

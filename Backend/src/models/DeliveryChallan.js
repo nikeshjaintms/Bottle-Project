@@ -6,6 +6,16 @@ const deliveryChallanItemSchema = new mongoose.Schema({
     default: "", // Group header like "30 ML CAMILLA" or "50 ML RARE MAINLINE"
     trim: true,
   },
+  plainBottleId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "BottlePerBox",
+    default: null,
+  },
+  variantId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Variant",
+    default: null,
+  },
   description: {
     type: String,
     required: true,

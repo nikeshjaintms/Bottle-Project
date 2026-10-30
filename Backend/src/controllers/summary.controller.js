@@ -9,6 +9,35 @@ const { matchBottleNameFromMaster, normalizeBottleForMatching } = require("../ut
 
 const SHRENO_COMPANY_ID = "6a17d6d3e933dc474615eb92";
 
+// Pagination defaults
+const DEFAULT_LIMIT = 20;
+const MAX_LIMIT = 50;
+
+/**
+ * Decode cursor format: "createdAt|_id"
+ */
+function decodeCursor(cursor) {
+  if (!cursor) return null;
+  try {
+    const [createdAtStr, id] = cursor.split("|");
+    return {
+      createdAt: new Date(createdAtStr),
+      _id: id
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Encode cursor format: "createdAt|_id"
+ */
+function encodeCursor(doc) {
+  if (!doc) return null;
+  const createdAt = doc.createdAt || new Date();
+  return `${createdAt.toISOString()}|${doc._id.toString()}`;
+}
+
 /**
  * Check if a company ID or company document corresponds to SHRENO
  */
@@ -83,6 +112,558 @@ function resolveBottleReference(bottleRef, allBottlePerBoxes, idMap) {
     rawRef: strRef
   };
 }
+
+/**
+ * GET /api/summary/incoming-paginated?companyId=&limit=&cursor=&fromDate=&toDate=&search=
+ * Keyset pagination for Incoming records with filters
+ */
+exports.getIncomingPaginated = async (req, res) => {
+  try {
+    const { companyId, limit = DEFAULT_LIMIT, cursor, fromDate, toDate, search } = req.query;
+    if (!companyId) {
+      return res.status(400).json({ success: false, message: "companyId parameter is required" });
+    }
+
+    const parsedLimit = Math.min(parseInt(limit) || DEFAULT_LIMIT, MAX_LIMIT);
+    const company = await Company.findById(companyId).lean();
+    const isShreno = isShrenoCompany(companyId, company);
+    const { allBottlePerBoxes, idMap } = await getBottleMasterData();
+
+    // Build query
+    const query = { billToId: companyId, isDeleted: { $ne: true } };
+
+    if (fromDate || toDate) {
+      const dateRange = {};
+      if (fromDate) {
+        const from = new Date(fromDate);
+        from.setHours(0, 0, 0, 0);
+        dateRange.$gte = from;
+      }
+      if (toDate) {
+        const to = new Date(toDate);
+        to.setHours(23, 59, 59, 999);
+        dateRange.$lte = to;
+      }
+      query.documentDate = dateRange;
+    }
+
+    // Keyset pagination: cursor-based
+    const cursorData = decodeCursor(cursor);
+    if (cursorData) {
+      query.$or = [
+        { createdAt: { $lt: cursorData.createdAt } },
+        { createdAt: cursorData.createdAt, _id: { $lt: mongoose.Types.ObjectId(cursorData._id) } }
+      ];
+    }
+
+    // Fetch more than limit to account for search filtering
+    const fetchSize = parsedLimit * 3; // Fetch 3x to have buffer for search
+    const docs = await Incoming.find(query)
+      .sort({ createdAt: -1, _id: -1 })
+      .limit(fetchSize + 1)
+      .lean();
+
+    const hasMore = docs.length > fetchSize;
+
+    // Process items (flatten bottle structure for display)
+    const processedItems = [];
+    let lastDoc = null;
+
+    for (const inc of docs.slice(0, fetchSize)) {
+      lastDoc = inc;
+      for (const item of inc.items || []) {
+        const resolved = resolveBottleReference(item.bottleId, allBottlePerBoxes, idMap);
+        
+        // Apply search filter
+        if (search && !resolved.bottleName.toLowerCase().includes(search.toLowerCase())) {
+          continue;
+        }
+
+        processedItems.push({
+          _id: `${inc._id}_${item._id || processedItems.length}`,
+          docId: inc._id,
+          documentDate: inc.documentDate || inc.createdAt,
+          createdAt: inc.createdAt,
+          deliveryNumber: inc.deliveryNumber || "-",
+          poNo: inc.poNo || "-",
+          poDate: inc.poDate || null,
+          bottleId: resolved.bottleId,
+          bottleName: resolved.bottleName,
+          box: Number(item.box) || 0,
+          qty: Number(item.qty) || 0,
+          totalQty: Number(item.totalQty) || 0
+        });
+
+        // Stop if we have enough items
+        if (processedItems.length >= parsedLimit) {
+          break;
+        }
+      }
+      if (processedItems.length >= parsedLimit) {
+        break;
+      }
+    }
+
+    let nextCursor = null;
+    if ((hasMore || processedItems.length >= parsedLimit) && lastDoc) {
+      nextCursor = encodeCursor(lastDoc);
+    }
+
+    res.json({
+      success: true,
+      data: {
+        items: processedItems.slice(0, parsedLimit),
+        nextCursor,
+        hasMore: hasMore || processedItems.length > parsedLimit
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * GET /api/summary/dispatch-paginated?companyId=&limit=&cursor=&fromDate=&toDate=&search=
+ * Keyset pagination for Dispatch records with filters
+ */
+exports.getDispatchPaginated = async (req, res) => {
+  try {
+    const { companyId, limit = DEFAULT_LIMIT, cursor, fromDate, toDate, search } = req.query;
+    if (!companyId) {
+      return res.status(400).json({ success: false, message: "companyId parameter is required" });
+    }
+
+    const parsedLimit = Math.min(parseInt(limit) || DEFAULT_LIMIT, MAX_LIMIT);
+    const company = await Company.findById(companyId).lean();
+    const { allBottlePerBoxes, idMap } = await getBottleMasterData();
+
+    // Build query
+    const query = { companyId: companyId, isDeleted: { $ne: true } };
+
+    if (fromDate || toDate) {
+      const dateRange = {};
+      if (fromDate) {
+        const from = new Date(fromDate);
+        from.setHours(0, 0, 0, 0);
+        dateRange.$gte = from;
+      }
+      if (toDate) {
+        const to = new Date(toDate);
+        to.setHours(23, 59, 59, 999);
+        dateRange.$lte = to;
+      }
+      query.dispatchDate = dateRange;
+    }
+
+    // Keyset pagination: cursor-based
+    const cursorData = decodeCursor(cursor);
+    if (cursorData) {
+      query.$or = [
+        { createdAt: { $lt: cursorData.createdAt } },
+        { createdAt: cursorData.createdAt, _id: { $lt: mongoose.Types.ObjectId(cursorData._id) } }
+      ];
+    }
+
+    // Fetch more than limit to account for search filtering
+    const fetchSize = parsedLimit * 3;
+    const docs = await Dispatch.find(query)
+      .sort({ createdAt: -1, _id: -1 })
+      .limit(fetchSize + 1)
+      .lean();
+
+    const hasMore = docs.length > fetchSize;
+
+    // Process items
+    const processedItems = [];
+    let lastDoc = null;
+
+    for (const disp of docs.slice(0, fetchSize)) {
+      lastDoc = disp;
+      for (const item of disp.items || []) {
+        const ref = item.bottleId || item.productName;
+        const resolved = resolveBottleReference(ref, allBottlePerBoxes, idMap);
+
+        // Apply search filter
+        if (search && !resolved.bottleName.toLowerCase().includes(search.toLowerCase())) {
+          continue;
+        }
+
+        processedItems.push({
+          _id: `${disp._id}_${item._id || processedItems.length}`,
+          docId: disp._id,
+          dispatchDate: disp.dispatchDate || disp.createdAt,
+          createdAt: disp.createdAt,
+          gatePassNo: disp.gatePassNo || "-",
+          bottleId: resolved.bottleId,
+          bottleName: resolved.bottleName,
+          box: Number(item.box) || 0,
+          qty: Number(item.qty) || 0,
+          totalQty: Number(item.totalQty) || 0
+        });
+
+        if (processedItems.length >= parsedLimit) {
+          break;
+        }
+      }
+      if (processedItems.length >= parsedLimit) {
+        break;
+      }
+    }
+
+    let nextCursor = null;
+    if ((hasMore || processedItems.length >= parsedLimit) && lastDoc) {
+      nextCursor = encodeCursor(lastDoc);
+    }
+
+    res.json({
+      success: true,
+      data: {
+        items: processedItems.slice(0, parsedLimit),
+        nextCursor,
+        hasMore: hasMore || processedItems.length > parsedLimit
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * GET /api/summary/shreno-incoming-paginated?limit=&cursor=&fromDate=&toDate=&search=
+ * Keyset pagination for SHRENO Incoming records
+ */
+exports.getShrenoIncomingPaginated = async (req, res) => {
+  try {
+    const { limit = DEFAULT_LIMIT, cursor, fromDate, toDate, search } = req.query;
+
+    const parsedLimit = Math.min(parseInt(limit) || DEFAULT_LIMIT, MAX_LIMIT);
+    const { allBottlePerBoxes, idMap } = await getBottleMasterData();
+
+    // Build query
+    const query = { isDeleted: { $ne: true }, isStockSupplier: { $ne: true } };
+
+    if (fromDate || toDate) {
+      const dateRange = {};
+      if (fromDate) {
+        const from = new Date(fromDate);
+        from.setHours(0, 0, 0, 0);
+        dateRange.$gte = from;
+      }
+      if (toDate) {
+        const to = new Date(toDate);
+        to.setHours(23, 59, 59, 999);
+        dateRange.$lte = to;
+      }
+      query.date = dateRange;
+    }
+
+    // Keyset pagination
+    const cursorData = decodeCursor(cursor);
+    if (cursorData) {
+      query.$or = [
+        { createdAt: { $lt: cursorData.createdAt } },
+        { createdAt: cursorData.createdAt, _id: { $lt: mongoose.Types.ObjectId(cursorData._id) } }
+      ];
+    }
+
+    // Fetch more than limit to account for search filtering
+    const fetchSize = parsedLimit * 3;
+    const docs = await ShrenoIncoming.find(query)
+      .sort({ createdAt: -1, _id: -1 })
+      .limit(fetchSize + 1)
+      .lean();
+
+    const hasMore = docs.length > fetchSize;
+
+    // Process items
+    const processedItems = [];
+    let lastDoc = null;
+
+    for (const inc of docs.slice(0, fetchSize)) {
+      lastDoc = inc;
+      for (const item of inc.items || []) {
+        const resolved = resolveBottleReference(item.plainBottle, allBottlePerBoxes, idMap);
+
+        // Apply search filter
+        if (search && !resolved.bottleName.toLowerCase().includes(search.toLowerCase())) {
+          continue;
+        }
+
+        processedItems.push({
+          _id: `${inc._id}_${item._id || processedItems.length}`,
+          docId: inc._id,
+          date: inc.date || inc.createdAt,
+          createdAt: inc.createdAt,
+          challanNo: inc.challanNo || "-",
+          poNo: inc.poNo || "-",
+          bottleId: resolved.bottleId,
+          bottleName: resolved.bottleName,
+          quantity: Number(item.quantity) || 0
+        });
+
+        if (processedItems.length >= parsedLimit) {
+          break;
+        }
+      }
+      if (processedItems.length >= parsedLimit) {
+        break;
+      }
+    }
+
+    let nextCursor = null;
+    if ((hasMore || processedItems.length >= parsedLimit) && lastDoc) {
+      nextCursor = encodeCursor(lastDoc);
+    }
+
+    res.json({
+      success: true,
+      data: {
+        items: processedItems.slice(0, parsedLimit),
+        nextCursor,
+        hasMore: hasMore || processedItems.length > parsedLimit
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * GET /api/summary/incoming-totals?companyId=&fromDate=&toDate=&search=
+ * Get aggregated totals for Incoming (for display while paginating)
+ */
+exports.getIncomingTotals = async (req, res) => {
+  try {
+    const { companyId, fromDate, toDate, search } = req.query;
+    if (!companyId) {
+      return res.status(400).json({ success: false, message: "companyId parameter is required" });
+    }
+
+    const query = { billToId: companyId, isDeleted: { $ne: true } };
+
+    if (fromDate || toDate) {
+      const dateRange = {};
+      if (fromDate) {
+        const from = new Date(fromDate);
+        from.setHours(0, 0, 0, 0);
+        dateRange.$gte = from;
+      }
+      if (toDate) {
+        const to = new Date(toDate);
+        to.setHours(23, 59, 59, 999);
+        dateRange.$lte = to;
+      }
+      query.documentDate = dateRange;
+    }
+
+    const { allBottlePerBoxes, idMap } = await getBottleMasterData();
+
+    // Get all matching documents to aggregate
+    const docs = await Incoming.find(query).lean();
+
+    let totalQty = 0;
+    let totalBoxes = 0;
+    let recordCount = 0;
+    const bottleMap = new Map();
+
+    for (const inc of docs) {
+      for (const item of inc.items || []) {
+        const resolved = resolveBottleReference(item.bottleId, allBottlePerBoxes, idMap);
+
+        // Apply search filter
+        if (search && !resolved.bottleName.toLowerCase().includes(search.toLowerCase())) {
+          continue;
+        }
+
+        const qty = Number(item.totalQty) || 0;
+        const box = Number(item.box) || 0;
+
+        totalQty += qty;
+        totalBoxes += box;
+        recordCount += 1;
+
+        // Track per-bottle
+        if (!bottleMap.has(resolved.bottleId)) {
+          bottleMap.set(resolved.bottleId, { name: resolved.bottleName, qty: 0, boxes: 0 });
+        }
+        const bottleData = bottleMap.get(resolved.bottleId);
+        bottleData.qty += qty;
+        bottleData.boxes += box;
+      }
+    }
+
+    res.json({
+      success: true,
+      data: {
+        totalCount: recordCount,
+        totalQty,
+        totalBoxes,
+        bottleCount: bottleMap.size,
+        bottles: Array.from(bottleMap.entries()).map(([id, data]) => ({
+          bottleId: id,
+          bottleName: data.name,
+          qty: data.qty,
+          boxes: data.boxes
+        }))
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * GET /api/summary/dispatch-totals?companyId=&fromDate=&toDate=&search=
+ * Get aggregated totals for Dispatch
+ */
+exports.getDispatchTotals = async (req, res) => {
+  try {
+    const { companyId, fromDate, toDate, search } = req.query;
+    if (!companyId) {
+      return res.status(400).json({ success: false, message: "companyId parameter is required" });
+    }
+
+    const query = { companyId: companyId, isDeleted: { $ne: true } };
+
+    if (fromDate || toDate) {
+      const dateRange = {};
+      if (fromDate) {
+        const from = new Date(fromDate);
+        from.setHours(0, 0, 0, 0);
+        dateRange.$gte = from;
+      }
+      if (toDate) {
+        const to = new Date(toDate);
+        to.setHours(23, 59, 59, 999);
+        dateRange.$lte = to;
+      }
+      query.dispatchDate = dateRange;
+    }
+
+    const { allBottlePerBoxes, idMap } = await getBottleMasterData();
+
+    const docs = await Dispatch.find(query).lean();
+
+    let totalQty = 0;
+    let totalBoxes = 0;
+    let recordCount = 0;
+    const bottleMap = new Map();
+
+    for (const disp of docs) {
+      for (const item of disp.items || []) {
+        const ref = item.bottleId || item.productName;
+        const resolved = resolveBottleReference(ref, allBottlePerBoxes, idMap);
+
+        if (search && !resolved.bottleName.toLowerCase().includes(search.toLowerCase())) {
+          continue;
+        }
+
+        const qty = Number(item.totalQty) || 0;
+        const box = Number(item.box) || 0;
+
+        totalQty += qty;
+        totalBoxes += box;
+        recordCount += 1;
+
+        if (!bottleMap.has(resolved.bottleId)) {
+          bottleMap.set(resolved.bottleId, { name: resolved.bottleName, qty: 0, boxes: 0 });
+        }
+        const bottleData = bottleMap.get(resolved.bottleId);
+        bottleData.qty += qty;
+        bottleData.boxes += box;
+      }
+    }
+
+    res.json({
+      success: true,
+      data: {
+        totalCount: recordCount,
+        totalQty,
+        totalBoxes,
+        bottleCount: bottleMap.size,
+        bottles: Array.from(bottleMap.entries()).map(([id, data]) => ({
+          bottleId: id,
+          bottleName: data.name,
+          qty: data.qty,
+          boxes: data.boxes
+        }))
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * GET /api/summary/shreno-incoming-totals?fromDate=&toDate=&search=
+ * Get aggregated totals for SHRENO Incoming
+ */
+exports.getShrenoIncomingTotals = async (req, res) => {
+  try {
+    const { fromDate, toDate, search } = req.query;
+
+    const query = { isDeleted: { $ne: true } };
+
+    if (fromDate || toDate) {
+      const dateRange = {};
+      if (fromDate) {
+        const from = new Date(fromDate);
+        from.setHours(0, 0, 0, 0);
+        dateRange.$gte = from;
+      }
+      if (toDate) {
+        const to = new Date(toDate);
+        to.setHours(23, 59, 59, 999);
+        dateRange.$lte = to;
+      }
+      query.date = dateRange;
+    }
+
+    const { allBottlePerBoxes, idMap } = await getBottleMasterData();
+
+    const docs = await ShrenoIncoming.find(query).lean();
+
+    let totalQty = 0;
+    let recordCount = 0;
+    const bottleMap = new Map();
+
+    for (const inc of docs) {
+      for (const item of inc.items || []) {
+        const resolved = resolveBottleReference(item.plainBottle, allBottlePerBoxes, idMap);
+
+        if (search && !resolved.bottleName.toLowerCase().includes(search.toLowerCase())) {
+          continue;
+        }
+
+        const qty = Number(item.quantity) || 0;
+        totalQty += qty;
+        recordCount += 1;
+
+        if (!bottleMap.has(resolved.bottleId)) {
+          bottleMap.set(resolved.bottleId, { name: resolved.bottleName, qty: 0 });
+        }
+        const bottleData = bottleMap.get(resolved.bottleId);
+        bottleData.qty += qty;
+      }
+    }
+
+    res.json({
+      success: true,
+      data: {
+        totalCount: recordCount,
+        totalQty,
+        bottleCount: bottleMap.size,
+        bottles: Array.from(bottleMap.entries()).map(([id, data]) => ({
+          bottleId: id,
+          bottleName: data.name,
+          qty: data.qty
+        }))
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
 
 /**
  * GET /api/summary/companies

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+﻿import { useState, useEffect } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
 import {
@@ -113,8 +113,11 @@ export default function ShayonaChallanList() {
             <div key={c._id} className="card border rounded-3 p-3 mb-3 shadow-sm">
               <div className="d-flex justify-content-between align-items-start mb-2">
                 <div>
+                  <span className="text-muted small fw-bold me-2">
+                    Sr No: {String((currentPage - 1) * itemsPerPage + index + 1).padStart(2, '0')}
+                  </span>
                   <span className="badge bg-primary me-2">#{c.challanNo}</span>
-                  <span className="fw-bold">{c.companyName}</span>
+                  <span className="fw-bold">{c.companyName || c.companyId?.name || c.billedTo?.name || '-'}</span>
                 </div>
                 <span className="text-muted small">
                   {c.challanDate ? new Date(c.challanDate).toLocaleDateString() : ''}
@@ -123,8 +126,9 @@ export default function ShayonaChallanList() {
 
               <div className="small text-muted mb-2">
                 <div>
-                  <strong>Vehicle:</strong> {c.vehicleNo || 'N/A'}
+                  <strong>Vehicle / Transport:</strong> {c.vehicleNo || c.transporter || c.dispatchThrough || 'Not specified'}
                 </div>
+                {c.lrNo && <div><strong>LR:</strong> {c.lrNo}</div>}
                 <div>
                   <strong>Billed To:</strong> {c.billedTo?.name || c.companyName} ({c.billedTo?.city || ''})
                 </div>
@@ -166,31 +170,41 @@ export default function ShayonaChallanList() {
 
         {/* Desktop Table View */}
         <div className="d-none d-md-block" style={{ overflowX: 'auto' }}>
-          <table className="data-table mb-0 w-100">
+          <table className="data-table mb-0 w-100 shayona-challan-list-table" style={{ tableLayout: 'fixed', minWidth: 1180 }}>
+            <colgroup>
+              <col style={{ width: '6%' }} />
+              <col style={{ width: '23%' }} />
+              <col style={{ width: '12%' }} />
+              <col style={{ width: '17%' }} />
+              <col style={{ width: '16%' }} />
+              <col style={{ width: '8%' }} />
+              <col style={{ width: '8%' }} />
+              <col style={{ width: '10%' }} />
+            </colgroup>
             <thead>
               <tr>
-                <th className="py-3 text-uppercase small fw-bold text-muted ps-5 text-start" style={{ width: 80 }}>
+                <th className="py-3 px-2 text-uppercase small fw-bold text-muted text-center">
                   Sr No
                 </th>
-                <th className="py-3 text-uppercase small fw-bold text-muted text-center" style={{ width: 140 }}>
+                <th className="py-3 text-uppercase small fw-bold text-muted text-center">
                   Challan No
                 </th>
-                <th className="py-3 text-uppercase small fw-bold text-muted text-center" style={{ width: 130 }}>
+                <th className="py-3 text-uppercase small fw-bold text-muted text-center">
                   Date & Time
                 </th>
-                <th className="py-3 text-uppercase small fw-bold text-muted text-center" style={{ minWidth: 200 }}>
+                <th className="py-3 text-uppercase small fw-bold text-muted text-start">
                   Company Name
                 </th>
-                <th className="py-3 text-uppercase small fw-bold text-muted text-center" style={{ minWidth: 150 }}>
+                <th className="py-3 text-uppercase small fw-bold text-muted text-start">
                   Vehicle / Transport
                 </th>
-                <th className="py-3 text-uppercase small fw-bold text-muted text-center" style={{ width: 110 }}>
+                <th className="py-3 text-uppercase small fw-bold text-muted text-center">
                   Total Box
                 </th>
-                <th className="py-3 text-uppercase small fw-bold text-muted text-center" style={{ width: 120 }}>
+                <th className="py-3 text-uppercase small fw-bold text-muted text-center">
                   Total Qty
                 </th>
-                <th className="py-3 text-uppercase small fw-bold text-muted text-center" style={{ width: 170 }}>
+                <th className="py-3 text-uppercase small fw-bold text-muted text-center">
                   Actions
                 </th>
               </tr>
@@ -199,21 +213,21 @@ export default function ShayonaChallanList() {
               {challans.map((c, index) => (
                 <tr key={c._id} className="align-middle border-bottom transition-all hover-bg-light">
                   {/* Sr No */}
-                  <td className="py-3 ps-4">
+                  <td className="py-3 px-2 text-center">
                     <span className="text-muted fw-bold" style={{ fontSize: 13 }}>
                       {String((currentPage - 1) * itemsPerPage + index + 1).padStart(2, '0')}
                     </span>
                   </td>
 
                   {/* Challan No */}
-                  <td className="py-3">
+                  <td className="py-3 text-center">
                     <span className="badge bg-primary-subtle text-primary border border-primary-subtle fs-6 px-2 py-1 font-monospace fw-bold">
                       #{c.challanNo}
                     </span>
                   </td>
 
                   {/* Date & Time */}
-                  <td className="py-3 small">
+                  <td className="py-3 small text-center">
                     <div className="fw-semibold text-dark">
                       {c.challanDate ? new Date(c.challanDate).toLocaleDateString() : 'N/A'}
                     </div>
@@ -222,25 +236,35 @@ export default function ShayonaChallanList() {
 
                   {/* Company */}
                   <td className="py-3">
-                    <div className="fw-bold text-dark">{c.companyName}</div>
-                    <div className="small text-muted">
-                      {c.billedTo?.city ? `${c.billedTo.city}, ` : ''}
-                      {c.billedTo?.gstNo ? `GST: ${c.billedTo.gstNo}` : ''}
+                    <div className="fw-bold text-dark text-break">
+                      {c.companyName || c.companyId?.name || c.billedTo?.name || '-'}
                     </div>
+                    {(c.billedTo?.city || c.billedTo?.gstNo) && (
+                      <div className="small text-muted text-break">
+                        {[c.billedTo.city, c.billedTo.gstNo ? `GST: ${c.billedTo.gstNo}` : ''].filter(Boolean).join(' · ')}
+                      </div>
+                    )}
                   </td>
 
                   {/* Vehicle / LR */}
                   <td className="py-3 small">
-                    {c.vehicleNo ? (
-                      <div className="fw-500 font-monospace text-dark">
-                        <i className="bi bi-truck me-1 text-muted" />
-                        {c.vehicleNo}
-                      </div>
+                    {(c.vehicleNo || c.transporter || c.dispatchThrough) ? (
+                      <>
+                        <div className="fw-semibold text-dark text-break">
+                          <i className="bi bi-truck me-1 text-muted" />
+                          {c.vehicleNo || c.transporter || c.dispatchThrough}
+                        </div>
+                        {c.vehicleNo && (c.dispatchThrough || c.transporter) && (
+                          <div className="text-muted small text-break">
+                            Via: {c.dispatchThrough || c.transporter}
+                          </div>
+                        )}
+                      </>
                     ) : (
-                      <span className="text-muted">-</span>
+                      <span className="text-muted">Not specified</span>
                     )}
-                    {c.dispatchThrough && (
-                      <div className="text-muted small">Via: {c.dispatchThrough}</div>
+                    {c.lrNo && (
+                      <div className="text-muted small text-break">LR: {c.lrNo}</div>
                     )}
                   </td>
 
@@ -344,7 +368,7 @@ export default function ShayonaChallanList() {
               return pages.map((p, idx) =>
                 p === '...' ? (
                   <span key={`e-${idx}`} className="px-1 text-muted" style={{ fontSize: 13 }}>
-                    …
+                    ΓÇª
                   </span>
                 ) : (
                   <button

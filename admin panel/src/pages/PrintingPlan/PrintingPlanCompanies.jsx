@@ -84,7 +84,7 @@ export default function PrintingPlanCompanies() {
         </div>
 
         <div className="companies-list-mobile">
-          {companies.map((b, index) => (
+          {(companies || []).filter(c => !c.isStockSupplier).map((b, index) => (
             <div key={b._id} className="companies-mobile-card brands-mobile-card">
               <div className="d-flex align-items-start gap-3 w-100 min-w-0">
                 <div
@@ -129,7 +129,7 @@ export default function PrintingPlanCompanies() {
               </tr>
             </thead>
             <tbody>
-              {companies.map((b, index) => (
+              {(companies || []).filter(c => !c.isStockSupplier).map((b, index) => (
                 <tr 
                   key={b._id} 
                   className="align-middle border-bottom transition-all hover-bg-light" 

@@ -14,9 +14,12 @@ exports.createCompany = async (req, res) => {
       return res.status(400).json(`Company "${name}" already exists.`);
     }
 
+    const isStockSupplier = Boolean(req.body.isStockSupplier);
+
     const company = await Company.create({
       name: name.trim(),
-      status
+      status,
+      isStockSupplier
     });
     res.json(company);
   } catch (err) {
@@ -31,7 +34,7 @@ exports.createCompany = async (req, res) => {
 exports.getCompanies = async (req, res) => {
   try {
 
-    let { page, limit, search, pagination = "true" } = req.query;
+    let { page, limit, search, sortBy, pagination = "true", excludeStockSuppliers } = req.query;
 
     let parsedPage = 1;
     if (page && page !== '') {
@@ -50,6 +53,10 @@ exports.getCompanies = async (req, res) => {
       isDeleted: { $ne: true }
     };
 
+    if (excludeStockSuppliers === 'true') {
+      filter.isStockSupplier = { $ne: true };
+    }
+
     if (search) {
       filter.name = {
         $regex: search,
@@ -57,7 +64,13 @@ exports.getCompanies = async (req, res) => {
       };
     }
 
-    let query = Company.find(filter).sort({ createdAt: -1 });
+    let query = Company.find(filter).sort(
+      sortBy === "name" ? { name: 1, _id: 1 } : { createdAt: -1 }
+    );
+
+    if (sortBy === "name") {
+      query = query.collation({ locale: "en", strength: 2, numericOrdering: true });
+    }
 
     if (pagination !== "false") {
       query = query.skip(skip).limit(parsedLimit);
@@ -95,6 +108,9 @@ exports.updateCompany = async (req, res) => {
     const body = { ...req.body };
     if (typeof body.status === 'string') {
       body.status = body.status === 'active';
+    }
+    if (body.isStockSupplier !== undefined) {
+      body.isStockSupplier = Boolean(body.isStockSupplier);
     }
     if (body.name) {
       const existing = await Company.findOne({

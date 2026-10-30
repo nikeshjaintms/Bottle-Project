@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate, useParams, Link } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
 import {
@@ -6,10 +6,37 @@ import {
   updateDeliveryChallan,
 } from '../../../redux/slices/deliveryChallanSlice';
 import { fetchCompanies } from '../../../redux/slices/companySlice';
-import Select from 'react-select';
-import SearchableSelect from '../../../components/SearchableSelect';
 import API from '../../../services/api';
 import Swal from 'sweetalert2';
+import ChallanProductSelector from '../ChallanProductSelector';
+
+async function submitChallanWithMaterialCodeConfirmation({ payload, submit, onReject }) {
+  let response = await submit(payload);
+
+  while (response.error && response.payload?.code === 'VARIANT_MATERIAL_CODE_CONFLICT') {
+    const { conflict } = response.payload;
+    const confirmation = await Swal.fire({
+      icon: 'warning',
+      title: `Variant ${conflict.variantName} already has Material Code ${conflict.oldMaterialCode}. Update it to ${conflict.newMaterialCode}?`,
+      showCancelButton: true,
+      confirmButtonText: 'Yes',
+      cancelButtonText: 'No',
+    });
+
+    if (!confirmation.isConfirmed) {
+      onReject(conflict);
+      return null;
+    }
+
+    const item = payload.items[conflict.itemIndex];
+    if (!item) return response;
+    item.confirmVariantCodeUpdate = true;
+    response = await submit(payload);
+  }
+
+  if (!response.error) ChallanProductSelector.clearOptionCache();
+  return response;
+}
 
 export default function EditShayonaChallan() {
   const { id } = useParams();
@@ -72,8 +99,6 @@ export default function EditShayonaChallan() {
   // Bottle Per Box master
   const [bottlePerBoxes, setBottlePerBoxes] = useState([]);
 
-  // Cache variants per bottleSpecId: { [specId]: [variant1, variant2, ...] }
-  const [specVariantsCache, setSpecVariantsCache] = useState({});
 
   // Items grouped by Bottle Specification (supporting multi-variants per spec)
   const [specGroups, setSpecGroups] = useState([
@@ -116,66 +141,6 @@ export default function EditShayonaChallan() {
       })
       .catch((err) => console.error('Failed to load BottlePerBox master:', err));
   }, [dispatch, id]);
-
-  // Memoized Plain Bottle Options (Company Plain Bottles first, then remaining Master Bottles)
-  const plainBottleOptions = useMemo(() => {
-    const companyPlainNames = new Set();
-    (companyBottleSpecs || []).forEach((spec) => {
-      const raw = (spec.bottleName || spec.name || '').trim();
-      if (!raw) return;
-      const matchedBpb = (bottlePerBoxes || []).find((b) => {
-        const pName = (b.plainBottleName || b.bottleName || '').trim();
-        if (pName.toLowerCase() === raw.toLowerCase()) return true;
-        if (Array.isArray(b.bottleNames) && b.bottleNames.some((n) => n.toLowerCase() === raw.toLowerCase())) {
-          return true;
-        }
-        return false;
-      });
-      if (matchedBpb) {
-        companyPlainNames.add(matchedBpb.plainBottleName || matchedBpb.bottleName);
-      } else {
-        companyPlainNames.add(raw);
-      }
-    });
-
-    const companyList = Array.from(companyPlainNames).sort();
-    const masterList = (bottlePerBoxes || [])
-      .map((b) => (b.plainBottleName || b.bottleName || '').trim())
-      .filter(Boolean)
-      .filter((name) => !companyPlainNames.has(name))
-      .sort();
-
-    return [
-      ...companyList.map((name) => ({
-        value: name,
-        label: name,
-        sublabel: companyBottleSpecs.length > 0 ? 'Company Bottle' : '',
-      })),
-      ...masterList.map((name) => ({
-        value: name,
-        label: name,
-        sublabel: 'Master Bottle',
-      })),
-    ];
-  }, [companyBottleSpecs, bottlePerBoxes]);
-
-  // Helper to fetch variants for a plain bottle
-  const loadVariantsForBottle = async (bottleName) => {
-    if (!bottleName || specVariantsCache[bottleName]) return;
-    try {
-      const res = await API.get('/variant', {
-        params: {
-          plainBottleName: bottleName,
-          companyId: companyId || undefined,
-          pagination: 'false',
-        },
-      });
-      const vars = res.data?.data || [];
-      setSpecVariantsCache((prev) => ({ ...prev, [bottleName]: vars }));
-    } catch (err) {
-      console.error('Failed to load variants for bottle:', err);
-    }
-  };
 
   // Helper to find unit (bottlePerBox) for a bottleName
   const findUnitPerBox = (bottleName) => {
@@ -258,8 +223,9 @@ export default function EditShayonaChallan() {
 
         const vLine = {
           id: 'line_' + Math.random().toString(36).substr(2, 9),
-          variantId: it.variantId || '',
+          variantId: it.variantId?._id || it.variantId || '',
           materialCode: it.materialCode || '',
+          materialCodeDirty: false,
           description: it.description || '',
           box: it.box || '',
           fullBox: fBox,
@@ -278,19 +244,12 @@ export default function EditShayonaChallan() {
           lastGroup = {
             id: 'grp_' + Math.random().toString(36).substr(2, 9),
             plainBottle: titleKey,
+            plainBottleId: it.plainBottleId?._id || it.plainBottleId || '',
             bottleSpecId: it.bottleSpecId || '',
             title: titleKey,
             variantLines: [vLine],
           };
           loadedGroups.push(lastGroup);
-        }
-      });
-
-      // Pre-load variants for existing plain bottles in challan
-      loadedGroups.forEach((g) => {
-        const bName = g.plainBottle || g.title;
-        if (bName) {
-          loadVariantsForBottle(bName);
         }
       });
 
@@ -338,14 +297,10 @@ export default function EditShayonaChallan() {
             const specs = res.data?.data || [];
             setCompanyBottleSpecs(specs);
 
-            // Match loaded spec groups to bottleSpecId and load their variants
+            // Match loaded spec groups to their Bottle Spec records.
             setSpecGroups((prevGroups) => {
               const updatedGroups = [...prevGroups];
               updatedGroups.forEach((grp) => {
-                const bName = grp.plainBottle || grp.title;
-                if (bName) {
-                  loadVariantsForBottle(bName);
-                }
                 const matchedSpec = specs.find(
                   (s) =>
                     s._id === grp.bottleSpecId ||
@@ -383,6 +338,9 @@ export default function EditShayonaChallan() {
   };
 
   const handleCompanyChange = async (selectedId) => {
+    if (String(selectedId || '') !== String(companyId || '')) {
+      setSpecGroups((groups) => ChallanProductSelector.clearSelections(groups));
+    }
     setCompanyId(selectedId);
     const selectedComp = companies.find((c) => c._id === selectedId);
     const compName = selectedComp ? selectedComp.name : '';
@@ -481,12 +439,13 @@ export default function EditShayonaChallan() {
   };
 
   // When a Plain Bottle is selected for a group
-  const handleBottleSelect = async (gIdx, selectedBottleName) => {
+  const handleBottleSelect = (gIdx, selectedBottle) => {
     const updated = [...specGroups];
-    const cleanName = (selectedBottleName || '').trim();
+    const cleanName = selectedBottle?.name || '';
 
     if (cleanName) {
       updated[gIdx].plainBottle = cleanName;
+      updated[gIdx].plainBottleId = selectedBottle.id || selectedBottle.value;
       updated[gIdx].title = cleanName;
 
       // Match an underlying spec ID if one exists for this bottle
@@ -499,44 +458,52 @@ export default function EditShayonaChallan() {
       const autoUnit = findUnitPerBox(cleanName);
       if (autoUnit) {
         updated[gIdx].variantLines = updated[gIdx].variantLines.map((vl) => {
-          const newLine = { ...vl, unit: vl.unit || autoUnit };
+          const newLine = { ...vl, variantId: '', materialCode: '', materialCodeDirty: true, description: '', unit: vl.unit || autoUnit };
           const { total, box, boxCount } = calculateItemTotal(newLine);
           return { ...newLine, total, box, boxCount };
         });
       }
 
-      // Load variants for this plain bottle
-      await loadVariantsForBottle(cleanName);
     } else {
       updated[gIdx].plainBottle = '';
+      updated[gIdx].plainBottleId = '';
       updated[gIdx].title = '';
       updated[gIdx].bottleSpecId = '';
+      updated[gIdx].variantLines = updated[gIdx].variantLines.map((line) => ({
+        ...line,
+        variantId: '',
+        materialCode: '',
+        materialCodeDirty: true,
+        description: '',
+      }));
     }
 
     setSpecGroups(updated);
   };
 
   // Select a variant for an individual challan line
-  const handleVariantSelect = (gIdx, lineIdx, variantId) => {
+  const handleVariantSelect = (gIdx, lineIdx, selectedVariant) => {
     const updated = [...specGroups];
     const group = updated[gIdx];
-    const bottleKey = group.plainBottle || group.title || group.bottleSpecId;
-    const variantsForSpec = specVariantsCache[bottleKey] || [];
     const line = group.variantLines[lineIdx];
+    const variantId = selectedVariant?.variantId || '';
     line.variantId = variantId;
-    const variant = variantsForSpec.find((item) => item._id === variantId);
+    const variant = selectedVariant;
     if (variant) {
       const shade = (variant.coatingShade || '').trim();
       const name = (variant.variantName || '').trim();
+      const detectedTextColor = variant.textColor || variant.detectedTextColor;
       const color =
-        variant.detectedTextColor &&
-        !['Not Detected', 'Analysis Failed', 'Detection Failed'].includes(variant.detectedTextColor)
-          ? variant.detectedTextColor.trim()
+        detectedTextColor &&
+        !['Not Detected', 'Analysis Failed', 'Detection Failed'].includes(detectedTextColor)
+          ? detectedTextColor.trim()
           : '';
       line.description = [shade, name, color].filter(Boolean).join('-');
     } else if (!variantId) {
       line.description = '';
     }
+    line.materialCode = selectedVariant?.materialCode || '';
+    line.materialCodeDirty = true;
     setSpecGroups(updated);
   };
 
@@ -545,6 +512,7 @@ export default function EditShayonaChallan() {
     const updated = [...specGroups];
     const line = updated[gIdx].variantLines[lineIdx];
     line[field] = value;
+    if (field === 'materialCode') line.materialCodeDirty = true;
 
     if (field === 'fullBox' || field === 'looseQty' || field === 'looseBox' || field === 'unit') {
       const { total, box, boxCount } = calculateItemTotal(line);
@@ -671,7 +639,7 @@ export default function EditShayonaChallan() {
   const totalBoxes = allLines.reduce((acc, it) => acc + (Number(it.boxCount) || 0), 0);
   const totalQuantity = allLines.reduce((acc, it) => acc + (Number(it.total) || 0), 0);
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
 
     if (!challanNo.trim()) {
@@ -682,14 +650,17 @@ export default function EditShayonaChallan() {
     }
 
     const payloadItems = [];
+    const lineRefs = [];
     specGroups.forEach((g) => {
       g.variantLines.forEach((vl) => {
         if (vl.description && vl.description.trim()) {
+          lineRefs.push({ groupIndex: specGroups.indexOf(g), lineIndex: g.variantLines.indexOf(vl) });
           payloadItems.push({
             bottleSpecId: g.bottleSpecId || undefined,
+            plainBottleId: g.plainBottleId || undefined,
             variantId: vl.variantId || undefined,
             title: g.title,
-            materialCode: vl.materialCode ? vl.materialCode.trim() : '',
+            materialCode: String(vl.materialCode || '').trim(),
             description: vl.description,
             box: vl.box || (vl.fullBox ? String(vl.fullBox) : '0'),
             boxCount: Number(vl.boxCount) || 0,
@@ -728,7 +699,26 @@ export default function EditShayonaChallan() {
       remarks,
     };
 
-    dispatch(updateDeliveryChallan({ id, formData: payload })).then((res) => {
+    const res = await submitChallanWithMaterialCodeConfirmation({
+      payload,
+      submit: (requestPayload) => dispatch(updateDeliveryChallan({ id, formData: requestPayload })),
+      onReject: ({ itemIndex, oldMaterialCode }) => {
+        const lineRef = lineRefs[itemIndex];
+        if (!lineRef) return;
+        setSpecGroups((groups) => {
+          const next = [...groups];
+          next[lineRef.groupIndex] = { ...next[lineRef.groupIndex], variantLines: [...next[lineRef.groupIndex].variantLines] };
+          next[lineRef.groupIndex].variantLines[lineRef.lineIndex] = {
+            ...next[lineRef.groupIndex].variantLines[lineRef.lineIndex],
+            materialCode: oldMaterialCode,
+            materialCodeDirty: false,
+          };
+          return next;
+        });
+      },
+    });
+    if (!res) return;
+    {
       if (!res.error) {
         Swal.fire({
           icon: 'success',
@@ -745,15 +735,10 @@ export default function EditShayonaChallan() {
           }
         });
       } else {
-        Swal.fire('Error!', res.payload || 'Failed to update Delivery Challan.', 'error');
+        Swal.fire('Error!', res.payload?.message || res.payload || 'Failed to update Delivery Challan.', 'error');
       }
-    });
+    }
   };
-
-  const companyOptions = companies.map((c) => ({
-    value: c._id,
-    label: c.name,
-  }));
 
   if (initialLoading) {
     return (
@@ -815,9 +800,11 @@ export default function EditShayonaChallan() {
             <div className="row g-3">
               <div className="col-md-6">
                 <label className="form-label fw-600 small text-uppercase text-muted">Company</label>
-                <SearchableSelect
-                  options={companyOptions}
+                <ChallanProductSelector
+                  level="company"
+                  companies={companies}
                   value={companyId}
+                  companyId={companyId}
                   onChange={handleCompanyChange}
                   placeholder="-- Select Company --"
                 />
@@ -1172,28 +1159,6 @@ export default function EditShayonaChallan() {
                 </thead>
                 <tbody>
                   {specGroups.map((group, gIdx) => {
-                    const bottleKey = group.plainBottle || group.title || group.bottleSpecId;
-                    const variantsForThisSpec = bottleKey
-                      ? specVariantsCache[bottleKey] || []
-                      : [];
-
-                    const variantOptions = variantsForThisSpec.map((v) => {
-                      const label = [
-                        v.coatingShade,
-                        v.variantName,
-                        v.detectedTextColor && v.detectedTextColor !== 'Not Detected'
-                          ? v.detectedTextColor
-                          : '',
-                      ]
-                        .filter(Boolean)
-                        .join(' - ');
-                      return {
-                        value: v._id,
-                        label: label || v.variantName || 'Unnamed Variant',
-                        sublabel: v.variantName && v.variantName !== label ? v.variantName : '',
-                      };
-                    });
-
                     const numLines = group.variantLines.length;
 
                     return group.variantLines.map((line, lIdx) => (
@@ -1216,40 +1181,14 @@ export default function EditShayonaChallan() {
                             className="align-top"
                             style={{ background: '#fdfdfe' }}
                           >
-                            {plainBottleOptions.length > 0 ? (
-                              <Select
-                                options={plainBottleOptions}
-                                value={plainBottleOptions.find((option) => option.value === (group.plainBottle || group.title)) || ((group.plainBottle || group.title) ? { value: group.plainBottle || group.title, label: group.plainBottle || group.title } : null)}
-                                onChange={(selected) => handleBottleSelect(gIdx, selected?.value || '')}
-                                placeholder="-- Select Plain Bottle --"
-                                isClearable
-                                menuPortalTarget={document.body}
-                                menuPosition="fixed"
-                                menuPlacement="auto"
-                                styles={{
-                                  menuPortal: (base) => ({ ...base, zIndex: 9999 }),
-                                  control: (base) => ({ ...base, width: '100%', minWidth: 0, minHeight: 42, height: 'auto', alignItems: 'center', flexWrap: 'nowrap' }),
-                                  valueContainer: (base) => ({ ...base, flex: '1 1 0%', width: 0, minWidth: 0, flexWrap: 'wrap', whiteSpace: 'normal' }),
-                                  singleValue: (base) => ({ ...base, position: 'relative', top: 'auto', transform: 'none', maxWidth: '100%', margin: 0, whiteSpace: 'normal', overflow: 'visible', textOverflow: 'clip', wordBreak: 'normal', overflowWrap: 'break-word' }),
-                                  indicatorsContainer: (base) => ({ ...base, flexShrink: 0 }),
-                                  option: (base) => ({ ...base, whiteSpace: 'normal', wordBreak: 'normal', overflowWrap: 'break-word' }),
-                                }}
-                              />
-                            ) : (
-                              <input
-                                type="text"
-                                className="form-control fw-bold text-uppercase"
-                                placeholder={companyId ? 'Type Plain Bottle' : 'Select Company first'}
-                                value={group.plainBottle || group.title}
-                                onChange={(e) => {
-                                  const updated = [...specGroups];
-                                  updated[gIdx].plainBottle = e.target.value;
-                                  updated[gIdx].title = e.target.value;
-                                  setSpecGroups(updated);
-                                }}
-                                style={{ height: 38, fontSize: 13, borderRadius: 8 }}
-                              />
-                            )}
+                            <ChallanProductSelector
+                              level="plainBottle"
+                              companyId={companyId}
+                              value={group.plainBottleId || ''}
+                              legacyLabel={group.plainBottle || group.title}
+                              onChange={(selected) => handleBottleSelect(gIdx, selected)}
+                              placeholder="-- Select Plain Bottle --"
+                            />
                             {specGroups.length > 1 && (
                               <button
                                 type="button"
@@ -1281,18 +1220,13 @@ export default function EditShayonaChallan() {
 
                         {/* Variant selection per item line */}
                         <td>
-                          <Select
-                            options={variantOptions}
-                            value={variantOptions.find((option) => option.value === line.variantId) || null}
-                            onChange={(selected) => handleVariantSelect(gIdx, lIdx, selected?.value || '')}
-                            placeholder={!group.plainBottle && !group.title ? 'Choose bottle first' : variantsForThisSpec.length ? '-- Choose Variant --' : 'No preset variants'}
-                            isClearable
-                            isDisabled={(!group.plainBottle && !group.title) || variantsForThisSpec.length === 0}
-                            menuPortalTarget={document.body}
-                            styles={{
-                              menuPortal: (base) => ({ ...base, zIndex: 9999 }),
-                              placeholder: (base) => ({ ...base, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }),
-                            }}
+                          <ChallanProductSelector
+                            level="variant"
+                            companyId={companyId}
+                            plainBottleId={group.plainBottleId}
+                            value={line.variantId}
+                            legacyLabel={line.description}
+                            onChange={(selected) => handleVariantSelect(gIdx, lIdx, selected)}
                           />
                         </td>
 

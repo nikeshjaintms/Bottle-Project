@@ -160,7 +160,7 @@ export default function ViewIncoming() {
                 {/* Item Rows */}
                 {items.map((item, index) => (
                   <div key={index} className="row align-items-center px-3 py-3 bg-light rounded-4 border border-light-subtle">
-                    <div className="col-5 fw-bold fs-6 text-dark">{item.bottleId?.bottleName}</div>
+                    <div className="col-5 fw-bold fs-6 text-dark">{item.bottleId?.plainBottleName || item.bottleId?.bottleName || 'Unknown'}</div>
                     <div className="col-2 text-center">
                       <span className="badge bg-white text-dark border px-3 py-2 rounded-pill fs-6 shadow-sm">{item.box || 0}</span>
                     </div>

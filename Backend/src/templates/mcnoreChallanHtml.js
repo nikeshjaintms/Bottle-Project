@@ -436,10 +436,15 @@ function generateMcnoreChallanHtml(challan) {
         .challan-sheet {
           width: 820px;
           background: #fff;
-          border: 2px solid #000 !important;
-          outline: 2px solid #000;
+          border: 1px solid #000 !important;
+          outline: none;
           position: relative;
           box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+        }
+
+        .challan-sheet,
+        .challan-sheet * {
+          border-width: 1px !important;
         }
 
         /* HEADER */
@@ -452,8 +457,8 @@ function generateMcnoreChallanHtml(challan) {
 
         .challan-logo {
           position: absolute;
-          top: 5px;
-          left: 10px;
+          top: 0;
+          left: 0;
           width: 140px;
           height: 92px;
           object-fit: contain;
@@ -823,7 +828,7 @@ function generateMcnoreChallanHtml(challan) {
           .challan-sheet {
             width: 100%;
             min-height: 100vh;
-            border: 2px solid #000 !important;
+            border: 1px solid #000 !important;
           }
           .page-break {
             page-break-after: always;

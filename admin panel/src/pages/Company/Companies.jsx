@@ -147,7 +147,12 @@ export default function Companies() {
                 <div className="flex-grow-1 min-w-0">
                   <div className="d-flex align-items-center gap-2 mb-1 flex-wrap">
                     <span className="text-muted small fw-bold">#{String((currentPage - 1) * itemsPerPage + index + 1).padStart(2, '0')}</span>
-                    <span className="fw-semibold text-truncate">{b.name}</span>
+                    <span className="fw-semibold text-truncate">
+                      {b.name}
+                      {b.isStockSupplier && (
+                        <span className="badge bg-secondary ms-2 small" style={{ fontSize: '10px' }}>STOCK SUPPLIER</span>
+                      )}
+                    </span>
                   </div>
                   <span className={`badge-status badge-${isCompanyActive(b) ? 'active' : 'inactive'}`}>
                     {isCompanyActive(b) ? 'ACTIVE' : 'INACTIVE'}
@@ -209,7 +214,12 @@ export default function Companies() {
                   <td className="py-3 ps-5 text-start">
                     <span className="text-muted fw-bold" style={{ fontSize: 13 }}>{String((currentPage - 1) * itemsPerPage + index + 1).padStart(2, '0')}</span>
                   </td>
-                  <td className="py-3 text-center fw-600">{b.name}</td>
+                  <td className="py-3 text-center fw-600">
+                    {b.name}
+                    {b.isStockSupplier && (
+                      <span className="badge bg-secondary ms-2 small" style={{ fontSize: '10px' }}>STOCK SUPPLIER</span>
+                    )}
+                  </td>
                   <td className="py-3 text-center">
                     <span className={`badge-status badge-${isCompanyActive(b) ? 'active' : 'inactive'}`}>
                       {isCompanyActive(b) ? 'ACTIVE' : 'INACTIVE'}

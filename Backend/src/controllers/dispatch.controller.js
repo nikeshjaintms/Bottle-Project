@@ -1,4 +1,5 @@
 const Dispatch = require("../models/Dispatch");
+const Company = require("../models/Company");
 const mongoose = require("mongoose");
 const { computePlainBottleKeys, updatePlainBottleKeysAtomic, normalizeBottleName } = require("../utils/computePlainBottleKeys");
 
@@ -347,6 +348,12 @@ exports.getDispatchById = async (req, res) => {
 exports.createDispatch = async (req, res) => {
   try {
     const { dispatchDate, gatePassNo, companyId, remarks, items: rawItems } = req.body;
+    if (companyId) {
+      const comp = await Company.findById(companyId).lean();
+      if (comp && comp.isStockSupplier) {
+        return res.status(400).json({ success: false, message: "Stock supplier companies cannot be used for Dispatch." });
+      }
+    }
     
     let items = [];
     if (rawItems) {

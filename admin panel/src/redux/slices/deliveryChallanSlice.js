@@ -56,6 +56,9 @@ export const createDeliveryChallan = createAsyncThunk(
       const response = await API.post("/delivery-challan", formData);
       return response.data;
     } catch (error) {
+      if (error.response?.data?.code === "VARIANT_MATERIAL_CODE_CONFLICT") {
+        return rejectWithValue(error.response.data);
+      }
       return rejectWithValue(
         error.response?.data?.message || "Failed to create delivery challan"
       );
@@ -71,6 +74,9 @@ export const updateDeliveryChallan = createAsyncThunk(
       const response = await API.put(`/delivery-challan/${id}`, formData);
       return response.data;
     } catch (error) {
+      if (error.response?.data?.code === "VARIANT_MATERIAL_CODE_CONFLICT") {
+        return rejectWithValue(error.response.data);
+      }
       return rejectWithValue(
         error.response?.data?.message || "Failed to update delivery challan"
       );

@@ -20,6 +20,7 @@ export default function EditVariant() {
   const [formData, setFormData] = useState({
     variantName: '',
     variantSize: '',
+    materialCode: '',
     coatingShade: '',
     status: 'active',
     bottleSpecId: '',
@@ -116,6 +117,7 @@ export default function EditVariant() {
       setFormData({
         variantName: variant.variantName || '',
         variantSize: variant.variantSize || '',
+        materialCode: variant.materialCode || '',
         coatingShade: variant.coatingShade || '',
         status: variant.status === true || variant.status === 'active' ? 'active' : 'inactive',
         bottleSpecId: variant.bottleSpecId?._id || variant.bottleSpecId || '',
@@ -134,10 +136,12 @@ export default function EditVariant() {
     if (specError) return Swal.fire('Validation Error', specError, 'error');
 
     const submitData = new FormData();
+    const existingVariant = variants.find((variant) => variant._id === id);
     for (const key in formData) {
       if (key === 'existingImage') continue;
+      if (key === 'materialCode' && formData.materialCode === (existingVariant?.materialCode || '')) continue;
       if (formData[key] !== null && formData[key] !== undefined) {
-        submitData.append(key, formData[key]);
+        submitData.append(key, key === 'materialCode' ? formData[key].trim() : formData[key]);
       }
     }
 
@@ -153,7 +157,9 @@ export default function EditVariant() {
                 ...location.state.savedFormData,
                 coatingShade: formData.coatingShade || location.state.savedFormData?.coatingShade || ''
               },
-              newVariantId: id
+              coatingShade: formData.coatingShade || '',
+              newVariantId: id,
+              newVariantName: formData.variantName || ''
             }
           });
         } else {
@@ -340,6 +346,20 @@ export default function EditVariant() {
                       <option value="active">Active</option>
                       <option value="inactive">Inactive</option>
                     </select>
+                  </div>
+
+                  <div className="col-md-12">
+                    <label className="form-label fw-600 small text-uppercase text-muted">
+                      Material Code
+                    </label>
+                    <input
+                      type="text"
+                      name="materialCode"
+                      className="form-control custom-input-field"
+                      value={formData.materialCode}
+                      onChange={handleChange}
+                      style={{ borderRadius: 12 }}
+                    />
                   </div>
                 </div>
 

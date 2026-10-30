@@ -1,4 +1,6 @@
+const mongoose = require("mongoose");
 const PrintingPlan = require("../models/PrintingPlan");
+const Company = require("../models/Company");
 const LacquerPlan = require("../models/LacquerPlan");
 const CoatingProduction = require("../models/CoatingProduction");
 const Production = require("../models/Production");
@@ -6,8 +8,9 @@ const BottleSpec = require("../models/Bottlespecs");
 const Brand = require("../models/Brand");
 const BottlePerBox = require("../models/BottlePerBox");
 const PlainBottleStock = require("../models/PlainBottleStock");
-const { recomputePlainStock } = require("../utils/stockRecompute");
+const { recomputePlainStock, computeLivePlainStock, replayStockAllocations, validateStockBeforeSave, validateStockAllocation } = require("../utils/stockRecompute");
 const { isPrintingProcess } = require("../utils/processRouting");
+const { decodeCursor, encodeCursor, buildKeysetQuery, parseLimit } = require("../utils/keyset-pagination");
 
 // Helper to find PlainBottleStock for a bottle, optionally scoped to a company
 const findPlainBottleStockDoc = async (bottleName, companyId = null) => {
@@ -170,14 +173,44 @@ exports.createPlan = async (req, res) => {
           item.companyId = effectiveCompanyId;
         }
       }
+      if (effectiveCompanyId) {
+        const comp = await Company.findById(effectiveCompanyId).lean();
+        if (comp && comp.isStockSupplier) {
+          throw new Error("Stock supplier companies cannot be used for Printing Plan.");
+        }
+      }
       const isPlainShade = (item.coatingShade || "").trim().toUpperCase() === "PLAIN";
       if (isPlainShade) {
-        if (item.plainBottleStock === undefined || item.plainBottleStock === null || item.plainBottleStock === 0) {
-          const stockDoc = await findPlainBottleStockDoc(item.bottleName, effectiveCompanyId);
-          item.plainBottleStock = stockDoc?.availableQuantity || 0;
+        if (item.stockSources) {
+          let sources = Array.isArray(item.stockSources) ? item.stockSources : [item.stockSources];
+          sources = sources.map(s => s ? (s._id || s).toString() : null).filter(Boolean);
+          const suppliers = await Company.find({ isStockSupplier: true, isDeleted: { $ne: true } }).lean();
+          const validSupplierIds = new Set(suppliers.map(s => s._id.toString()));
+          const cidStr = effectiveCompanyId ? effectiveCompanyId.toString() : '';
+          for (const src of sources) {
+            if (src !== cidStr && !validSupplierIds.has(src)) {
+              throw new Error("Invalid stock sources. Only own company and stock supplier companies are allowed.");
+            }
+          }
+          item.stockSources = sources.map(s => new mongoose.Types.ObjectId(s));
+        } else {
+          item.stockSources = effectiveCompanyId ? [effectiveCompanyId] : [];
         }
-        const oQty = Number(item.orderQty) || 0;
+
         const prod = Number(item.producedQty) || 0;
+        const allocRes = await validateStockAllocation(
+          item.planDate,
+          item.bottleName,
+          effectiveCompanyId,
+          item.stockSources,
+          prod,
+          item.stockAllocation,
+          null
+        );
+        item.stockSources = allocRes.stockSources;
+        item.stockAllocation = allocRes.stockAllocation;
+        item.plainBottleStock = allocRes.combinedAvailable;
+        const oQty = Number(item.orderQty) || 0;
         item.balanceToMake = Math.max(0, oQty - prod);
       } else {
         // For non-PLAIN shades: balanceToMake = orderQty - producedQty (stock does not enter formula)
@@ -191,6 +224,10 @@ exports.createPlan = async (req, res) => {
       const plans = await PrintingPlan.insertMany(plansToInsert);
       for (const p of plans) {
         await syncPrintingPlanStockDeduction(p, p.producedQty, req.user?._id);
+        const isPlain = (p.coatingShade || "").trim().toUpperCase() === "PLAIN";
+        if (isPlain) {
+          await replayStockAllocations(p.bottleName, p.planDate, [p.companyId, ...(p.stockSources || [])], req.user?._id);
+        }
       }
       return res.status(201).json({ success: true, data: plans });
     } else {
@@ -203,6 +240,9 @@ exports.createPlan = async (req, res) => {
       const plan = new PrintingPlan(req.body);
       await plan.save();
       await syncPrintingPlanStockDeduction(plan, plan.producedQty, req.user?._id);
+      if (isPlainShade) {
+        await replayStockAllocations(plan.bottleName, plan.planDate, [plan.companyId, ...(plan.stockSources || [])], req.user?._id);
+      }
       return res.status(201).json({ success: true, data: plan });
     }
   } catch (error) {
@@ -305,6 +345,10 @@ exports.getPlans = async (req, res) => {
     }
 
     // Augment plans with computed fields
+    const allCompaniesList = await Company.find({ isDeleted: { $ne: true } }).select('_id name isStockSupplier').lean();
+    const companyNameMap = new Map(allCompaniesList.map(c => [c._id.toString(), c.name]));
+    const supplierIdSet = new Set(allCompaniesList.filter(c => c.isStockSupplier).map(c => c._id.toString()));
+
     const augmentedPlans = await Promise.all(validPlans.map(async (plan) => {
       let coatedStockAvailable = 0;
       let producedQty = 0;
@@ -377,14 +421,37 @@ exports.getPlans = async (req, res) => {
         }
       }
       
+      let rowUsedFrom = [];
+      let rowUsedFromTooltip = '';
+      if (isPlainShade && Array.isArray(plan.stockAllocation) && plan.stockAllocation.length > 0) {
+        const hasSupplier = plan.stockAllocation.some(a => supplierIdSet.has((a.companyId?._id || a.companyId)?.toString()) && Number(a.qty) > 0);
+        if (hasSupplier) {
+          rowUsedFrom = plan.stockAllocation
+            .filter(a => Number(a.qty) > 0)
+            .map(a => {
+              const cIdStr = (a.companyId?._id || a.companyId)?.toString();
+              return {
+                companyId: cIdStr,
+                companyName: companyNameMap.get(cIdStr) || 'Company',
+                qty: Number(a.qty)
+              };
+            });
+          rowUsedFromTooltip = rowUsedFrom.map(u => `${u.companyName}: ${u.qty}`).join(', ');
+        }
+      }
+
       return {
         ...plan,
-        plainBottleStock: isPlainShade ? effectiveStock : plan.plainBottleStock,
+        plainBottleStock: isPlainShade ? coatedStockAvailable : plan.plainBottleStock,
         plainBottleName,
         coatedStockAvailable,
         producedQty,
         balanceToMake,
-        companyName
+        companyName,
+        stockSources: plan.stockSources || [],
+        stockAllocation: plan.stockAllocation || [],
+        usedFrom: rowUsedFrom,
+        usedFromTooltip: rowUsedFromTooltip
       };
     }));
 
@@ -399,6 +466,7 @@ exports.getPlanById = async (req, res) => {
   try {
     const plan = await PrintingPlan.findById(req.params.id)
       .populate("brandId", "name")
+      .populate("companyId", "name")
       .populate("itemId")
       .lean();
     if (!plan || plan.isDeleted) {
@@ -412,7 +480,15 @@ exports.getPlanById = async (req, res) => {
     const orderQty = plan.orderQty || 0;
     const balanceToMake = Math.max(0, orderQty - producedQty);
     
-    res.status(200).json({ success: true, data: { ...plan, balanceToMake, producedQty } });
+    res.status(200).json({
+      success: true,
+      data: {
+        ...plan,
+        balanceToMake,
+        producedQty,
+        companyName: plan.companyId?.name || null
+      }
+    });
   } catch (error) {
     res.status(400).json({ success: false, message: error.message });
   }
@@ -451,9 +527,39 @@ exports.updatePlan = async (req, res) => {
 
     const isPlainShade = (existingPlan.coatingShade || req.body.coatingShade || "").trim().toUpperCase() === "PLAIN";
 
+    if (req.body.companyId) {
+      const comp = await Company.findById(req.body.companyId).lean();
+      if (comp && comp.isStockSupplier) {
+        return res.status(400).json({ success: false, message: "Stock supplier companies cannot be used for Printing Plan." });
+      }
+    }
+
+    if (isPlainShade) {
+      const prodVal = updateData.producedQty !== undefined ? Number(updateData.producedQty) : (Number(existingPlan.producedQty) || 0);
+      const prDate = updateData.planDate || existingPlan.planDate;
+      const prBottle = updateData.bottleName || existingPlan.bottleName;
+      const prComp = updateData.companyId || existingPlan.companyId;
+      const prSources = updateData.stockSources !== undefined ? updateData.stockSources : existingPlan.stockSources;
+      const prAlloc = updateData.stockAllocation !== undefined ? updateData.stockAllocation : null;
+
+      const allocRes = await validateStockAllocation(
+        prDate,
+        prBottle,
+        prComp,
+        prSources,
+        prodVal,
+        prAlloc,
+        existingPlan._id
+      );
+      updateData.stockSources = allocRes.stockSources;
+      updateData.stockAllocation = allocRes.stockAllocation;
+      updateData.plainBottleStock = allocRes.combinedAvailable;
+    }
+
     // 1. Sync live PlainBottleStock inventory deduction if coatingShade is PLAIN and producedQty is updated
     if (req.body.producedQty !== undefined && isPlainShade) {
       await syncPrintingPlanStockDeduction(existingPlan, req.body.producedQty, req.user?._id);
+      await replayStockAllocations(existingPlan.bottleName, existingPlan.planDate, [existingPlan.companyId, ...(existingPlan.stockSources || [])], req.user?._id);
     }
 
     // 2. If producedQty changed, apply delta deduction to shared stock pool for (companyId, bottleName, coatingShade)
@@ -595,6 +701,10 @@ exports.deletePlan = async (req, res) => {
       return res.status(404).json({ success: false, message: "Plan not found" });
     }
     await revertPrintingPlanStockDeduction(plan, req.user?._id);
+    const isPlain = (plan.coatingShade || "").trim().toUpperCase() === "PLAIN";
+    if (isPlain) {
+      await replayStockAllocations(plan.bottleName, plan.planDate, [plan.companyId, ...(plan.stockSources || [])], req.user?._id);
+    }
     res.status(200).json({ success: true, message: "Plan deleted successfully" });
   } catch (error) {
     res.status(400).json({ success: false, message: error.message });
@@ -861,6 +971,375 @@ exports.importPreviousDay = async (req, res) => {
       data: newPlans,
       skippedCompletedCount: oldPlans.length - openCandidates.length,
       importMode: importMode || 'normal'
+    });
+  } catch (error) {
+    res.status(400).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * GET /api/printing-plan-paginated
+ * Keyset pagination with group boundary logic
+ * Query params: limit, cursor, date, fromDate, toDate, companyId, search
+ * Returns: { items[], nextCursor, hasMore }
+ */
+exports.getPlansPaginated = async (req, res) => {
+  try {
+    const { limit: limitParam, cursor, date, fromDate, toDate, companyId, search } = req.query;
+    const limit = parseLimit(limitParam, 20, 50);
+
+    // Build base query
+    let query = { isDeleted: false };
+
+    // Date filters (applied before pagination)
+    if (date) {
+      const startOfDay = new Date(date);
+      startOfDay.setUTCHours(0, 0, 0, 0);
+      const endOfDay = new Date(date);
+      endOfDay.setUTCHours(23, 59, 59, 999);
+      query.planDate = { $gte: startOfDay, $lte: endOfDay };
+    } else if (fromDate || toDate) {
+      query.planDate = {};
+      if (fromDate) {
+        const start = new Date(fromDate);
+        start.setUTCHours(0, 0, 0, 0);
+        query.planDate.$gte = start;
+      }
+      if (toDate) {
+        const end = new Date(toDate);
+        end.setUTCHours(23, 59, 59, 999);
+        query.planDate.$lte = end;
+      }
+    }
+
+    // Company filter
+    if (companyId) {
+      const companyBrands = await Brand.find({ companyId }).select('_id');
+      query.$or = [
+        { companyId: companyId },
+        { brandId: { $in: companyBrands.map(b => b._id) } }
+      ];
+    }
+
+    // Search filter (bottle name or printing to be done)
+    if (search) {
+      query.$or = query.$or || [];
+      query.$or.push({ bottleName: { $regex: search, $options: 'i' } });
+      query.$or.push({ printingToBeDone: { $regex: search, $options: 'i' } });
+    }
+
+    // Keyset pagination: exclude already-fetched records
+    const decodedCursor = decodeCursor(cursor);
+    if (decodedCursor) {
+      const keysetQuery = buildKeysetQuery(decodedCursor, 'planDate', -1);
+      query.$and = query.$and || [];
+      query.$and.push(keysetQuery);
+    }
+
+    // Use aggregate pipeline for efficiency
+    const pipeline = [
+      { $match: query },
+      { $sort: { planDate: -1, _id: -1 } },
+      {
+        $lookup: {
+          from: 'brands',
+          localField: 'brandId',
+          foreignField: '_id',
+          as: 'brandDoc'
+        }
+      },
+      { $unwind: { path: '$brandDoc', preserveNullAndEmptyArrays: true } },
+      {
+        $lookup: {
+          from: 'companies',
+          localField: 'brandDoc.companyId',
+          foreignField: '_id',
+          as: 'brandCompanyDoc'
+        }
+      },
+      { $unwind: { path: '$brandCompanyDoc', preserveNullAndEmptyArrays: true } },
+      {
+        $lookup: {
+          from: 'companies',
+          localField: 'companyId',
+          foreignField: '_id',
+          as: 'companyDoc'
+        }
+      },
+      { $unwind: { path: '$companyDoc', preserveNullAndEmptyArrays: true } },
+      {
+        $lookup: {
+          from: 'bottlespecs',
+          localField: 'itemId',
+          foreignField: '_id',
+          as: 'itemDoc'
+        }
+      },
+      { $unwind: { path: '$itemDoc', preserveNullAndEmptyArrays: true } },
+      {
+        $project: {
+          _id: 1,
+          planDate: 1,
+          bottleName: 1,
+          brandName: 1,
+          coatingShade: 1,
+          printingToBeDone: 1,
+          printingVariant: 1,
+          textColor: 1,
+          orderQty: 1,
+          producedQty: 1,
+          balanceToMake: 1,
+          boxQty: 1,
+          noOfBoxes: 1,
+          plainBottleStock: 1,
+          coatedStockAvailable: 1,
+          dispatchBalance: 1,
+          readyBoxes: 1,
+          remarks: 1,
+          soldQty: 1,
+          companyId: {
+            _id: '$companyDoc._id',
+            name: '$companyDoc.name'
+          },
+          companyName: 1,
+          lacquerPlanId: 1,
+          itemId: 1,
+          plainBottleName: 1,
+          plainBottle: 1,
+          components: 1,
+          componentHeadersList: 1,
+          brandId: {
+            _id: '$brandDoc._id',
+            name: '$brandDoc.name',
+            companyId: {
+              _id: '$brandCompanyDoc._id',
+              name: '$brandCompanyDoc.name'
+            },
+            company: {
+              _id: '$brandCompanyDoc._id',
+              name: '$brandCompanyDoc.name'
+            }
+          },
+          itemDoc: 1
+        }
+      }
+    ];
+
+    // Fetch limit+1 to detect hasMore
+    const allDocs = await PrintingPlan.aggregate([
+      ...pipeline,
+      { $limit: limit + 1 }
+    ]);
+
+    const hasMore = allDocs.length > limit;
+    const items = allDocs.slice(0, limit);
+
+    const allCompaniesList = await Company.find({ isDeleted: { $ne: true } }).select('_id name isStockSupplier').lean();
+    const companyNameMap = new Map(allCompaniesList.map(c => [c._id.toString(), c.name]));
+    const supplierIdSet = new Set(allCompaniesList.filter(c => c.isStockSupplier).map(c => c._id.toString()));
+
+    // Augment items with group-identifying fields and computed values
+    const augmentedItems = await Promise.all(items.map(async (plan) => {
+      const isPlainShade = (plan.coatingShade || "").trim().toUpperCase() === "PLAIN";
+      let coatedStockAvailable = 0;
+
+      // Extract the companyId properly - it might be an object or an ID
+      const companyIdValue = typeof plan.companyId === 'object' ? plan.companyId?._id : plan.companyId;
+
+      if (isPlainShade) {
+        const stockDoc = await findPlainBottleStockDoc(plan.bottleName, companyIdValue);
+        if (stockDoc) {
+          coatedStockAvailable = stockDoc.availableQuantity || 0;
+        }
+      } else {
+        coatedStockAvailable = await calculateCoatedStock(plan.coatingShade, companyIdValue, plan.planDate);
+      }
+
+      const orderQty = Number(plan.orderQty) || 0;
+      const producedQty = Number(plan.producedQty) || 0;
+      const balanceToMake = Math.max(0, orderQty - producedQty);
+
+      let rowUsedFrom = [];
+      let rowUsedFromTooltip = '';
+      if (isPlainShade && Array.isArray(plan.stockAllocation) && plan.stockAllocation.length > 0) {
+        const hasSupplier = plan.stockAllocation.some(a => supplierIdSet.has((a.companyId?._id || a.companyId)?.toString()) && Number(a.qty) > 0);
+        if (hasSupplier) {
+          rowUsedFrom = plan.stockAllocation
+            .filter(a => Number(a.qty) > 0)
+            .map(a => {
+              const cIdStr = (a.companyId?._id || a.companyId)?.toString();
+              return {
+                companyId: cIdStr,
+                companyName: companyNameMap.get(cIdStr) || 'Company',
+                qty: Number(a.qty)
+              };
+            });
+          rowUsedFromTooltip = rowUsedFrom.map(u => `${u.companyName}: ${u.qty}`).join(', ');
+        }
+      }
+
+      return {
+        _id: plan._id,
+        planDate: plan.planDate,
+        bottleName: plan.bottleName,
+        brandId: plan.brandId,
+        brandName: plan.brandName,
+        coatingShade: plan.coatingShade,
+        printingToBeDone: plan.printingToBeDone,
+        printingVariant: plan.printingVariant,
+        textColor: plan.textColor,
+        orderQty: orderQty,
+        producedQty: producedQty,
+        balanceToMake: balanceToMake,
+        boxQty: plan.boxQty,
+        noOfBoxes: plan.noOfBoxes,
+        plainBottleStock: isPlainShade ? coatedStockAvailable : plan.plainBottleStock,
+        coatedStockAvailable: coatedStockAvailable,
+        dispatchBalance: plan.dispatchBalance,
+        readyBoxes: plan.readyBoxes,
+        remarks: plan.remarks,
+        companyId: plan.companyId,
+        lacquerPlanId: plan.lacquerPlanId,
+        stockSources: plan.stockSources || [],
+        stockAllocation: plan.stockAllocation || [],
+        usedFrom: rowUsedFrom,
+        usedFromTooltip: rowUsedFromTooltip,
+        // Group-identifying fields (REQUIRED for group boundary logic)
+        _cBottle: plan.bottleName,
+        _cShade: plan.coatingShade,
+        _cPrinting: plan.printingToBeDone,
+        _cTextColor: plan.textColor,
+        _cStock: isPlainShade ? coatedStockAvailable : (plan.coatingShade || "").trim()
+      };
+    }));
+
+    const nextCursor = items.length > 0 ? encodeCursor(items[items.length - 1], 'planDate') : null;
+
+    res.status(200).json({
+      success: true,
+      data: {
+        items: augmentedItems,
+        nextCursor: hasMore ? nextCursor : null,
+        hasMore: hasMore
+      }
+    });
+  } catch (error) {
+    res.status(400).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * GET /api/printing-plan-totals
+ * Aggregate totals and counts for all records matching filters
+ * Query params: date, fromDate, toDate, companyId, search
+ * Returns: { totalCount, totalOrderQty, totalProducedQty, totalBalanceToMake, totalBoxQty, totalNoOfBoxes, etc. }
+ */
+exports.getPlansTotals = async (req, res) => {
+  try {
+    const { date, fromDate, toDate, companyId, search } = req.query;
+
+    // Build base query
+    let query = { isDeleted: false };
+
+    // Date filters
+    if (date) {
+      const startOfDay = new Date(date);
+      startOfDay.setUTCHours(0, 0, 0, 0);
+      const endOfDay = new Date(date);
+      endOfDay.setUTCHours(23, 59, 59, 999);
+      query.planDate = { $gte: startOfDay, $lte: endOfDay };
+    } else if (fromDate || toDate) {
+      query.planDate = {};
+      if (fromDate) {
+        const start = new Date(fromDate);
+        start.setUTCHours(0, 0, 0, 0);
+        query.planDate.$gte = start;
+      }
+      if (toDate) {
+        const end = new Date(toDate);
+        end.setUTCHours(23, 59, 59, 999);
+        query.planDate.$lte = end;
+      }
+    }
+
+    // Company filter
+    if (companyId) {
+      const companyBrands = await Brand.find({ companyId }).select('_id');
+      query.$or = [
+        { companyId: companyId },
+        { brandId: { $in: companyBrands.map(b => b._id) } }
+      ];
+    }
+
+    // Search filter
+    if (search) {
+      query.$or = query.$or || [];
+      query.$or.push({ bottleName: { $regex: search, $options: 'i' } });
+      query.$or.push({ printingToBeDone: { $regex: search, $options: 'i' } });
+    }
+
+    // Use aggregate pipeline for efficiency
+    const pipeline = [
+      { $match: query },
+      {
+        $group: {
+          _id: null,
+          totalCount: { $sum: 1 },
+          totalOrderQty: { $sum: { $toInt: '$orderQty' } },
+          totalProducedQty: { $sum: { $toInt: '$producedQty' } },
+          totalBalanceToMake: { $sum: { $toInt: '$balanceToMake' } },
+          totalBoxQty: { $sum: { $toInt: '$boxQty' } },
+          totalNoOfBoxes: { $sum: { $toInt: '$noOfBoxes' } },
+          totalDispatchBalance: { $sum: { $toInt: '$dispatchBalance' } },
+          totalReadyBoxes: { $sum: { $toInt: '$readyBoxes' } },
+          totalSoldQty: { $sum: { $toInt: '$soldQty' } }
+        }
+      }
+    ];
+
+    const results = await PrintingPlan.aggregate(pipeline);
+    const totals = results.length > 0 ? results[0] : {
+      totalCount: 0,
+      totalOrderQty: 0,
+      totalProducedQty: 0,
+      totalBalanceToMake: 0,
+      totalBoxQty: 0,
+      totalNoOfBoxes: 0,
+      totalDispatchBalance: 0,
+      totalReadyBoxes: 0,
+      totalSoldQty: 0
+    };
+
+    // Calculate coatingStockBalance and plainStockBalance separately
+    let totalCoatingStockBalance = 0;
+    let totalPlainStockBalance = 0;
+
+    const allPlans = await PrintingPlan.find(query).lean();
+    for (const plan of allPlans) {
+      const isPlainShade = (plan.coatingShade || "").trim().toUpperCase() === "PLAIN";
+      if (isPlainShade) {
+        const stockDoc = await findPlainBottleStockDoc(plan.bottleName, plan.companyId);
+        totalPlainStockBalance += (stockDoc?.availableQuantity || 0);
+      } else {
+        totalCoatingStockBalance += await calculateCoatedStock(plan.coatingShade, plan.companyId, plan.planDate);
+      }
+    }
+
+    res.status(200).json({
+      success: true,
+      data: {
+        totalCount: totals.totalCount,
+        totalOrderQty: totals.totalOrderQty,
+        totalProducedQty: totals.totalProducedQty,
+        totalBalanceToMake: totals.totalBalanceToMake,
+        totalBoxQty: totals.totalBoxQty,
+        totalNoOfBoxes: totals.totalNoOfBoxes,
+        totalCoatingStockBalance: totalCoatingStockBalance,
+        totalPlainStockBalance: totalPlainStockBalance,
+        totalDispatchBalance: totals.totalDispatchBalance,
+        totalReadyBoxes: totals.totalReadyBoxes,
+        totalSoldQty: totals.totalSoldQty
+      }
     });
   } catch (error) {
     res.status(400).json({ success: false, message: error.message });

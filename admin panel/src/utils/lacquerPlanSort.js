@@ -118,27 +118,7 @@ export function sortLacquerPlans(a, b) {
   const bottleCompare = compareBottleNames(bottleA, bottleB);
   if (bottleCompare !== 0) return bottleCompare;
 
-  // 3. Brand Name
-  const brandA = a.brandId?.name || a.brandName;
-  const brandB = b.brandId?.name || b.brandName;
-  const brandCompare = compareBrands(brandA, brandB);
-  if (brandCompare !== 0) return brandCompare;
-
-  // 4. Server Group Key & Row Sequence
-  const gKeyA = a.groupKey ? String(a.groupKey) : '';
-  const gKeyB = b.groupKey ? String(b.groupKey) : '';
-  if (gKeyA && gKeyB && gKeyA === gKeyB) {
-    const seqA = a.rowSeq !== undefined && a.rowSeq !== null ? Number(a.rowSeq) : (a.rowOrder !== undefined ? Number(a.rowOrder) : 0);
-    const seqB = b.rowSeq !== undefined && b.rowSeq !== null ? Number(b.rowSeq) : (b.rowOrder !== undefined ? Number(b.rowOrder) : 0);
-    if (seqA !== seqB) return seqA - seqB;
-  } else if (gKeyA && gKeyB) {
-    const gCmp = gKeyA.localeCompare(gKeyB);
-    if (gCmp !== 0) return gCmp;
-  } else if (gKeyA !== gKeyB) {
-    return gKeyA ? -1 : 1;
-  }
-
-  // 5. Process
+  // 3. Process
   const processA = String(a.process || 'C').trim().toUpperCase();
   const processB = String(b.process || 'C').trim().toUpperCase();
   if (processA !== processB) {
@@ -146,14 +126,22 @@ export function sortLacquerPlans(a, b) {
     if (processA > processB) return 1;
   }
 
-  // 6. Import Group and Index
-  const groupA = a.importGroupId ? String(a.importGroupId) : '';
-  const groupB = b.importGroupId ? String(b.importGroupId) : '';
+  // 4. Brand Name
+  const brandA = a.brandId?.name || a.brandName;
+  const brandB = b.brandId?.name || b.brandName;
+  const brandCompare = compareBrands(brandA, brandB);
+  if (brandCompare !== 0) return brandCompare;
+
+  // 5. Import Group and Index / GroupId
+  const groupA = a.importGroupId || a.groupId ? String(a.importGroupId || a.groupId) : '';
+  const groupB = b.importGroupId || b.groupId ? String(b.importGroupId || b.groupId) : '';
   if (groupA && groupB) {
     if (groupA === groupB) {
-      const idxA = Number(a.importGroupIndex) || 0;
-      const idxB = Number(b.importGroupIndex) || 0;
-      if (idxA !== idxB) return idxA - idxB;
+      const idxA = a.importGroupIndex !== null && a.importGroupIndex !== undefined ? Number(a.importGroupIndex) : null;
+      const idxB = b.importGroupIndex !== null && b.importGroupIndex !== undefined ? Number(b.importGroupIndex) : null;
+      if (idxA !== null && idxB !== null && idxA !== idxB) {
+        return idxA - idxB;
+      }
     } else {
       const groupComp = groupA.localeCompare(groupB);
       if (groupComp !== 0) return groupComp;
@@ -162,22 +150,16 @@ export function sortLacquerPlans(a, b) {
     return groupA ? -1 : 1;
   }
 
-  // 7. Saved Row Sequence (rowOrder or createdAt)
-  const orderA = a.rowSeq !== undefined && a.rowSeq !== null ? Number(a.rowSeq) : (a.rowOrder !== undefined && a.rowOrder !== null ? Number(a.rowOrder) : null);
-  const orderB = b.rowSeq !== undefined && b.rowSeq !== null ? Number(b.rowSeq) : (b.rowOrder !== undefined && b.rowOrder !== null ? Number(b.rowOrder) : null);
+  // 6. Saved Row Sequence (rowOrder or rowSeq)
+  const orderA = a.rowOrder !== undefined && a.rowOrder !== null ? Number(a.rowOrder) : (a.rowSeq !== undefined && a.rowSeq !== null ? Number(a.rowSeq) : null);
+  const orderB = b.rowOrder !== undefined && b.rowOrder !== null ? Number(b.rowOrder) : (b.rowSeq !== undefined && b.rowSeq !== null ? Number(b.rowSeq) : null);
   if (orderA !== null && orderB !== null && orderA !== orderB) {
     return orderA - orderB;
   }
   if (orderA !== null && orderB === null) return -1;
   if (orderA === null && orderB !== null) return 1;
 
-  const createdA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
-  const createdB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
-  if (createdA !== createdB) {
-    return createdA - createdB;
-  }
-
-  // 8. Variant Name
+  // 7. Variant Name
   const variantA = a.variantId?.variantName || a.variantName;
   const variantB = b.variantId?.variantName || b.variantName;
   const variantCompare = compareVariants(variantA, variantB);

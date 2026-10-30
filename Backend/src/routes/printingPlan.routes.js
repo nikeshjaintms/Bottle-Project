@@ -21,6 +21,12 @@ router.post("/", printingPlanController.createPlan);
 // GET /printing-plan (list plans, supports ?date= or ?month= filters)
 router.get("/", printingPlanController.getPlans);
 
+// GET /printing-plan/paginated (keyset pagination with group boundary logic)
+router.get("/paginated", printingPlanController.getPlansPaginated);
+
+// GET /printing-plan/totals (aggregate totals for all matching records)
+router.get("/totals", printingPlanController.getPlansTotals);
+
 // GET /printing-plan/stats/computed (fetch live stats for form changes)
 router.get("/stats/computed", printingPlanController.getComputedStats);
 

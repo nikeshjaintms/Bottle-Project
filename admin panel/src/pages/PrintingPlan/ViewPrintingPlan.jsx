@@ -1,4 +1,21 @@
-import React, { useEffect } from 'react';
+const renderUsedFrom = (allocation) => {
+  if (!Array.isArray(allocation) || allocation.length === 0) return null;
+  const parts = allocation
+    .filter(a => Number(a.qty) !== 0)
+    .map(a => {
+      const name = a.companyName || a.companyId?.name || (typeof a.companyId === 'string' ? a.companyId : 'Company');
+      const q = a.qty > 0 ? `+${a.qty}` : `${a.qty}`;
+      return `${name} ${q}`;
+    });
+  if (parts.length === 0) return null;
+  return (
+    <div className="small text-muted mt-1 text-center font-monospace" style={{ fontSize: '11px', whiteSpace: 'nowrap' }}>
+      Used from: {parts.join(', ')}
+    </div>
+  );
+};
+
+import { useEffect } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { useNavigate, useParams } from 'react-router-dom';
 import { fetchPrintingPlanById, clearCurrentPlan } from '../../redux/slices/printingPlanSlice';
@@ -45,16 +62,20 @@ export default function ViewPrintingPlan() {
             {error && <div className="alert alert-danger">{error}</div>}
             
             <div className="mb-4 pb-4 border-bottom">
-              <label className="form-label fw-bold small">Plan Date</label>
+              <label className="form-label fw-bold small">Common Plan Date</label>
               <input type="date" className="form-control shadow-none w-auto bg-light" disabled
-                     value={currentPlan.planDate ? new Date(currentPlan.planDate).toISOString().split('T')[0] : ''} />
+                value={currentPlan.planDate ? new Date(currentPlan.planDate).toISOString().split('T')[0] : ''} />
             </div>
 
             <div className="bg-white border border-light-subtle rounded-3 p-4 mb-4 shadow-sm position-relative printing-plan-section">
               <div className="row g-4 mb-4 bg-light p-3 rounded mx-0">
-                <div className="col-md-5">
-                  <label className="form-label fw-bold small text-primary">Plain Bottle</label>
-                  <input type="text" className="form-control shadow-none bg-white" disabled value={currentPlan.plainBottleName || currentPlan.plainBottle || currentPlan.bottleName || '-'} />
+                <div className="col-md-6">
+                  <label className="form-label fw-bold small text-primary">{labels.company}</label>
+                  <input type="text" className="form-control shadow-none bg-white" disabled value={currentPlan.companyName || currentPlan.companyId?.name || '-'} />
+                </div>
+                <div className="col-md-6">
+                  <label className="form-label fw-bold small text-primary">{labels.brand}</label>
+                  <input type="text" className="form-control shadow-none bg-white" disabled value={currentPlan.brandName || currentPlan.brandId?.name || '-'} />
                 </div>
               </div>
 
@@ -63,13 +84,14 @@ export default function ViewPrintingPlan() {
               </div>
 
               <div className="table-responsive mb-4 printing-plan-view-table">
-              <table className="table table-bordered align-middle table-sm" style={{ minWidth: '2400px' }}>
+              <table className="table table-bordered align-middle table-sm" style={{ minWidth: '2600px' }}>
                 <thead className="table-light">
                   <tr>
-                    <th className="small text-muted text-center align-middle" style={{width: '12%', minWidth: '200px'}}>{labels.coatingShade}</th>
+                    <th className="small text-muted text-center align-middle" style={{ width: '3%' }}>{labels.sr}</th>
+                    <th className="small text-muted text-center align-middle" style={{ width: '15%', minWidth: '220px' }}>Plain Bottle</th>
                     <th className="small text-muted text-center align-middle" style={{width: '12%', minWidth: '200px'}}>{labels.printingToBeDone}</th>
+                    <th className="small text-muted text-center align-middle" style={{width: '12%', minWidth: '200px'}}>{labels.coatingShade}</th>
                     <th className="small text-muted text-center align-middle" style={{width: '10%', minWidth: '150px'}}>{labels.textColor}</th>
-                    <th className="small text-muted text-center align-middle" style={{width: '12%', minWidth: '200px'}}>{labels.brand}</th>
                     <th className="small text-muted text-center align-middle" style={{width: '8%', minWidth: '150px'}}>{labels.plainColouredBottleStock}</th>
                     <th className="small text-muted text-center align-middle" style={{width: '7%'}}>{labels.orderQty}</th>
                     <th className="small text-muted text-center align-middle" style={{width: '9%'}}>{labels.readyPrintedQty}</th>
@@ -89,17 +111,18 @@ export default function ViewPrintingPlan() {
                 </thead>
                 <tbody className="border-top-0">
                   <tr>
+                    <td className="text-center">1</td>
                     <td>
-                      <input type="text" className="form-control form-control-sm shadow-none bg-light text-center" disabled value={currentPlan.coatingShade || '-'} />
+                      <input type="text" className="form-control form-control-sm shadow-none bg-light text-center" disabled value={currentPlan.plainBottleName || currentPlan.plainBottle || currentPlan.bottleName || '-'} />
                     </td>
                     <td>
                       <input type="text" className="form-control form-control-sm shadow-none bg-light text-center" disabled value={currentPlan.printingToBeDone || '-'} />
                     </td>
                     <td>
-                      <input type="text" className="form-control form-control-sm shadow-none bg-light text-center" disabled value={currentPlan.textColor || '-'} />
+                      <input type="text" className="form-control form-control-sm shadow-none bg-light text-center" disabled value={currentPlan.coatingShade || '-'} />
                     </td>
                     <td>
-                      <input type="text" className="form-control form-control-sm shadow-none bg-light text-center" disabled value={currentPlan.brandName || currentPlan.brandId?.name || '-'} />
+                      <input type="text" className="form-control form-control-sm shadow-none bg-light text-center" disabled value={currentPlan.textColor || '-'} />
                     </td>
                     <td>
                       <input type="text" className="form-control form-control-sm shadow-none bg-light text-center" disabled value={currentPlan.plainBottleStock || '0'} />
@@ -109,6 +132,7 @@ export default function ViewPrintingPlan() {
                     </td>
                     <td>
                       <input type="text" className="form-control form-control-sm shadow-none bg-light text-center" disabled value={currentPlan.producedQty || '0'} />
+                      {(currentPlan.coatingShade || '').trim().toUpperCase() === 'PLAIN' && renderUsedFrom(currentPlan.stockAllocation)}
                     </td>
                     <td>
                       <input type="text" className="form-control form-control-sm shadow-none bg-light text-center fw-bold text-danger" disabled value={currentPlan.balanceToMake || '0'} />
@@ -129,7 +153,7 @@ export default function ViewPrintingPlan() {
                       <input type="text" className="form-control form-control-sm shadow-none bg-light text-center" disabled value={currentPlan.readyBoxes || '0'} />
                     </td>
                     {(currentPlan.componentHeadersList || []).map((headerName, hIdx) => {
-                      const compData = currentPlan.components?.find(c => (c.itemType || c.componentType) === headerName);
+                      const compData = currentPlan.components?.find(c => c.itemType === headerName || c.componentType === headerName);
                       return (
                         <td key={`comp_td_${hIdx}`} className="text-center align-middle">
                           <input type="text" className="form-control form-control-sm shadow-none bg-light text-center fw-bold" disabled value={compData?.quantity !== undefined && compData?.quantity !== null ? compData.quantity : '-'} />
@@ -147,8 +171,10 @@ export default function ViewPrintingPlan() {
                     <td></td>
                     <td></td>
                     <td></td>
+                    <td></td>
                     <td className="text-center">{currentPlan.plainBottleStock || 0}</td>
                     <td className="text-center">{currentPlan.orderQty || 0}</td>
+                    <td></td>
                     <td></td>
                     <td></td>
                     <td className="text-center">{currentPlan.noOfBoxes || 0}</td>

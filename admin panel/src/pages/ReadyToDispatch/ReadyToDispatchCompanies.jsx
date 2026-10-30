@@ -51,13 +51,21 @@ export default function ReadyToDispatchCompanies() {
 
   // Filter companies by search term
   const filteredCompanies = useMemo(() => {
-    if (!searchTerm.trim()) return companies;
     const term = searchTerm.toLowerCase().trim();
-    return companies.filter(c =>
-      c.name?.toLowerCase().includes(term) ||
-      c.code?.toLowerCase().includes(term) ||
-      c.shortName?.toLowerCase().includes(term)
-    );
+    return companies
+      .filter(c =>
+        !term ||
+        c.name?.toLowerCase().includes(term) ||
+        c.code?.toLowerCase().includes(term) ||
+        c.shortName?.toLowerCase().includes(term)
+      )
+      .slice()
+      .sort((a, b) =>
+        (a.name || '').localeCompare(b.name || '', undefined, {
+          numeric: true,
+          sensitivity: 'base',
+        })
+      );
   }, [companies, searchTerm]);
 
   // Client-side pagination matching Incoming/Dispatch

@@ -319,8 +319,7 @@ function generateChallanHtml(challan) {
         .challan-sheet {
           width: 800px;
           background: #fff;
-          border: 2px solid #000 !important;
-          outline: 2px solid #000;
+          border: 1px solid #000 !important;
           position: relative;
           min-height: 1080px;
           display: flex;
@@ -333,13 +332,13 @@ function generateChallanHtml(challan) {
           position: relative;
           text-align: center;
           padding: 8px 12px 6px;
-          border-bottom: 2px solid #000;
+          border-bottom: 1px solid #000;
         }
 
         .challan-logo {
           position: absolute;
-          top: 5px;
-          left: 10px;
+          top: 0;
+          left: 0;
           width: 140px;
           height: 92px;
           object-fit: contain;
@@ -377,7 +376,7 @@ function generateChallanHtml(challan) {
           display: flex;
           justify-content: space-between;
           padding: 6px 12px;
-          border-bottom: 2px solid #000;
+          border-bottom: 1px solid #000;
           font-size: 12px;
           background: #fafafa;
         }
@@ -386,7 +385,7 @@ function generateChallanHtml(challan) {
         .meta-table {
           width: 100%;
           border-collapse: collapse;
-          border-bottom: 2px solid #000;
+          border-bottom: 1px solid #000;
         }
 
         .meta-cell {
@@ -397,11 +396,11 @@ function generateChallanHtml(challan) {
         }
 
         .meta-cell-left {
-          border-right: 2px solid #000;
+          border-right: 1px solid #000;
         }
 
         .border-bottom-dark {
-          border-bottom: 2px solid #000 !important;
+          border-bottom: 1px solid #000 !important;
         }
 
         .meta-line {
@@ -427,12 +426,12 @@ function generateChallanHtml(challan) {
         }
 
         .items-table thead tr {
-          border-bottom: 2px solid #000;
+          border-bottom: 1px solid #000;
         }
 
         .items-table thead th {
-          border-right: 2px solid #000;
-          border-bottom: 2px solid #000;
+          border-right: 1px solid #000;
+          border-bottom: 1px solid #000;
           background-color: #fff;
           text-align: center;
           font-weight: bold;
@@ -447,7 +446,7 @@ function generateChallanHtml(challan) {
         }
 
         .items-table thead tr.th-sub th {
-          border-bottom: 2px solid #000;
+          border-bottom: 1px solid #000;
           padding: 4px;
         }
 
@@ -456,7 +455,7 @@ function generateChallanHtml(challan) {
         }
 
         .items-table tbody td {
-          border-right: 2px solid #000;
+          border-right: 1px solid #000;
           border-bottom: 1px solid #000;
           padding: 4px 6px;
           font-size: 12px;
@@ -517,15 +516,15 @@ function generateChallanHtml(challan) {
         .totals-table {
           width: 100%;
           border-collapse: collapse;
-          border-top: 2px solid #000;
-          border-bottom: 2px solid #000;
+          border-top: 1px solid #000;
+          border-bottom: 1px solid #000;
         }
 
         .totals-table td {
           padding: 5px 6px;
           font-weight: bold;
           font-size: 13px;
-          border-right: 2px solid #000;
+          border-right: 1px solid #000;
         }
 
         .totals-table td:last-child {
@@ -563,7 +562,7 @@ function generateChallanHtml(challan) {
           padding: 8px 10px;
           font-size: 12px;
           vertical-align: bottom;
-          border-right: 2px solid #000;
+          border-right: 1px solid #000;
         }
 
         .sign-col-right {
@@ -622,7 +621,7 @@ function generateChallanHtml(challan) {
           .challan-sheet {
             width: 100%;
             min-height: 100vh;
-            border: 2px solid #000 !important;
+            border: 1px solid #000 !important;
           }
           .page-break {
             page-break-after: always;

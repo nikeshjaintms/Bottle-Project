@@ -10,6 +10,7 @@ export default function AddCompany() {
   const { companies = [], loading } = useSelector((state) => state.companies);
   const [name, setName] = useState('');
   const [status, setStatus] = useState('active');
+  const [isStockSupplier, setIsStockSupplier] = useState(false);
   const [error, setError] = useState('');
 
   useEffect(() => {
@@ -59,7 +60,7 @@ export default function AddCompany() {
       return Swal.fire('Validation Error', msg, 'error');
     }
 
-    dispatch(createCompany({ name, status })).then((res) => {
+    dispatch(createCompany({ name, status, isStockSupplier })).then((res) => {
       if (!res.error) {
         Swal.fire('Success!', `company "${name}" added successfully!`, 'success');
         navigate('/companies');
@@ -114,6 +115,19 @@ export default function AddCompany() {
                     <option value="active">Active</option>
                     <option value="inactive">Inactive</option>
                   </select>
+                </div>
+
+                <div className="mb-4 form-check">
+                  <input
+                    type="checkbox"
+                    className="form-check-input"
+                    id="isStockSupplierCheck"
+                    checked={isStockSupplier}
+                    onChange={(e) => setIsStockSupplier(e.target.checked)}
+                  />
+                  <label className="form-check-label fw-600 small text-muted" htmlFor="isStockSupplierCheck">
+                    Stock supplier (stock only: used for Incoming and as a plain stock source; not selectable in Dispatch, Lacquer Plan or Printing Plan)
+                  </label>
                 </div>
 
                 <div className="d-flex gap-2 mt-4 user-form-actions">

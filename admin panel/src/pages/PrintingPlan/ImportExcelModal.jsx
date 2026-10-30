@@ -427,7 +427,7 @@ export default function ImportExcelModal({ show, onClose, onImportComplete }) {
                         onClick={(e) => e.stopPropagation()}
                       >
                         <option value="">Auto-detect from filename</option>
-                        {companies && companies.map(c => (
+                        {companies && [...companies].sort((a, b) => (a.name || '').localeCompare(b.name || '', undefined, { numeric: true, sensitivity: 'base' })).map(c => (
                           <option key={c._id} value={c._id}>{c.name}</option>
                         ))}
                       </select>

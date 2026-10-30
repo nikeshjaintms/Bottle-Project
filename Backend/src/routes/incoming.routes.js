@@ -9,7 +9,8 @@ const {
   bulkDeleteIncoming,
   rollbackImport,
   reconcileStock,
-  restoreIncoming
+  restoreIncoming,
+  createBottle
 } = require("../controllers/incoming.controller");
 const { importPreview, commitImport } = require("../controllers/incomingImport");
 const { auth } = require("../middleware/auth.middleware");
@@ -27,6 +28,9 @@ router.post("/import/rollback", auth, checkAbility("delete", "incoming"), rollba
 
 // Reconcile endpoint
 router.post("/reconcile-stock", auth, reconcileStock);
+
+// Create bottle endpoint (for Incoming Add/Edit dropdowns)
+router.post("/create-bottle", auth, createBottle);
 
 // Standard CRUD endpoints
 router.get("/", auth, checkAbility("read", "incoming"), getAllIncoming);

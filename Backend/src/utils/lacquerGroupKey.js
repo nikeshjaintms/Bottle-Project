@@ -45,7 +45,8 @@ async function resolveCanonicalPlainBottle(rawBottleName, companyId = null) {
     derivePlainBottleName = null;
   }
 
-  const derived = derivePlainBottleName ? derivePlainBottleName(trimmed) : trimmed;
+  const derivedRaw = derivePlainBottleName ? derivePlainBottleName(trimmed) : trimmed;
+  const derived = (derivedRaw && typeof derivedRaw === 'object') ? (derivedRaw.plainBottleName || trimmed) : (derivedRaw || trimmed);
   return normalizeBottleName(derived || trimmed);
 }
 

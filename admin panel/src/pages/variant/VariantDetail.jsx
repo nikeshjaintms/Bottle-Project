@@ -138,6 +138,12 @@ export default function VariantDetail() {
                     </span>
                   </div>
                 </div>
+                <div className="col-md-6">
+                  <div className="p-3 bg-light rounded-4 border border-light-subtle">
+                    <span className="text-uppercase small fw-bold text-muted d-block mb-1">Material Code</span>
+                    <span className="fw-bold fs-6">{variant.materialCode || '-'}</span>
+                  </div>
+                </div>
               </div>
             </div>
           </div>

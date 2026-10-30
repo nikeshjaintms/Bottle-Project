@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+﻿import { useState, useEffect } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
 import {
@@ -146,6 +146,7 @@ export default function McnoreChallanList() {
           <table className="data-table mb-0 w-100">
             <thead>
               <tr>
+                <th className="py-3 text-uppercase small fw-bold text-muted ps-4 text-start" style={{ width: 80 }}>Sr No</th>
                 <th className="py-3 text-uppercase small fw-bold text-muted ps-5 text-start">DC No.</th>
                 <th className="py-3 text-uppercase small fw-bold text-muted text-center">Mode</th>
                 <th className="py-3 text-uppercase small fw-bold text-muted text-center">Dis Date &amp; Time</th>
@@ -159,14 +160,14 @@ export default function McnoreChallanList() {
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan="8" className="text-center py-5 text-muted">
+                  <td colSpan="9" className="text-center py-5 text-muted">
                     <div className="spinner-border spinner-border-sm text-primary me-2" role="status" />
                     Loading Mcnore delivery challans...
                   </td>
                 </tr>
               ) : challans.length === 0 ? (
                 <tr>
-                  <td colSpan="8" className="text-center py-5 text-muted">
+                  <td colSpan="9" className="text-center py-5 text-muted">
                     <i className="bi bi-file-earmark-text fs-1 d-block mb-2 text-secondary opacity-50" />
                     No Mcnore delivery challans found.
                     <div className="mt-2">
@@ -183,10 +184,12 @@ export default function McnoreChallanList() {
                   </td>
                 </tr>
               ) : (
-                challans.map((c) => {
+                challans.map((c, index) => {
                   const isWithPo = c.poMode === 'with_po';
+                  const rowNumber = (currentPage - 1) * itemsPerPage + index + 1;
                   return (
                     <tr key={c._id} className="align-middle border-bottom transition-all hover-bg-light">
+                      <td className="py-3 ps-4 text-start text-muted">{rowNumber}</td>
                       <td className="py-3 ps-5 text-start">
                         <Link
                           to={`/delivery-challan/mcnore/view/${c._id}`}
@@ -315,7 +318,7 @@ export default function McnoreChallanList() {
               return pages.map((p, idx) =>
                 p === '...' ? (
                   <span key={`e-${idx}`} className="px-1 text-muted" style={{ fontSize: 13 }}>
-                    …
+                    ΓÇª
                   </span>
                 ) : (
                   <button

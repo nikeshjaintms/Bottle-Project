@@ -1,20 +1,35 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
-import { createDispatch } from '../../redux/slices/dispatchSlice';
+import { createDispatch, fetchDispatchPlainBottleOptions, fetchDispatchVariantOptions } from '../../redux/slices/dispatchSlice';
 import { fetchBottlePerBoxes } from '../../redux/slices/bottlePerBoxSlice';
 import { fetchBottleSpecs } from '../../redux/slices/bottleSpecSlice';
 import { fetchCompanies } from '../../redux/slices/companySlice';
 import { fetchVariants } from '../../redux/slices/variantSlice';
 import { fetchPrintingTypes } from '../../redux/slices/printingTypeSlice';
 import Select from 'react-select';
+import CreatableSelect from 'react-select/creatable';
 import Swal from 'sweetalert2';
+
+// Simple debounce utility
+const debounce = (fn, wait) => {
+  let timeout;
+  const debounced = (...args) => {
+    clearTimeout(timeout);
+    timeout = setTimeout(() => fn(...args), wait);
+  };
+  debounced.cancel = () => clearTimeout(timeout);
+  return debounced;
+};
+
+const normalizeBottleName = (value) => String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
 
 export default function AddDispatch() {
   const navigate = useNavigate();
   const dispatch = useDispatch();
   const { items: bottlePerBoxes } = useSelector(state => state.bottlePerBox);
   const { companies } = useSelector(state => state.companies);
+  const { plainBottleOptionsByCompany, variantOptionsByCompanyBottle } = useSelector(state => state.dispatch);
   const { bottleSpecs } = useSelector(state => state.bottleSpecs);
   const { variants } = useSelector(state => state.variants);
   const { items: printingTypes } = useSelector(state => state.printingType || { items: [] });
@@ -37,6 +52,16 @@ export default function AddDispatch() {
     totalQty: 0
   }]);
 
+  const itemsRef = useRef(items);
+  useEffect(() => {
+    itemsRef.current = items;
+  }, [items]);
+
+  const [otherBottles, setOtherBottles] = useState([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [createErrors, setCreateErrors] = useState({});
+  const [newBottlesToCreate, setNewBottlesToCreate] = useState({});
+
   useEffect(() => {
     dispatch(fetchBottlePerBoxes({ pagination: "false" }));
     dispatch(fetchCompanies({ pagination: "false" }));
@@ -47,54 +72,131 @@ export default function AddDispatch() {
 
   const companyOptions = useMemo(() => {
     if (!companies || companies.length === 0) return [];
-    return companies.map(c => ({ value: c._id, label: c.name }));
+    return companies
+      .filter(c => c?._id && c?.name && !c.isStockSupplier)
+      .slice()
+      .sort((a, b) => a.name.trim().localeCompare(b.name.trim(), undefined, { numeric: true, sensitivity: 'base' }))
+      .map(c => ({ value: c._id, label: c.name }));
   }, [companies]);
 
-  const bottleOptions = useMemo(() => {
-    if (!formData.companyId || !bottlePerBoxes || !bottleSpecs) return [];
-    
-    // Filter bottles associated with the selected company
-    const companyBottles = bottleSpecs
-      .filter(spec => 
-        spec.brandId?.companyId?._id === formData.companyId || 
-        spec.brandId?.companyId === formData.companyId
-      )
-      .map(spec => spec.bottleName)
-      .filter(Boolean);
+  const companyBottleOptions = plainBottleOptionsByCompany[formData.companyId] || {};
+  const bottleOptions = companyBottleOptions.options || [];
+  const selectedBottleIds = useMemo(
+    () => [...new Set(items.map((item) => item.bottleId).filter(Boolean))],
+    [items]
+  );
 
-    const uniqueBottles = new Set(companyBottles);
-    
-    return bottlePerBoxes
-      .filter(b => uniqueBottles.has(b.bottleName))
-      .map(b => ({ value: b._id, label: b.bottleName }));
-  }, [formData.companyId, bottlePerBoxes, bottleSpecs]);
+  useEffect(() => {
+    if (formData.companyId) {
+      dispatch(fetchDispatchPlainBottleOptions(formData.companyId));
+    }
+  }, [dispatch, formData.companyId]);
+
+  // Cleanup state on company change
+  useEffect(() => {
+    setOtherBottles([]);
+    setSearchLoading(false);
+    setCreateErrors({});
+    setNewBottlesToCreate({});
+  }, [formData.companyId]);
+
+  useEffect(() => {
+    selectedBottleIds.forEach((plainBottleId) => {
+      dispatch(fetchDispatchVariantOptions({ companyId: formData.companyId, plainBottleId }));
+    });
+  }, [dispatch, formData.companyId, selectedBottleIds]);
+
+  // Debounced global bottle search
+  const debouncedSearch = useMemo(() => {
+    const fn = async (inputValue) => {
+      if (!inputValue || inputValue.trim().length < 2) {
+        setOtherBottles([]);
+        return;
+      }
+      setSearchLoading(true);
+      try {
+        const url = `/api/bottle-per-box/search?q=${encodeURIComponent(inputValue)}&limit=10`;
+        const res = await fetch(url);
+        
+        if (!res.ok) {
+          setOtherBottles([]);
+          return;
+        }
+        
+        const data = await res.json();
+        const items = data.data || data.items || (Array.isArray(data) ? data : []);
+        if (!Array.isArray(items)) {
+          setOtherBottles([]);
+          return;
+        }
+        
+        const companyBottleValues = new Set(bottleOptions.map(b => (b.plainBottleName || b.value || '').toLowerCase()));
+        const otherBottlesList = (items || []).filter(item => {
+          const itemName = (item.plainBottleName || item.bottleName || item.name || '').toLowerCase();
+          return !companyBottleValues.has(itemName);
+        }).map(item => ({
+          value: item.plainBottleName || item.bottleName || item.name,
+          label: item.plainBottleName || item.bottleName || item.name,
+          plainBottleName: item.plainBottleName || item.bottleName || item.name,
+          bottlePerBox: item.bottlePerBox || 0,
+          isOtherBottle: true,
+          bottlePerBoxData: item
+        }));
+        
+        setOtherBottles(otherBottlesList);
+      } catch (err) {
+        setOtherBottles([]);
+      } finally {
+        setSearchLoading(false);
+      }
+    };
+    const debounced = debounce(fn, 300);
+    return debounced;
+  }, [bottleOptions]);
+
+  const handleInputChangeBottle = (inputValue) => {
+    if (!inputValue || inputValue.trim().length < 2) {
+      setOtherBottles([]);
+      if (debouncedSearch.cancel) {
+        debouncedSearch.cancel();
+      }
+    } else {
+      const companyMatches = bottleOptions.filter(opt => 
+        (opt.label || '').toLowerCase().includes(inputValue.toLowerCase())
+      );
+      
+      if (companyMatches.length > 0) {
+        setOtherBottles([]);
+        if (debouncedSearch.cancel) {
+          debouncedSearch.cancel();
+        }
+      } else {
+        debouncedSearch(inputValue);
+      }
+    }
+  };
+
+  // Memoize combined + deduplicated bottle options
+  const optionsList = useMemo(() => {
+    const combined = [...bottleOptions, ...otherBottles];
+    const seen = new Set();
+    return combined
+      .filter(opt => {
+        if (seen.has(opt.value)) return false;
+        seen.add(opt.value);
+        return true;
+      })
+      .sort((a, b) => {
+        if (a.isOtherBottle !== b.isOtherBottle) {
+          return a.isOtherBottle ? 1 : -1;
+        }
+        return (a.label || '').localeCompare(b.label || '', undefined, { numeric: true, sensitivity: 'base' });
+      });
+  }, [bottleOptions, otherBottles]);
 
   const getVariantOptions = (selectedBottleId) => {
-    if (!selectedBottleId || !bottleSpecs || !variants) return [];
-    
-    // Find the selected bottle and get its plain bottle name
-    const bottlePerBox = bottlePerBoxes?.find(b => b._id === selectedBottleId);
-    if (!bottlePerBox) return [];
-    
-    // Use plainBottleName instead of bottleName
-    const plainBottleName = bottlePerBox.plainBottleName || bottlePerBox.bottleName;
-    
-    const specs = bottleSpecs.filter(spec => spec.bottleName === plainBottleName);
-    const variantMap = new Map();
-    
-    specs.forEach(spec => {
-      if (spec.variantId) {
-        const variantIdStr = typeof spec.variantId === 'string' ? spec.variantId : spec.variantId._id || spec.variantId;
-        if (!variantMap.has(variantIdStr)) {
-          // Find the variant document to get its name
-          const variantDoc = variants.find(v => v._id === variantIdStr);
-          const label = variantDoc?.variantName || variantIdStr;
-          variantMap.set(variantIdStr, { value: variantIdStr, label });
-        }
-      }
-    });
-    
-    return Array.from(variantMap.values());
+    if (!formData.companyId || !selectedBottleId) return [];
+    return variantOptionsByCompanyBottle[`${formData.companyId}:${selectedBottleId}`]?.options || [];
   };
 
   const getCoatingShadeOptions = (selectedBottleId) => {
@@ -195,8 +297,58 @@ export default function AddDispatch() {
     setFormData(prev => ({ ...prev, [name]: value }));
   };
 
+  // Handle CreatableSelect "Create" option - store bottle name, don't create yet
+  const handleCreateBottle = (inputValue, index) => {
+    const bottleName = inputValue.trim();
+    if (!bottleName || bottleName.length < 2) {
+      setCreateErrors(prev => ({
+        ...prev,
+        [index]: 'Bottle name must be at least 2 characters'
+      }));
+      return;
+    }
+
+    // Show toast notification for bottle creation
+    Swal.fire({
+      position: 'top-right',
+      icon: 'info',
+      title: 'Plain Bottle Created',
+      text: `"${bottleName}" created successfully`,
+      timer: 2000,
+      timerProgressBar: true,
+      showConfirmButton: false,
+      toast: true
+    });
+
+    // Store the bottle name to create later on submit
+    setNewBottlesToCreate(prev => ({
+      ...prev,
+      [index]: bottleName
+    }));
+
+    // Set bottleId to the bottle name
+    handleItemChange(index, 'bottleId', bottleName);
+    
+    // Clear any previous error for this item
+    setCreateErrors(prev => {
+      const updated = { ...prev };
+      delete updated[index];
+      return updated;
+    });
+  };
+
   const handleCompanyChange = (selected) => {
-    setFormData(prev => ({ ...prev, companyId: selected?.value || '' }));
+    const companyId = selected?.value || '';
+    if (companyId === formData.companyId) return;
+    setFormData(prev => ({ ...prev, companyId }));
+    setItems(currentItems => currentItems.map(item => ({
+      ...item,
+      bottleId: '',
+      coatingShade: '',
+      printingTypeId: '',
+      variantId: '',
+      detectedTextColor: 'Not Detected',
+    })));
   };
 
   const addItemRow = () => {
@@ -214,7 +366,7 @@ export default function AddDispatch() {
     newItems[index][field] = value;
 
     // When bottle changes, clear dependent fields
-    if (field === 'bottleId' && value) {
+    if (field === 'bottleId') {
       // Clear variant, coating shade, and printing type when bottle changes
       newItems[index].variantId = '';
       newItems[index].coatingShade = '';
@@ -222,7 +374,7 @@ export default function AddDispatch() {
       newItems[index].detectedTextColor = 'Not Detected';
       
       // Auto-populate qty when bottleId changes
-      const foundBox = bottlePerBoxes?.find(b => b._id === value);
+      const foundBox = value && bottlePerBoxes?.find(b => b._id === value);
       if (foundBox && foundBox.bottlePerBox != null && foundBox.bottlePerBox > 0) {
         newItems[index].qty = foundBox.bottlePerBox;
       } else {
@@ -232,33 +384,35 @@ export default function AddDispatch() {
 
     // Auto-populate coating shade and printing type when variant is selected
     if (field === 'variantId' && value) {
+      const variantOption = getVariantOptions(newItems[index].bottleId)
+        .find((option) => option.value === String(value));
+      if (variantOption) {
+        newItems[index].detectedTextColor = variantOption.textColor || 'Not Detected';
+        if (variantOption.coatingShade) newItems[index].coatingShade = variantOption.coatingShade;
+      }
+
       // Find the BottleSpec that has this variantId and get its coating shade and printing type
       const bottlePerBox = bottlePerBoxes?.find(b => b._id === newItems[index].bottleId);
       if (bottlePerBox) {
-        const plainBottleName = bottlePerBox.plainBottleName || bottlePerBox.bottleName;
-        
         // Get the text color directly from the selected variant
         const selectedVariant = variants?.find(v => v._id === value);
-        if (selectedVariant && selectedVariant.detectedTextColor) {
+        if (!variantOption?.textColor && selectedVariant?.detectedTextColor) {
           newItems[index].detectedTextColor = selectedVariant.detectedTextColor;
         }
         
-        // Try to find matching BottleSpec by bottle name and variant
-        let matchingSpec = bottleSpecs?.find(spec => 
-          spec.bottleName === plainBottleName && 
-          (spec.variantId === value || spec.variantId?._id === value)
-        );
+        let matchingSpec = variantOption?.bottleSpecId
+          ? bottleSpecs?.find(spec => String(spec._id) === variantOption.bottleSpecId)
+          : null;
         
-        // If not found with variantId, search for any spec with this bottle name and has printingTypeId
-        // This handles cases where printingTypeId is set directly on BottleSpec without variantId
         if (!matchingSpec) {
-          matchingSpec = bottleSpecs?.find(spec => 
-            spec.bottleName === plainBottleName && 
-            spec.printingTypeId
+          const plainBottleName = bottlePerBox.plainBottleName || bottlePerBox.bottleName;
+          matchingSpec = bottleSpecs?.find(spec =>
+            spec.bottleName === plainBottleName &&
+            (spec.variantId === value || spec.variantId?._id === value)
           );
         }
         
-        if (matchingSpec) {
+        if (matchingSpec && !variantOption?.coatingShade) {
           // Auto-populate coating shade
           if (matchingSpec.coatingShade) {
             newItems[index].coatingShade = matchingSpec.coatingShade;
@@ -344,8 +498,16 @@ export default function AddDispatch() {
 
     dispatch(createDispatch(payload)).then(res => {
       if (!res.error) {
-        Swal.fire('Success', 'Dispatch recorded successfully!', 'success');
-        navigate(`/dispatch/company/${formData.companyId}`);
+        // Show success SweetAlert modal (centered, not toast)
+        Swal.fire({
+          position: 'center',
+          icon: 'success',
+          title: 'Success!',
+          text: 'Dispatch recorded and stock updated successfully',
+          confirmButtonText: 'OK'
+        }).then(() => {
+          navigate(`/dispatch/company/${formData.companyId}`);
+        });
       } else {
         Swal.fire('Error', res.payload || 'Failed to save', 'error');
       }
@@ -441,7 +603,7 @@ export default function AddDispatch() {
                   <thead className="table-light">
                     <tr>
                       <th className="small text-muted text-center" style={{ width: '4%', minWidth: '45px' }}>Sr.</th>
-                      <th className="small text-muted" style={{ width: '20%' }}>Bottle Name <span className="text-danger">*</span></th>
+                      <th className="small text-muted" style={{ width: '20%' }}>Plain Bottle <span className="text-danger">*</span></th>
                       <th className="small text-muted" style={{ width: '15%' }}>Variant (Printing)</th>
                       <th className="small text-muted" style={{ width: '15%' }}>Coating Shade</th>
                       <th className="small text-muted" style={{ width: '15%' }}>Text Color</th>
@@ -456,42 +618,58 @@ export default function AddDispatch() {
                       <tr key={index}>
                         <td className="text-center text-muted small">{index + 1}</td>
                         <td>
-                          <Select
-                            options={bottleOptions}
+                          <CreatableSelect
+                            options={optionsList}
                             value={
                               item.bottleId
-                                ? (bottleOptions.find(opt => opt.value === item.bottleId) || 
-                                   { value: item.bottleId, label: bottlePerBoxes?.find(b => b._id === item.bottleId)?.bottleName || item.bottleId })
+                                ? (optionsList.find(opt => opt.value === item.bottleId) || 
+                                   { value: item.bottleId, label: bottlePerBoxes?.find(b => b._id === item.bottleId)?.plainBottleName || bottlePerBoxes?.find(b => b._id === item.bottleId)?.bottleName || item.bottleId })
                                 : null
                             }
                             onChange={(selected) => handleItemChange(index, 'bottleId', selected?.value || '')}
-                            placeholder="Select Bottle"
+                            onCreateOption={(inputValue) => handleCreateBottle(inputValue, index)}
+                            placeholder={!formData.companyId ? 'Select company first' : 'Select or Create Plain Bottle'}
                             isClearable
+                            isDisabled={!formData.companyId}
                             menuPortalTarget={document.body}
+                            formatCreateLabel={(inputValue) => `Create "${inputValue}"`}
                             styles={{
                               menuPortal: base => ({ ...base, zIndex: 9999 }),
                               control: (base) => ({ ...base, borderRadius: '8px', backgroundColor: 'var(--bs-light)', borderColor: 'var(--bs-border-color-translucent)' })
                             }}
                           />
+                          {createErrors[index] && (
+                            <small className="text-danger d-block mt-1">{createErrors[index]}</small>
+                          )}
                         </td>
                         <td>
                           <Select
                             options={getVariantOptions(item.bottleId)}
-                            value={
-                              item.variantId 
+                            value={getVariantOptions(item.bottleId).find(option => option.value === String(item.variantId)) ||
+                              (item.variantId
                                 ? { value: item.variantId, label: variants?.find(v => v._id === item.variantId)?.variantName || item.variantId }
-                                : null
-                            }
+                                : null)}
                             onChange={(selected) => handleItemChange(index, 'variantId', selected?.value || '')}
-                            placeholder="Select Variant"
+                            placeholder={
+                              !item.bottleId
+                                ? 'Select Plain Bottle first'
+                                : variantOptionsByCompanyBottle[`${formData.companyId}:${item.bottleId}`]?.loading
+                                  ? 'Loading variants...'
+                                  : variantOptionsByCompanyBottle[`${formData.companyId}:${item.bottleId}`]?.error || 'Select Variant'
+                            }
                             isClearable
-                            isDisabled={!item.bottleId}
+                            isDisabled={!item.bottleId || variantOptionsByCompanyBottle[`${formData.companyId}:${item.bottleId}`]?.loading}
                             menuPortalTarget={document.body}
                             styles={{
                               menuPortal: base => ({ ...base, zIndex: 9999 }),
                               control: (base) => ({ ...base, borderRadius: '8px', backgroundColor: 'var(--bs-light)', borderColor: 'var(--bs-border-color-translucent)' })
                             }}
                           />
+                          {variantOptionsByCompanyBottle[`${formData.companyId}:${item.bottleId}`]?.error && (
+                            <small className="text-danger d-block mt-1">
+                              {variantOptionsByCompanyBottle[`${formData.companyId}:${item.bottleId}`].error}
+                            </small>
+                          )}
                         </td>
                         <td>
                           <Select
@@ -509,9 +687,14 @@ export default function AddDispatch() {
                           />
                         </td>
                         <td>
-                          <div className="form-control bg-light" style={{ borderRadius: '8px', height: '38px', display: 'flex', alignItems: 'center', border: '1px solid var(--bs-border-color-translucent)', cursor: 'default' }}>
-                            <span className="text-muted small">{item.detectedTextColor || 'Not Detected'}</span>
-                          </div>
+                          <input
+                            type="text"
+                            className="form-control form-control-sm shadow-none"
+                            value={item.detectedTextColor || ''}
+                            onChange={(e) => handleItemChange(index, 'detectedTextColor', e.target.value)}
+                            placeholder="Enter text color"
+                            style={{ borderRadius: '8px', height: '38px' }}
+                          />
                         </td>
                         <td>
                           <input

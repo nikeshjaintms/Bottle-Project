@@ -120,7 +120,34 @@ const printingPlanSchema = new mongoose.Schema({
       lineId: mongoose.Schema.Types.ObjectId,
       sentAt: Date
     }
+  },
+  stockSources: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Company"
+  }],
+  stockAllocation: [{
+    companyId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Company"
+    },
+    qty: {
+      type: Number,
+      default: 0
+    }
+  }],
+  allocationShortfall: {
+    type: Boolean,
+    default: false
+  },
+  shortfallQty: {
+    type: Number,
+    default: 0
   }
 }, { timestamps: true });
+
+// Indexes for printingplan queries with common filters
+printingPlanSchema.index({ companyId: 1, isDeleted: 1, bottleId: 1 });
+printingPlanSchema.index({ companyId: 1, coatingShade: 1, isDeleted: 1 });
+printingPlanSchema.index({ companyId: 1, createdAt: -1 });
 
 module.exports = mongoose.model("PrintingPlan", printingPlanSchema);

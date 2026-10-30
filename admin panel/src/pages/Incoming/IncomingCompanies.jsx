@@ -21,6 +21,7 @@ export default function IncomingCompanies() {
       page: urlPage,
       limit: itemsPerPage,
       search,
+      sortBy: 'name',
     }));
   }, [dispatch, urlPage, itemsPerPage, search]);
 
@@ -220,7 +221,7 @@ export default function IncomingCompanies() {
         show={showImportModal} 
         onClose={() => setShowImportModal(false)}
         onImportComplete={() => {
-          dispatch(fetchCompanies({ page: currentPage, limit: itemsPerPage, search }));
+          dispatch(fetchCompanies({ page: currentPage, limit: itemsPerPage, search, sortBy: 'name' }));
         }}
       />
     </div>

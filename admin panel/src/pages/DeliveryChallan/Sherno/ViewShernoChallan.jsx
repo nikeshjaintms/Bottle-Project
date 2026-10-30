@@ -2,9 +2,17 @@ import { useEffect, useRef, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
 import { fetchDeliveryChallanById } from '../../../redux/slices/deliveryChallanSlice';
-import API from '../../../services/api';
+import html2pdf from 'html2pdf.js';
 import Swal from 'sweetalert2';
 import logo from '../../../assets/hero.png';
+
+const applyPrintLayout = (element) => {
+  element.style.width = '190mm';
+  element.style.maxWidth = 'none';
+  element.style.border = '1px solid #000';
+  element.style.padding = '12px';
+  element.style.boxShadow = 'none';
+};
 
 export default function ViewShernoChallan() {
   const { id } = useParams();
@@ -25,26 +33,91 @@ export default function ViewShernoChallan() {
   };
 
   const handleDownloadPdf = async () => {
+    if (!printRef.current) return;
+
     try {
       setDownloadingPdf(true);
-      const res = await API.get(`/delivery-challan/${id}/pdf`, {
-        responseType: 'blob',
-      });
-      const blob = new Blob([res.data], { type: 'application/pdf' });
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `Delivery_Challan_Sherno_${currentChallan?.challanNo || id}.pdf`;
-      document.body.appendChild(a);
-      a.click();
-      window.URL.revokeObjectURL(url);
-      document.body.removeChild(a);
+      await html2pdf()
+        .set({
+          margin: [10, 10, 10, 10],
+          filename: `Delivery_Challan_Sherno_${currentChallan?.challanNo || id}.pdf`,
+          image: { type: 'jpeg', quality: 0.98 },
+          html2canvas: {
+            scale: 2,
+            useCORS: true,
+            letterRendering: true,
+            scrollY: 0,
+            onclone: (clonedDocument) => {
+              const printableDocument = clonedDocument.querySelector('.challan-document');
+              if (printableDocument) applyPrintLayout(printableDocument);
+
+              const pdfBorderStyles = clonedDocument.createElement('style');
+              pdfBorderStyles.textContent = `
+                .challan-document .table {
+                  border-collapse: collapse !important;
+                }
+                .challan-document .table thead tr:first-child {
+                  border-bottom: 1px solid #000 !important;
+                }
+                .challan-document .table th,
+                .challan-document .table td {
+                  border: 1px solid #000 !important;
+                }
+                .challan-document .table thead tr:first-child th[colspan] {
+                  border-bottom: 1px solid #000 !important;
+                }
+              `;
+              clonedDocument.head.appendChild(pdfBorderStyles);
+            },
+          },
+          jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+          pagebreak: { avoid: ['tr'] },
+        })
+        .from(printRef.current)
+        .save();
     } catch (err) {
       console.error('PDF download error:', err);
       Swal.fire('Error', 'Failed to generate PDF. You can use Print (Save as PDF).', 'error');
     } finally {
       setDownloadingPdf(false);
     }
+  };
+
+  const handleOpenHtmlPreview = () => {
+    if (!printRef.current) return;
+
+    const previewWindow = window.open('', '_blank');
+    if (!previewWindow) {
+      Swal.fire('Preview blocked', 'Please allow pop-ups to open the challan preview.', 'warning');
+      return;
+    }
+
+    const previewDocument = previewWindow.document;
+    previewDocument.open();
+    previewDocument.write('<!doctype html><html><head><meta charset="utf-8"><title>Sherno Delivery Challan Preview</title></head><body></body></html>');
+    previewDocument.close();
+
+    document.querySelectorAll('link[rel="stylesheet"]').forEach((stylesheet) => {
+      const previewStylesheet = previewDocument.createElement('link');
+      previewStylesheet.rel = 'stylesheet';
+      previewStylesheet.href = stylesheet.href;
+      previewDocument.head.appendChild(previewStylesheet);
+    });
+
+    document.querySelectorAll('style').forEach((style) => {
+      previewDocument.head.appendChild(style.cloneNode(true));
+    });
+
+    const wrapper = printRef.current.parentElement.cloneNode(false);
+    const printableDocument = printRef.current.cloneNode(true);
+    applyPrintLayout(printableDocument);
+    wrapper.style.width = '190mm';
+    wrapper.style.maxWidth = '100%';
+    wrapper.style.margin = '20px auto';
+    wrapper.appendChild(printableDocument);
+    previewDocument.body.style.margin = '0';
+    previewDocument.body.style.backgroundColor = '#f3f4f6';
+    previewDocument.body.appendChild(wrapper);
   };
 
   if (loading || !currentChallan) {
@@ -102,14 +175,13 @@ export default function ViewShernoChallan() {
           >
             <i className="bi bi-pencil-fill me-2" /> Edit Challan
           </Link>
-          <a
-            href={`http://localhost:5000/api/delivery-challan/${c._id}/html`}
-            target="_blank"
-            rel="noreferrer"
+          <button
+            type="button"
             className="btn btn-outline-primary shadow-sm px-4 py-2 rounded-3"
+            onClick={handleOpenHtmlPreview}
           >
             <i className="bi bi-filetype-html me-2" /> HTML Preview
-          </a>
+          </button>
           <button
             type="button"
             className="btn btn-outline-primary shadow-sm px-4 py-2 rounded-3"
@@ -142,8 +214,7 @@ export default function ViewShernoChallan() {
           style={{
             width: '100%',
             maxWidth: '820px',
-            border: '2px solid #000',
-            outline: '2px solid #000',
+            border: '1px solid #000',
             boxShadow: '0 4px 15px rgba(0,0,0,0.1)',
             fontFamily: '"Times New Roman", Times, serif',
             color: '#000',
@@ -152,11 +223,11 @@ export default function ViewShernoChallan() {
           }}
         >
           {/* Header Section */}
-          <div className="text-center border-bottom border-dark border-2 pb-0" style={{ position: 'relative' }}>
+          <div className="text-center border-bottom border-dark pb-0" style={{ position: 'relative' }}>
             <img
               src={logo}
               alt="Shayona Glass Decor logo"
-              style={{ position: 'absolute', top: 5, left: 10, width: 140, height: 92, objectFit: 'contain' }}
+              style={{ position: 'absolute', top: 0, left: 0, width: 140, height: 92, objectFit: 'contain' }}
             />
             <h3
               className="fw-bold mb-1 pt-2"
@@ -176,7 +247,7 @@ export default function ViewShernoChallan() {
               GSTIN NO:-24AAUCS9498K1Z5
             </div>
             <div
-              className="fw-bold text-uppercase py-1 text-decoration-underline border-top border-dark border-2"
+              className="fw-bold text-uppercase py-1 text-decoration-underline border-top border-dark"
               style={{ fontSize: '15px', letterSpacing: '1px' }}
             >
               DELIVERY CHALLAN
@@ -184,9 +255,9 @@ export default function ViewShernoChallan() {
           </div>
 
           {/* Meta Information Grid */}
-          <div className="row g-0 border-bottom border-dark border-2" style={{ fontSize: '13px' }}>
+          <div className="row g-0 border-bottom border-dark" style={{ fontSize: '13px' }}>
             {/* Left: Gate Pass, PO Details, Vehicle */}
-            <div className="col-6 border-end border-dark border-2 p-3 text-start" style={{ lineHeight: 1.6 }}>
+            <div className="col-6 border-end border-dark p-3 text-start" style={{ lineHeight: 1.6 }}>
               <div><strong>GATE PASS NO:</strong> <span className="fw-bold">{c.challanNo}</span></div>
               <div><strong>P.O. DATE:</strong>{poDateStr}</div>
               <div><strong>P.O. NO.:</strong>{poNoStr}</div>
@@ -218,21 +289,21 @@ export default function ViewShernoChallan() {
               <tr className="text-center align-middle" style={{ borderColor: '#000' }}>
                 <th
                   rowSpan={2}
-                  className="p-1 border border-dark border-2 text-uppercase"
+                  className="p-1 border border-dark text-uppercase"
                   style={{ width: '60px', fontWeight: 'bold' }}
                 >
                   Sr No.
                 </th>
                 <th
                   rowSpan={2}
-                  className="p-1 border border-dark border-2 text-uppercase"
+                  className="p-1 border border-dark text-uppercase"
                   style={{ fontWeight: 'bold' }}
                 >
                   DESCRIPTION
                 </th>
                 <th
                   colSpan={3}
-                  className="p-1 border border-dark border-2 text-uppercase"
+                  className="p-1 border border-dark text-uppercase"
                   style={{ fontWeight: 'bold' }}
                 >
                   QUANTITY
@@ -240,19 +311,19 @@ export default function ViewShernoChallan() {
               </tr>
               <tr className="text-center" style={{ borderColor: '#000' }}>
                 <th
-                  className="p-1 border border-dark border-2 text-uppercase"
+                  className="p-1 border border-dark text-uppercase"
                   style={{ width: '110px', fontWeight: 'bold' }}
                 >
                   BOX
                 </th>
                 <th
-                  className="p-1 border border-dark border-2 text-uppercase"
+                  className="p-1 border border-dark text-uppercase"
                   style={{ width: '80px', fontWeight: 'bold' }}
                 >
                   UNIT
                 </th>
                 <th
-                  className="p-1 border border-dark border-2 text-uppercase"
+                  className="p-1 border border-dark text-uppercase"
                   style={{ width: '120px', fontWeight: 'bold' }}
                 >
                   TOTAL
@@ -263,13 +334,13 @@ export default function ViewShernoChallan() {
               {(c.items || []).map((item, idx) => (
                 <tr key={idx} style={{ borderColor: '#000' }}>
                   <td
-                    className="text-center p-2 border border-dark border-2 fw-bold align-middle"
+                    className="text-center p-2 border border-dark fw-bold align-middle"
                     style={{ verticalAlign: 'middle', width: '60px' }}
                   >
                     {idx + 1}
                   </td>
                   <td
-                    className="p-2 border border-dark border-2 align-middle text-start"
+                    className="p-2 border border-dark align-middle text-start"
                     style={{ verticalAlign: 'middle', lineHeight: 1.5 }}
                   >
                     {item.materialCode && (
@@ -288,13 +359,13 @@ export default function ViewShernoChallan() {
                       </div>
                     )}
                   </td>
-                  <td className="text-center p-2 border border-dark border-2 fw-bold align-middle">
+                  <td className="text-center p-2 border border-dark fw-bold align-middle">
                     {item.box || item.boxCount || '-'}
                   </td>
-                  <td className="text-center p-2 border border-dark border-2 fw-bold align-middle">
+                  <td className="text-center p-2 border border-dark fw-bold align-middle">
                     {item.unit || '-'}
                   </td>
-                  <td className="text-center p-2 border border-dark border-2 fw-bold align-middle">
+                  <td className="text-center p-2 border border-dark fw-bold align-middle">
                     {item.total ? Number(item.total).toLocaleString('en-IN') : '-'}
                   </td>
                 </tr>
@@ -304,15 +375,15 @@ export default function ViewShernoChallan() {
               <tr className="fw-bold" style={{ borderColor: '#000', height: '36px' }}>
                 <td
                   colSpan={2}
-                  className="text-center p-2 border border-dark border-2 text-uppercase letter-spacing-1"
+                  className="text-center p-2 border border-dark text-uppercase letter-spacing-1"
                 >
                   TOTAL
                 </td>
-                <td className="text-center p-2 border border-dark border-2 fs-6 fw-bold">
+                <td className="text-center p-2 border border-dark fs-6 fw-bold">
                   {totalBoxes}
                 </td>
-                <td className="p-2 border border-dark border-2"></td>
-                <td className="text-center p-2 border border-dark border-2 fs-6 fw-bold">
+                <td className="p-2 border border-dark"></td>
+                <td className="text-center p-2 border border-dark fs-6 fw-bold">
                   {totalQuantity.toLocaleString('en-IN')}
                 </td>
               </tr>
@@ -320,7 +391,10 @@ export default function ViewShernoChallan() {
           </table>
 
           {/* Signatures Section */}
-          <div className="border-bottom border-dark border-2 p-3 d-flex justify-content-end">
+          <div
+            className="border-bottom border-dark p-3 d-flex justify-content-end align-items-end"
+            style={{ minHeight: '160px' }}
+          >
             <div className="text-center" style={{ minWidth: '220px' }}>
               <div className="fw-bold small text-uppercase mb-4">MATERIAL ISSUED BY</div>
               <div className="fw-bold small text-uppercase">SIGNATURE</div>
@@ -329,7 +403,7 @@ export default function ViewShernoChallan() {
 
           {/* Security Table Footer */}
           <div className="row g-0">
-            <div className="col-6 border-end border-dark border-2 p-2" style={{ lineHeight: 1.8 }}>
+            <div className="col-6 border-end border-dark p-2" style={{ lineHeight: 1.8 }}>
               <div><strong>Checked :-</strong> {c.checkedBy || ''}</div>
               <div><strong>Date :-</strong> {c.checkedDate ? formatDate(c.checkedDate) : challanDateStr}</div>
               <div><strong>Time :-</strong> {c.checkedTime || c.challanTime || ''}</div>
@@ -344,6 +418,9 @@ export default function ViewShernoChallan() {
 
       {/* Embedded Print Styles */}
       <style>{`
+        .challan-document .table thead tr:first-child {
+          border-bottom: 1px solid #000 !important;
+        }
         @media print {
           body * {
             visibility: hidden;
@@ -373,7 +450,7 @@ export default function ViewShernoChallan() {
           }
           .challan-document {
             max-width: 100% !important;
-            border: 2px solid #000 !important;
+            border: 1px solid #000 !important;
             padding: 12px !important;
             box-shadow: none !important;
           }

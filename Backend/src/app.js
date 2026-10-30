@@ -14,7 +14,7 @@ const allowedOrigins = [
 ];
 
 app.use(cors({
-  origin: function(origin, callback) {
+  origin: function (origin, callback) {
     // Allow requests with no origin (Postman, mobile apps, server-to-server)
     if (!origin || allowedOrigins.includes(origin)) {
       callback(null, true);
@@ -29,6 +29,8 @@ app.use(cookieParser());
 
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
+const { initRequestCache } = require('./middleware/cache.middleware');
+app.use(initRequestCache);
 
 app.use("/uploads", express.static("uploads"));
 

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Generates official Shreno Delivery Challan HTML document matching the exact Shreno format.
  */
 const { getChallanLogoDataUri } = require("./challanLogo");
@@ -194,7 +194,7 @@ function generateShrenoChallanHtml(challan) {
         .challan-sheet {
           width: 820px;
           background: #fff;
-          border: 2px solid #000 !important;
+          border: 1px solid #000 !important;
           position: relative;
           min-height: 1080px;
           display: flex;
@@ -206,13 +206,13 @@ function generateShrenoChallanHtml(challan) {
         .challan-header {
           position: relative;
           text-align: center;
-          border-bottom: 2px solid #000;
+          border-bottom: 1px solid #000;
         }
 
         .challan-logo {
           position: absolute;
-          top: 5px;
-          left: 10px;
+          top: 0;
+          left: 0;
           width: 140px;
           height: 92px;
           object-fit: contain;
@@ -240,7 +240,7 @@ function generateShrenoChallanHtml(challan) {
         }
 
         .doc-title-row {
-          border-top: 2px solid #000;
+          border-top: 1px solid #000;
           padding: 5px 0;
         }
 
@@ -255,7 +255,7 @@ function generateShrenoChallanHtml(challan) {
         .meta-table {
           width: 100%;
           border-collapse: collapse;
-          border-bottom: 2px solid #000;
+          border-bottom: 1px solid #000;
         }
 
         .meta-cell {
@@ -266,7 +266,7 @@ function generateShrenoChallanHtml(challan) {
 
         .meta-cell-left {
           width: 50%;
-          border-right: 2px solid #000;
+          border-right: 1px solid #000;
           line-height: 1.5;
         }
 
@@ -306,12 +306,12 @@ function generateShrenoChallanHtml(challan) {
         }
 
         .items-table thead tr {
-          border-bottom: 2px solid #000;
+          border-bottom: 1px solid #000;
         }
 
         .items-table thead th {
-          border-right: 2px solid #000;
-          border-bottom: 2px solid #000;
+          border-right: 1px solid #000;
+          border-bottom: 1px solid #000;
           background-color: #fff;
           text-align: center;
           font-weight: bold;
@@ -322,11 +322,11 @@ function generateShrenoChallanHtml(challan) {
         }
 
         .items-table thead tr.th-main th.th-qty-group {
-          border-bottom: 2px solid #000;
+          border-bottom: 1px solid #000;
         }
 
         .items-table thead tr.th-sub th {
-          border-bottom: 2px solid #000;
+          border-bottom: 1px solid #000;
           padding: 4px;
         }
 
@@ -336,8 +336,8 @@ function generateShrenoChallanHtml(challan) {
         }
 
         .items-table tbody td {
-          border-right: 2px solid #000;
-          border-bottom: 2px solid #000;
+          border-right: 1px solid #000;
+          border-bottom: 1px solid #000;
           padding: 8px 10px;
           font-size: 13px;
         }
@@ -374,8 +374,8 @@ function generateShrenoChallanHtml(challan) {
 
         /* TOTALS ROW */
         .totals-row td {
-          border-top: 2px solid #000;
-          border-bottom: 2px solid #000;
+          border-top: 1px solid #000;
+          border-bottom: 1px solid #000;
           padding: 7px 10px;
           font-size: 14px;
         }
@@ -392,10 +392,12 @@ function generateShrenoChallanHtml(challan) {
         }
 
         .signatures-section {
-          padding: 15px 25px 25px;
+          min-height: 160px;
+          padding: 15px 25px;
           display: flex;
           justify-content: flex-end;
-          border-bottom: 2px solid #000;
+          align-items: flex-end;
+          border-bottom: 1px solid #000;
         }
 
         .sign-block-right {
@@ -427,7 +429,7 @@ function generateShrenoChallanHtml(challan) {
 
         .sec-col-left {
           width: 50%;
-          border-right: 2px solid #000;
+          border-right: 1px solid #000;
           padding: 8px 14px;
           font-size: 12px;
           line-height: 1.7;
@@ -468,7 +470,7 @@ function generateShrenoChallanHtml(challan) {
           .challan-sheet {
             width: 100%;
             min-height: 100vh;
-            border: 2px solid #000 !important;
+            border: 1px solid #000 !important;
             box-shadow: none;
           }
         }

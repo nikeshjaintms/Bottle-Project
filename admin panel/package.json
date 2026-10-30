@@ -18,6 +18,7 @@
     "bootstrap-icons": "^1.13.1",
     "exceljs": "^4.4.0",
     "html2pdf.js": "^0.14.0",
+    "lodash": "^4.18.1",
     "react": "^19.2.5",
     "react-barcode": "^1.6.1",
     "react-bootstrap": "^2.10.10",

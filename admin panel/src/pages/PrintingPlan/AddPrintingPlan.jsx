@@ -66,6 +66,35 @@ export const getOrderedHeaders = (selectedItemTypeOptions = {}, sortedTypes = []
   return ordered;
 };
 
+
+const computePrintingSplitSuggestion = (qty, sources, sourcesAvailMap, ownCompId) => {
+  const reqQty = Number(qty) || 0;
+  const ownCompStr = (ownCompId?._id || ownCompId)?.toString();
+  if (reqQty <= 0) {
+    return sources.map(s => ({ companyId: (s?._id || s)?.toString(), qty: 0 }));
+  }
+  const sorted = [...sources].sort((a, b) => {
+    const aStr = (a?._id || a)?.toString();
+    const bStr = (b?._id || b)?.toString();
+    if (aStr === ownCompStr) return -1;
+    if (bStr === ownCompStr) return 1;
+    return 0;
+  });
+  let remaining = reqQty;
+  const result = [];
+  for (const s of sorted) {
+    const sId = (s?._id || s)?.toString();
+    const avail = sourcesAvailMap.get(sId) ?? 0;
+    const part = Math.min(remaining, Math.max(0, avail));
+    result.push({ companyId: sId, qty: part });
+    remaining -= part;
+  }
+  if (remaining > 0 && result.length > 0) {
+    result[result.length - 1].qty += remaining;
+  }
+  return result;
+};
+
 export default function AddPrintingPlan() {
   const dispatch = useDispatch();
   const navigate = useNavigate();
@@ -82,9 +111,9 @@ export default function AddPrintingPlan() {
   const { loading, error } = useSelector((state) => state.printingPlans);
   const { labels, language, toggleLanguage } = usePrintingPlanLanguage();
 
-  const [showMissingSpecModal, setShowMissingSpecModal] = useState(false);
-  const [missingSpecData, setMissingSpecData] = useState({
-    bottleName: '', brandId: '', companyName: '', brandName: '', bottlePerBox: '', code: '', printingTypeId: '', printingColorId: '', blockIndex: null, itemIndex: null
+  const [showMissingPlainBottleModal, setShowMissingPlainBottleModal] = useState(false);
+  const [missingPlainBottleData, setMissingPlainBottleData] = useState({
+    bottleName: '', brandId: '', companyId: '', companyName: '', brandName: '', bottlePerBox: '', printingTypeId: '', printingColorId: '', blockIndex: null, itemIndex: null, status: true
   });
   const [creatingSpec, setCreatingSpec] = useState(false);
   const [directCompanies, setDirectCompanies] = useState([]);
@@ -147,6 +176,31 @@ export default function AddPrintingPlan() {
       });
     }
     return summary;
+  }, [blocks]);
+
+  const [companyPlainBottles, setCompanyPlainBottles] = useState({});
+
+  useEffect(() => {
+    const companyIds = Array.from(new Set(blocks.map(b => b.companyId?._id || b.companyId).filter(Boolean)));
+    companyIds.forEach(async (cid) => {
+      const cidStr = cid.toString();
+      if (!companyPlainBottles[cidStr]) {
+        try {
+          const res = await API.get('/bottle-per-box/plain-bottles', { params: { companyId: cidStr } });
+          if (res.data?.success) {
+            setCompanyPlainBottles(prev => ({
+              ...prev,
+              [cidStr]: {
+                companyBottles: res.data.data || [],
+                otherBottles: res.data.otherBottles || []
+              }
+            }));
+          }
+        } catch (err) {
+          console.error("Failed to fetch plain bottles for company", cidStr, err);
+        }
+      }
+    });
   }, [blocks]);
 
   useEffect(() => {
@@ -428,19 +482,20 @@ export default function AddPrintingPlan() {
             masterBottlePerBox = existingBPB?.bottlePerBox || '';
           }
 
-          setMissingSpecData({
+          setMissingPlainBottleData({
             bottleName: newBottleName.toUpperCase(),
             brandId: bBrandId,
+            companyId: bCompanyId,
             companyName: bCompanyName,
             brandName: bBrandName,
             bottlePerBox: masterBottlePerBox,
-            code: '',
             printingTypeId: '',
             printingColorId: '',
             blockIndex: blockIndex,
-            itemIndex: itemIndex
+            itemIndex: itemIndex,
+            status: true
           });
-          setShowMissingSpecModal(true);
+          setShowMissingPlainBottleModal(true);
         }
 
         // Auto-populate plainBottle if not set
@@ -953,6 +1008,24 @@ export default function AddPrintingPlan() {
             const stockVal = res.data.data.coatedStockAvailable;
 
             if (targetShade === 'PLAIN') {
+              // Fetch supplier sources info from backend
+              try {
+                const sSources = currentRow.stockSources || (curComp ? [curComp] : []);
+                const lRes = await API.get('/lacquer-plan/stats/computed', {
+                  params: {
+                    bottleName: currentRow.bottleName,
+                    companyId: curComp,
+                    planDate,
+                    stockSources: sSources.join(',')
+                  }
+                });
+                if (lRes.data?.success) {
+                  currentRow.sources = lRes.data.data.sources || [];
+                  currentRow.hasSuppliers = lRes.data.data.hasSuppliers || false;
+                  currentRow.eligibleSuppliers = lRes.data.data.eligibleSuppliers || [];
+                }
+              } catch (e) {}
+
               // Deduct producedQty of any other rows sharing this (company, bottle, PLAIN) pool
               let otherProduced = 0;
               updatedBlocks.forEach(b => {
@@ -1009,6 +1082,230 @@ export default function AddPrintingPlan() {
     }
   };
 
+  const handleCreatePrintingTypeForPlainBottle = async (inputValue) => {
+    if (!inputValue || !inputValue.trim()) return;
+    const name = inputValue.trim();
+    const existing = (printingTypes || []).find(t => t.name?.trim().toLowerCase() === name.toLowerCase());
+    if (existing) {
+      setMissingPlainBottleData(prev => ({ ...prev, printingTypeId: existing._id }));
+      return;
+    }
+    try {
+      const res = await API.post('/printing-type', { name, status: true });
+      if (res.data?._id) {
+        setMissingPlainBottleData(prev => ({ ...prev, printingTypeId: res.data._id }));
+        dispatch(fetchPrintingTypes({ pagination: 'false' }));
+        Swal.fire({ icon: 'success', title: 'Printing Type Created', text: `Created "${name}"`, timer: 1500, showConfirmButton: false, toast: true, position: 'top-end' });
+      }
+    } catch (err) {
+      console.error('Error creating printing type:', err);
+      Swal.fire('Error', err.response?.data?.message || err.response?.data || err.message || 'Failed to create printing type', 'error');
+    }
+  };
+
+  const handleCreatePrintingColorForPlainBottle = async (inputValue) => {
+    if (!inputValue || !inputValue.trim()) return;
+    const name = inputValue.trim();
+    const existing = (printingColors || []).find(c => c.name?.trim().toLowerCase() === name.toLowerCase());
+    if (existing) {
+      setMissingPlainBottleData(prev => ({ ...prev, printingColorId: existing._id }));
+      return;
+    }
+    const pTypeId = missingPlainBottleData.printingTypeId || (printingTypes && printingTypes[0]?._id);
+    if (!pTypeId) {
+      return Swal.fire('Notice', 'Please select or create a Printing Type first.', 'info');
+    }
+    try {
+      const res = await API.post('/printing-color', { printingTypeId: pTypeId, name, status: true });
+      if (res.data?._id) {
+        setMissingPlainBottleData(prev => ({ ...prev, printingColorId: res.data._id }));
+        dispatch(fetchPrintingColors({ pagination: 'false' }));
+        Swal.fire({ icon: 'success', title: 'Printing Color Created', text: `Created "${name}"`, timer: 1500, showConfirmButton: false, toast: true, position: 'top-end' });
+      }
+    } catch (err) {
+      console.error('Error creating printing color:', err);
+      Swal.fire('Error', err.response?.data?.message || err.response?.data || err.message || 'Failed to create printing color', 'error');
+    }
+  };
+
+  const handleSaveMissingPlainBottle = async () => {
+    if (!missingPlainBottleData.bottleName || !missingPlainBottleData.bottleName.trim()) {
+      Swal.fire('Error', 'Please enter a Plain Bottle name', 'error');
+      return;
+    }
+    setCreatingSpec(true);
+    try {
+      const bottleNameVal = missingPlainBottleData.bottleName.trim();
+      const bpbValue = missingPlainBottleData.bottlePerBox !== '' && missingPlainBottleData.bottlePerBox !== null && missingPlainBottleData.bottlePerBox !== undefined
+        ? Number(missingPlainBottleData.bottlePerBox)
+        : null;
+
+      // 1. Create / upsert bottle-per-box with brand & printing info
+      await API.post('/bottle-per-box', {
+        bottleName: bottleNameVal,
+        plainBottleName: bottleNameVal,
+        bottleNames: [bottleNameVal],
+        bottlePerBox: bpbValue,
+        brandId: missingPlainBottleData.brandId || undefined,
+        printingTypeId: missingPlainBottleData.printingTypeId || undefined,
+        printingColorId: missingPlainBottleData.printingColorId || undefined,
+        status: true
+      });
+
+      // 2. Also ensure BottleSpec is explicitly created or upserted if brandId is available
+      if (missingPlainBottleData.brandId) {
+        try {
+          await API.post('/bottle-spec', {
+            brandId: missingPlainBottleData.brandId,
+            bottleName: bottleNameVal,
+            printingTypeId: missingPlainBottleData.printingTypeId || null,
+            printingColorId: missingPlainBottleData.printingColorId || null,
+            bottlePerBox: bpbValue,
+            isCoating: true,
+            isPrinting: true,
+            status: true,
+            upsert: true
+          });
+        } catch (specErr) {
+          console.warn('Could not create/update bottle spec from plain bottle modal:', specErr);
+        }
+      }
+
+      // 3. Refresh both bottlePerBoxes and bottleSpecs
+      await Promise.all([
+        dispatch(fetchBottlePerBoxes({ pagination: 'false' })).unwrap(),
+        dispatch(fetchBottleSpecs({ pagination: 'false', type: 'all' })).unwrap()
+      ]);
+
+      Swal.fire({
+        icon: 'success',
+        title: 'Plain Bottle Created',
+        text: `"${bottleNameVal}" created successfully for ${missingPlainBottleData.companyName || 'plan'}!`,
+        showConfirmButton: false,
+        timer: 2500,
+        toast: true,
+        position: 'top-end',
+      });
+
+      setShowMissingPlainBottleModal(false);
+
+      if (missingPlainBottleData.blockIndex !== null && missingPlainBottleData.itemIndex !== null && missingPlainBottleData.blockIndex !== undefined && missingPlainBottleData.itemIndex !== undefined) {
+        handleItemChange(missingPlainBottleData.blockIndex, missingPlainBottleData.itemIndex, 'plainBottle', bottleNameVal);
+        if (bpbValue) {
+          handleItemChange(missingPlainBottleData.blockIndex, missingPlainBottleData.itemIndex, 'boxQty', bpbValue);
+        }
+      }
+    } catch (err) {
+      console.error('Error creating plain bottle:', err);
+      Swal.fire('Error', err.response?.data?.message || err.message || 'Failed to create plain bottle', 'error');
+    } finally {
+      setCreatingSpec(false);
+    }
+  };
+
+  
+
+  const handlePrintingSplitChange = (blockIndex, itemIndex, sourceId, val) => {
+    setBlocks(prevBlocks => {
+      const updated = [...prevBlocks];
+      const curBlock = { ...updated[blockIndex] };
+      const curItems = [...curBlock.items];
+      const it = { ...curItems[itemIndex] };
+      const sources = it.stockSources || (curBlock.companyId ? [curBlock.companyId] : []);
+      const Q = Number(it.producedQty) || 0;
+      const parsedVal = val === '' ? '' : Math.max(0, parseInt(val, 10) || 0);
+
+      let currentAlloc = Array.isArray(it.stockAllocation) ? [...it.stockAllocation] : [];
+      sources.forEach(sId => {
+        if (!currentAlloc.some(a => (a.companyId?._id || a.companyId)?.toString() === sId)) {
+          currentAlloc.push({ companyId: sId, qty: 0 });
+        }
+      });
+
+      if (sources.length === 2) {
+        const otherSourceId = sources.find(id => id !== sourceId);
+        const thisQty = typeof parsedVal === 'number' ? parsedVal : 0;
+        const otherQty = Math.max(0, Q - thisQty);
+        currentAlloc = [
+          { companyId: sourceId, qty: parsedVal },
+          { companyId: otherSourceId, qty: otherQty }
+        ];
+      } else {
+        currentAlloc = currentAlloc.map(a => {
+          const aId = (a.companyId?._id || a.companyId)?.toString();
+          if (aId === sourceId) return { companyId: aId, qty: parsedVal };
+          return a;
+        });
+      }
+      it.stockAllocation = currentAlloc;
+      curItems[itemIndex] = it;
+      curBlock.items = curItems;
+      updated[blockIndex] = curBlock;
+      return updated;
+    });
+  };
+
+  const handleTogglePrintingSource = async (blockIndex, itemIndex, sourceId, checked) => {
+    const currentBlock = blocks[blockIndex];
+    const currentItem = currentBlock?.items[itemIndex];
+    if (!currentItem) return;
+
+    const currentSources = currentItem.stockSources || (currentBlock.companyId ? [currentBlock.companyId] : []);
+    if (!checked && currentSources.length <= 1) return; // At least one source must stay checked
+    let updatedSources = [];
+    if (checked) {
+      updatedSources = Array.from(new Set([...currentSources, sourceId]));
+    } else {
+      updatedSources = currentSources.filter(id => id !== sourceId);
+    }
+
+    const updatedBlocks = [...blocks];
+    // update all rows sharing bottle and PLAIN in this block
+    const curBottle = currentItem.bottleName;
+    for (let i = 0; i < updatedBlocks[blockIndex].items.length; i++) {
+      const it = updatedBlocks[blockIndex].items[i];
+      if (it.bottleName === curBottle && (it.coatingShade || '').trim().toUpperCase() === 'PLAIN') {
+        it.stockSources = updatedSources;
+      }
+    }
+    setBlocks(updatedBlocks);
+
+    // Fetch updated combined stock
+    try {
+      const res = await API.get('/lacquer-plan/stats/computed', {
+        params: {
+          bottleName: curBottle,
+          companyId: currentBlock.companyId,
+          planDate,
+          stockSources: updatedSources.join(',')
+        }
+      });
+      if (res.data?.success) {
+        const plainStock = res.data.data.plainStock !== undefined ? res.data.data.plainStock : res.data.data.openingStock;
+        const sourcesData = res.data.data.sources || [];
+        const availMap = new Map();
+        sourcesData.forEach(s => availMap.set(s.companyId, s.available ?? 0));
+
+        const newBlocks = [...blocks];
+        for (let i = 0; i < newBlocks[blockIndex].items.length; i++) {
+          const it = newBlocks[blockIndex].items[i];
+          if (it.bottleName === curBottle && (it.coatingShade || '').trim().toUpperCase() === 'PLAIN') {
+            it.plainBottleStock = Number.isFinite(Number(plainStock)) ? Number(plainStock) : 0;
+            it.sources = sourcesData;
+            it.hasSuppliers = res.data.data.hasSuppliers;
+            it.eligibleSuppliers = res.data.data.eligibleSuppliers;
+            if (updatedSources.length >= 2) {
+              it.stockAllocation = computePrintingSplitSuggestion(it.producedQty, updatedSources, availMap, currentBlock.companyId);
+            }
+          }
+        }
+        setBlocks(newBlocks);
+      }
+    } catch (err) {
+      console.error("Failed to fetch computed stock for printing plan:", err);
+    }
+  };
+
   const handleSubmit = (e) => {
     e.preventDefault();
 
@@ -1047,6 +1344,8 @@ export default function AddPrintingPlan() {
               printingToBeDone: item.printingToBeDone || '',
               textColor: item.textColor || '',
               plainBottleStock: item.plainBottleStock || 0,
+              stockSources: item.stockSources || (block.companyId ? [block.companyId] : []),
+              stockAllocation: item.stockAllocation || [], 
               orderQty: item.orderQty,
               producedQty: item.producedQty || 0,
               balanceToMake: item.balanceToMake || 0,
@@ -1087,7 +1386,7 @@ export default function AddPrintingPlan() {
 
   const uniqueBottleNames = Array.from(new Set(
     (bottleSpecs || []).map(b => b.bottleName).filter(name => name && name.trim() !== '')
-  )).sort().map(name => ({ value: name, label: name }));
+  )).sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })).map(name => ({ value: name, label: name }));
 
   const globalAllBottles = useMemo(() => {
     const allSpecBottles = (bottleSpecs || []).map(s => s.bottleName?.trim()).filter(Boolean);
@@ -1095,21 +1394,66 @@ export default function AddPrintingPlan() {
     return Array.from(new Set([...allBPBBottles, ...allSpecBottles])).filter(Boolean);
   }, [bottleSpecs, bottlePerBoxes]);
 
+  const normalizeRollOn = (str) => {
+    if (!str) return '';
+    return String(str)
+      .trim()
+      .toUpperCase()
+      .replace(/\s+/g, ' ')
+      .replace(/ROLL\s*ON/g, 'ROLLON')
+      .replace(/ROLL-ON/g, 'ROLLON');
+  };
+
   const plainBottleOptions = useMemo(() => {
-    if (!bottlePerBoxes || bottlePerBoxes.length === 0) return [];
     const unique = new Map();
-    bottlePerBoxes.forEach(b => {
+    (bottlePerBoxes || []).forEach(b => {
       const name = (b.plainBottleName || b.bottleName || '').trim();
-      if (name && !unique.has(name)) {
-        unique.set(name, { value: name, label: name });
+      const normKey = normalizeRollOn(name);
+      if (name && !unique.has(normKey)) {
+        unique.set(normKey, {
+          value: b.plainBottleName || name,
+          label: b.plainBottleName || name,
+          plainBottleName: b.plainBottleName || name,
+          bottlePerBox: b.bottlePerBox !== undefined ? b.bottlePerBox : null,
+          boxWeight: b.boxWeight !== undefined ? b.boxWeight : null,
+          bottlePerBoxData: b
+        });
       }
     });
-    return Array.from(unique.values()).sort((a, b) => a.label.localeCompare(b.label));
+
+    return Array.from(unique.values()).sort((a, b) => (a.label || '').localeCompare(b.label || '', undefined, { numeric: true, sensitivity: 'base' }));
   }, [bottlePerBoxes]);
 
-  const uniqueCoatingShades = Array.from(new Set(
-    (bottleSpecs || []).map(s => s.coatingShade).filter(shade => shade && shade.trim() !== '')
-  )).sort().map(shade => ({ value: shade, label: shade }));
+  const uniqueCoatingShades = Array.from(new Set([
+    ...(variants || []).map(v => v.coatingShade),
+    ...(bottleSpecs || []).map(s => s.coatingShade)
+  ].filter(shade => shade && shade.trim() !== '')))
+    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }))
+    .map(shade => ({ value: shade, label: shade }));
+
+  const printingTypeOptions = useMemo(() => {
+    return (printingTypes || []).map(t => ({ value: t._id, label: t.name }));
+  }, [printingTypes]);
+
+  const printingColorOptions = useMemo(() => {
+    return (printingColors || []).map(c => ({ value: c._id, label: c.name }));
+  }, [printingColors]);
+
+  const sortedPrintingColors = useMemo(() => {
+    return [...(printingColors || [])].sort((a, b) => (a.name || '').localeCompare(b.name || '', undefined, { numeric: true, sensitivity: 'base' }));
+  }, [printingColors]);
+
+  const sortedPrintingTypes = useMemo(() => {
+    return [...(printingTypes || [])].sort((a, b) => (a.name || '').localeCompare(b.name || '', undefined, { numeric: true, sensitivity: 'base' }));
+  }, [printingTypes]);
+
+  const sortedUniqueTextColors = useMemo(() => {
+    const fromVariants = (variants || []).map(v => v.detectedTextColor).filter(Boolean);
+    const fromPrintingColors = (printingColors || []).map(pc => pc.name).filter(Boolean);
+    const fromSpecs = (bottleSpecs || []).map(bs => bs.printingColorId?.name).filter(Boolean);
+    return Array.from(new Set([...fromPrintingColors, ...fromVariants, ...fromSpecs]))
+      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
+  }, [variants, printingColors, bottleSpecs]);
 
   const sortedActiveItemTypes = useMemo(() => {
     const active = (itemTypes || []).filter(it => !it.isDeleted && it.status !== false);
@@ -1178,24 +1522,60 @@ export default function AddPrintingPlan() {
 
                 const brandOptions = (brands || [])
                   .filter(b => b.status && companyBrandIds.has(b._id.toString()))
+                  .sort((a, b) => (a.name || '').localeCompare(b.name || '', undefined, { numeric: true, sensitivity: 'base' }))
                   .map(b => ({ value: b._id, label: b.name }));
 
                 let blockPlainBottleOptions = [];
-                if (block.brandId) {
+                const blockCompIdStr = (block.companyId?._id || block.companyId || '').toString();
+                const cBottleInfo = companyPlainBottles[blockCompIdStr];
+                if (cBottleInfo && cBottleInfo.companyBottles && cBottleInfo.companyBottles.length > 0) {
+                  if (block.brandId) {
+                    const matchingSpecs = companySpecs.filter(bs => (bs.brandId?._id || bs.brandId)?.toString() === block.brandId.toString());
+                    const matchingBottleNames = new Set(matchingSpecs.map(s => normalizeRollOn(s.bottleName)).filter(Boolean));
+                    blockPlainBottleOptions = cBottleInfo.companyBottles.filter(cb => {
+                      const norm = normalizeRollOn(cb.plainBottleName || cb.name);
+                      if (matchingBottleNames.has(norm)) return true;
+                      const matchedBox = (bottlePerBoxes || []).find(b => normalizeRollOn(b.plainBottleName || b.bottleName) === norm);
+                      if (matchedBox) {
+                        const names = (Array.isArray(matchedBox.bottleNames) && matchedBox.bottleNames.length > 0)
+                          ? matchedBox.bottleNames
+                          : [matchedBox.bottleName || matchedBox.plainBottleName].filter(Boolean);
+                        return names.some(n => matchingBottleNames.has(normalizeRollOn(n)));
+                      }
+                      return false;
+                    }).map(cb => ({
+                      value: cb.plainBottleName || cb.name,
+                      label: cb.plainBottleName || cb.name,
+                      plainBottleName: cb.plainBottleName || cb.name,
+                      bottlePerBox: cb.bottlePerBox,
+                      boxWeight: cb.boxWeight,
+                      bottlePerBoxData: cb
+                    }));
+                  } else {
+                    blockPlainBottleOptions = cBottleInfo.companyBottles.map(cb => ({
+                      value: cb.plainBottleName || cb.name,
+                      label: cb.plainBottleName || cb.name,
+                      plainBottleName: cb.plainBottleName || cb.name,
+                      bottlePerBox: cb.bottlePerBox,
+                      boxWeight: cb.boxWeight,
+                      bottlePerBoxData: cb
+                    }));
+                  }
+                } else if (block.brandId) {
                   const matchingSpecs = companySpecs.filter(bs => (bs.brandId?._id || bs.brandId)?.toString() === block.brandId.toString());
-                  const matchingBottleNames = new Set(matchingSpecs.map(s => (s.bottleName || '').trim().toUpperCase()).filter(Boolean));
+                  const matchingBottleNames = new Set(matchingSpecs.map(s => normalizeRollOn(s.bottleName)).filter(Boolean));
 
                   blockPlainBottleOptions = plainBottleOptions.filter(opt => {
-                    const optName = opt.value.trim().toUpperCase();
+                    const optName = normalizeRollOn(opt.value);
                     if (matchingBottleNames.has(optName)) return true;
                     const matchedBox = (bottlePerBoxes || []).find(b =>
-                      (b.plainBottleName || b.bottleName || '').trim().toUpperCase() === optName
+                      normalizeRollOn(b.plainBottleName || b.bottleName) === optName
                     );
                     if (matchedBox) {
                       const names = (Array.isArray(matchedBox.bottleNames) && matchedBox.bottleNames.length > 0)
                         ? matchedBox.bottleNames
                         : [matchedBox.bottleName || matchedBox.plainBottleName].filter(Boolean);
-                      return names.some(n => matchingBottleNames.has(n.trim().toUpperCase()));
+                      return names.some(n => matchingBottleNames.has(normalizeRollOn(n)));
                     }
                     return false;
                   });
@@ -1382,45 +1762,89 @@ export default function AddPrintingPlan() {
                                         const currentPlainVal = item.plainBottle || item.bottleName;
                                         let availablePlainBottleOptions = blockPlainBottleOptions;
 
-                                        // If printing variant is selected, show ALL plain bottles for that variant NAME
+                                        // Start with brand-specific bottles
+                                        const allOtherBottles = (plainBottleOptions || [])
+                                          .filter(pb => !blockPlainBottleOptions.some(opt => normalizeRollOn(opt.value || opt.label) === normalizeRollOn(pb.value || pb.label)));
+
+                                        // Combine: brand bottles + all other bottles so search works everywhere
+                                        availablePlainBottleOptions = [...blockPlainBottleOptions, ...allOtherBottles].sort((a, b) => (a.label || '').localeCompare(b.label || '', undefined, { numeric: true, sensitivity: 'base' }));
+
+                                        // Build variant-related bottles set (for use in filterOption)
+                                        let bottleNamesForCurrentVariant = null;
                                         if (item.printingToBeDone) {
                                           const selectedVariantName = item.printingToBeDone;
-
-                                          // Find ALL variants with this same variantName (there may be multiple for different sizes/bottles)
                                           const allVariantsWithSameName = (variants || []).filter(v =>
                                             v.variantName && v.variantName.trim().toUpperCase() === selectedVariantName.trim().toUpperCase()
                                           );
-
-                                          // Get all unique bottle spec IDs from all these variants
                                           const bottleSpecIds = new Set(allVariantsWithSameName.map(v => (v.bottleSpecId?._id || v.bottleSpecId)?.toString()).filter(Boolean));
-
-                                          // Get all bottle names from these specs
-                                          const bottleNamesForVariants = new Set((bottleSpecs || [])
+                                          bottleNamesForCurrentVariant = new Set((bottleSpecs || [])
                                             .filter(bs => bottleSpecIds.has(bs._id?.toString()))
                                             .map(bs => bs.bottleName?.trim().toUpperCase())
                                             .filter(Boolean)
                                           );
-
-                                          // Get all plain bottles that match any of these bottle names
-                                          availablePlainBottleOptions = plainBottleOptions.filter(opt => {
-                                            const optUpper = opt.label.trim().toUpperCase();
-                                            return bottleNamesForVariants.has(optUpper);
-                                          });
                                         }
 
                                         if (currentPlainVal && !availablePlainBottleOptions.some(o => o.value === currentPlainVal)) {
-                                          availablePlainBottleOptions = [{ value: currentPlainVal, label: currentPlainVal }, ...availablePlainBottleOptions];
+                                          availablePlainBottleOptions = [{ value: currentPlainVal, label: currentPlainVal }, ...availablePlainBottleOptions].sort((a, b) => (a.label || '').localeCompare(b.label || '', undefined, { numeric: true, sensitivity: 'base' }));
                                         }
+
                                         return (
-                                          <Select
+                                          <CreatableSelect
                                             options={availablePlainBottleOptions}
                                             value={availablePlainBottleOptions.find(opt => opt.value === currentPlainVal) || (currentPlainVal ? { value: currentPlainVal, label: currentPlainVal } : null)}
                                             onChange={(selected) => handleItemChange(blockIndex, itemIndex, 'plainBottle', selected?.value || '')}
-                                            placeholder={block.brandId ? "Select Plain Bottle..." : "Select brand first..."}
+                                            onCreateOption={(inputValue) => {
+                                              const compObj = companies.find(c => c._id === (block.companyId?._id || block.companyId));
+                                              const brandObj = brands.find(b => b._id === (block.brandId?._id || block.brandId));
+                                              setMissingPlainBottleData({
+                                                bottleName: inputValue.trim(),
+                                                companyId: compObj?._id || block.companyId || '',
+                                                brandId: brandObj?._id || block.brandId || '',
+                                                companyName: compObj?.name || '',
+                                                brandName: brandObj?.name || '',
+                                                bottlePerBox: '',
+                                                printingTypeId: '',
+                                                printingColorId: '',
+                                                blockIndex: blockIndex,
+                                                itemIndex: itemIndex,
+                                                status: true
+                                              });
+                                              setShowMissingPlainBottleModal(true);
+                                            }}
+                                            placeholder={block.brandId ? "Select or type new Plain Bottle..." : "Select brand first..."}
                                             isDisabled={!block.brandId}
                                             isClearable
+                                            isSearchable
+                                            closeMenuOnScroll={(e) => true}
+                                            menuPosition="fixed"
+                                            menuPlacement="auto"
                                             menuPortalTarget={document.body}
-                                            styles={{ menuPortal: base => ({ ...base, zIndex: 9999 }) }}
+                                            styles={{
+                                              menuPortal: base => ({ ...base, zIndex: 9999 }),
+                                              control: base => ({
+                                                ...base,
+                                                borderColor: 'var(--bs-border-color-subtle, #dee2e6)',
+                                                borderRadius: '0.375rem',
+                                                minHeight: '31px',
+                                                fontSize: '0.875rem'
+                                              })
+                                            }}
+                                            filterOption={(option, rawInput) => {
+                                              if (!rawInput) {
+                                                // No search input - show ONLY brand-specific bottles
+                                                return blockPlainBottleOptions.some(opt => opt.value === option.value);
+                                              }
+                                              const searchUpper = rawInput.trim().toUpperCase();
+                                              const optionUpper = (option.label || '').toUpperCase();
+                                              if (!optionUpper.includes(searchUpper)) {
+                                                return false;
+                                              }
+                                              if (bottleNamesForCurrentVariant && bottleNamesForCurrentVariant.size > 0) {
+                                                return bottleNamesForCurrentVariant.has(optionUpper);
+                                              }
+                                              return true;
+                                            }}
+                                            formatCreateLabel={(inputValue) => `Create "${inputValue}"`}
                                           />
                                         );
                                       })()}
@@ -1509,6 +1933,7 @@ export default function AddPrintingPlan() {
                                       value={item.textColor}
                                       onChange={(e) => handleItemChange(blockIndex, itemIndex, 'textColor', e.target.value)}
                                       placeholder="Text Color..."
+                                      list="printingPlanTextColorList"
                                     />
                                   </td>
 
@@ -1536,6 +1961,82 @@ export default function AddPrintingPlan() {
                                           handleItemChange(blockIndex, itemIndex, 'plainBottleStock', val);
                                         }
                                       }} min="0" />
+                                      {(item.coatingShade || '').trim().toUpperCase() === 'PLAIN' && (() => {
+                                        const hasBottle = Boolean(item.bottleName);
+                                        if (!hasBottle) return null;
+                                        const stockSuppliers = (companies || []).filter(c => c.isStockSupplier);
+                                        const hasSupplierWithBottle = (item.hasSuppliers === true) ||
+                                          (Array.isArray(item.eligibleSuppliers) && item.eligibleSuppliers.length > 0) ||
+                                          (item.stockSources && item.stockSources.some(sId => stockSuppliers.some(supp => (supp._id || supp).toString() === (sId?._id || sId)?.toString())));
+
+                                        if (!hasSupplierWithBottle) return null;
+
+                                        const selectedSources = item.stockSources || (block.companyId ? [block.companyId] : []);
+                                        const ownComp = (companies || []).find(c => (c._id?.toString() || c.toString()) === (block.companyId?._id || block.companyId)?.toString());
+                                        const availableSources = [ownComp, ...stockSuppliers].filter(Boolean);
+                                        return (
+                                          <div className="dropdown dropup mt-1 position-relative stock-from-dropdown">
+                                            <button
+                                              className="btn btn-sm btn-outline-secondary py-0 px-1 w-100 dropdown-toggle"
+                                              type="button"
+                                              onClick={(e) => {
+                                                e.preventDefault();
+                                                e.stopPropagation();
+                                                const dId = `${blockIndex}_${itemIndex}`;
+                                                setOpenDropdownId(prev => prev === dId ? null : dId);
+                                              }}
+                                              aria-expanded={openDropdownId === `${blockIndex}_${itemIndex}`}
+                                              style={{ fontSize: '11px', whiteSpace: 'nowrap' }}
+                                            >
+                                              Stock from ({selectedSources.length})
+                                            </button>
+                                            {openDropdownId === `${blockIndex}_${itemIndex}` && (
+                                              <div
+                                                className="dropdown-menu show p-2 shadow"
+                                                style={{
+                                                  minWidth: '220px',
+                                                  zIndex: 1060,
+                                                  display: 'block',
+                                                  position: 'absolute',
+                                                  top: 'auto', bottom: '100%', marginBottom: '4px',
+                                                  left: '50%',
+                                                  transform: 'translateX(-50%)',
+                                                  backgroundColor: '#fff',
+                                                  border: '1px solid rgba(0,0,0,0.15)',
+                                                  borderRadius: '6px',
+                                                  boxShadow: '0 -0.5rem 1rem rgba(0,0,0,0.175)'
+                                                }}
+                                                onClick={(e) => e.stopPropagation()}
+                                              >
+                                                <div className="small fw-bold text-muted mb-1 text-uppercase" style={{ fontSize: '11px' }}>Available Plain Stock:</div>
+                                                {availableSources.map(s => {
+                                                  const sIdStr = (s._id || s).toString();
+                                                  const isChecked = selectedSources.some(id => (id?._id || id)?.toString() === sIdStr);
+                                                  const srcFound = (item.sources || []).find(src => (src.companyId?._id || src.companyId)?.toString() === sIdStr)
+                                                        || (item.eligibleSuppliers || []).find(src => (src.companyId?._id || src.companyId)?.toString() === sIdStr);
+                                                  const sAvail = srcFound?.available !== undefined 
+                                                    ? srcFound.available 
+                                                    : (sIdStr === String(block.companyId?._id || block.companyId) ? (item.plainBottleStock || 0) : 0);
+                                                  return (
+                                                    <div className="form-check" key={sIdStr}>
+                                                      <input
+                                                        className="form-check-input"
+                                                        type="checkbox"
+                                                        id={`add_print_src_${blockIndex}_${itemIndex}_${sIdStr}`}
+                                                        checked={isChecked}
+                                                        onChange={(e) => handleTogglePrintingSource(blockIndex, itemIndex, sIdStr, e.target.checked)}
+                                                      />
+                                                      <label className="form-check-label small" htmlFor={`add_print_src_${blockIndex}_${itemIndex}_${sIdStr}`}>
+                                                        {s.name}: <b>{sAvail}</b>
+                                                      </label>
+                                                    </div>
+                                                  );
+                                                })}
+                                              </div>
+                                            )}
+                                          </div>
+                                        );
+                                      })()}
                                     </td>
                                   )}
                                   <td>
@@ -1550,6 +2051,64 @@ export default function AddPrintingPlan() {
                                       min="0"
                                       title={item.isExceedingStock ? 'Total Ready (Printed) Qty exceeds Plain Stock' : ''}
                                     />
+                                    {(item.coatingShade || '').trim().toUpperCase() === 'PLAIN' && (() => {
+                                      const selectedSources = item.stockSources || (block.companyId ? [block.companyId] : []);
+                                      if (selectedSources.length < 2) return null;
+
+                                      const reqQty = Number(item.producedQty) || 0;
+                                      const alloc = item.stockAllocation || [];
+                                      let allocSum = 0;
+                                      let errorMsg = null;
+
+                                      for (const sId of selectedSources) {
+                                        const comp = (companies || []).find(c => (c._id || c)?.toString() === sId?.toString());
+                                        const sName = comp?.name || 'Company';
+                                        const sAvail = item.sources?.find(src => (src.companyId?._id || src.companyId)?.toString() === sId?.toString())?.available
+                                          ?? item.eligibleSuppliers?.find(src => (src.companyId?._id || src.companyId)?.toString() === sId?.toString())?.available
+                                          ?? 0;
+                                        const partObj = alloc.find(a => (a.companyId?._id || a.companyId)?.toString() === sId?.toString());
+                                        const partQty = partObj ? Number(partObj.qty) : 0;
+                                        allocSum += partQty;
+                                        if (partQty > sAvail && !errorMsg) {
+                                          errorMsg = `Only ${sAvail} bottles available for ${sName}`;
+                                        }
+                                      }
+                                      if (!errorMsg && allocSum !== reqQty) {
+                                        errorMsg = `Split must add up to ${reqQty} (now ${allocSum})`;
+                                      }
+
+                                      return (
+                                        <div className="mt-1">
+                                          <div className="d-flex flex-wrap gap-1 align-items-center justify-content-center" style={{ fontSize: '11px' }}>
+                                            {selectedSources.map(sId => {
+                                              const comp = (companies || []).find(c => (c._id || c)?.toString() === sId?.toString());
+                                              const sName = comp?.name || 'Company';
+                                              const partObj = alloc.find(a => (a.companyId?._id || a.companyId)?.toString() === sId?.toString());
+                                              const partQty = (partObj !== undefined && partObj.qty !== null && partObj.qty !== '') ? partObj.qty : 0;
+                                              return (
+                                                <div key={sId} className="d-flex align-items-center gap-1">
+                                                  <span className="badge bg-secondary" style={{ fontSize: '10px' }}>{sName}</span>
+                                                  <input
+                                                    type="number"
+                                                    className="form-control form-control-sm text-center p-0"
+                                                    style={{ width: '60px', height: '24px', fontSize: '11px' }}
+                                                    value={partQty}
+                                                    onChange={(e) => handlePrintingSplitChange(blockIndex, itemIndex, sId, e.target.value)}
+                                                    min="0"
+                                                  />
+                                                </div>
+                                              );
+                                            })}
+                                          </div>
+                                          {errorMsg && (
+                                            <div className="text-danger fw-bold text-center mt-1" style={{ fontSize: '0.72rem', lineHeight: '1.2' }}>
+                                              <i className="bi bi-exclamation-circle-fill me-1"></i>
+                                              {errorMsg}
+                                            </div>
+                                          )}
+                                        </div>
+                                      );
+                                    })()}
                                     {item.isExceedingStock && (
                                       <div className="text-warning fw-bold text-center" style={{ fontSize: '0.65rem' }}>
                                         <i className="bi bi-exclamation-triangle-fill me-1"></i>Exceeds Stock
@@ -1684,173 +2243,137 @@ export default function AddPrintingPlan() {
                   Cancel
                 </button>
               </div>
+              <datalist id="printingPlanTextColorList">
+                {sortedUniqueTextColors.map(color => (
+                  <option key={color} value={color} />
+                ))}
+              </datalist>
             </form>
           </div>
         </div>
       </div>
 
-      {showMissingSpecModal && (
-        <div className="modal fade show d-block" style={{ backgroundColor: 'rgba(0,0,0,0.4)', zIndex: 1050, backdropFilter: 'blur(4px)' }}>
-          <div className="modal-dialog modal-dialog-centered">
-            <div className="modal-content border-0 shadow-lg rounded-4 overflow-hidden">
-              <div className="modal-header bg-white border-bottom p-4">
-                <h5 className="modal-title fw-bold text-dark mb-0 d-flex align-items-center">
-                  <div className="bg-primary bg-opacity-10 text-primary p-2 rounded-3 me-3 d-flex align-items-center justify-content-center" style={{ width: '40px', height: '40px' }}>
-                    <i className="bi bi-box-seam fs-5"></i>
-                  </div>
-                  Add Bottle Specs
+      {showMissingPlainBottleModal && (
+        <div className="modal fade show d-block" style={{ backgroundColor: 'rgba(15, 23, 42, 0.6)', zIndex: 1050, backdropFilter: 'blur(6px)' }}>
+          <div className="modal-dialog modal-dialog-centered" style={{ maxWidth: '540px' }}>
+            <div className="modal-content border-0 shadow-lg rounded-4 overflow-hidden" style={{ boxShadow: '0 20px 40px rgba(0,0,0,0.2)' }}>
+              <div className="modal-header border-bottom-0 py-3 px-4 d-flex align-items-center justify-content-between" style={{ background: 'linear-gradient(135deg, var(--accent, #00aeef), #8b5cf6)', color: '#ffffff' }}>
+                <h5 className="modal-title fw-bold text-white mb-0 d-flex align-items-center gap-2" style={{ fontSize: '1.15rem' }}>
+                  <i className="bi bi-plus-circle-fill fs-5"></i>
+                  Add Plain Bottle
                 </h5>
-                <button type="button" className="btn-close shadow-none" onClick={() => setShowMissingSpecModal(false)}></button>
+                <button type="button" className="btn-close btn-close-white shadow-none" onClick={() => setShowMissingPlainBottleModal(false)}></button>
               </div>
-              <div className="modal-body p-4 bg-light bg-opacity-50">
-                <div className="alert alert-info py-3 small mb-4 rounded-3 border-0 bg-info bg-opacity-10 text-info-emphasis d-flex gap-2 align-items-start">
-                  <i className="bi bi-info-circle-fill mt-1"></i>
-                  <div>
-                    Bottle <strong>{missingSpecData.bottleName}</strong> is missing specifications or not assigned to <strong>{missingSpecData.brandName}</strong>. Please add it to continue.
-                  </div>
+              <div className="modal-body p-4 bg-white">
+                <div className="alert py-3 px-3 small mb-4 rounded-3 border-0 d-flex gap-2 align-items-start" style={{ background: 'rgba(0, 174, 239, 0.08)', border: '1px solid rgba(0, 174, 239, 0.25)', color: 'var(--text-primary, #1e293b)' }}>
+                  <i className="bi bi-info-circle-fill mt-1 flex-shrink-0" style={{ color: 'var(--accent, #00aeef)', fontSize: '1.1rem' }}></i>
+                  <div>Plain Bottle <strong style={{ color: 'var(--accent, #00aeef)' }}>{missingPlainBottleData.bottleName}</strong> doesn't exist for <strong>{missingPlainBottleData.companyName}</strong>. Please create it to continue.</div>
                 </div>
-
-                <div className="mb-4">
-                  <label className="form-label text-uppercase small fw-bold text-muted mb-1">Company</label>
-                  <input
-                    type="text"
-                    className="form-control shadow-none bg-white border-light-subtle rounded-3 py-2 fw-bold text-dark"
-                    value={missingSpecData.companyName}
-                    disabled
-                  />
-                </div>
-
-                <div className="mb-4">
-                  <label className="form-label text-uppercase small fw-bold text-muted mb-1">Brand</label>
-                  <input
-                    type="text"
-                    className="form-control shadow-none bg-white border-light-subtle rounded-3 py-2 fw-bold text-dark"
-                    value={missingSpecData.brandName}
-                    disabled
-                  />
-                </div>
-
-                <div className="mb-4">
-                  <label className="form-label text-uppercase small fw-bold text-muted mb-1">Bottle Name</label>
-                  <input
-                    type="text"
-                    className="form-control shadow-none bg-white border-light-subtle rounded-3 py-2 fw-bold text-dark"
-                    value={missingSpecData.bottleName}
-                    disabled
-                  />
-                </div>
-
-                <div className="mb-4">
-                  <label className="form-label text-uppercase small fw-bold text-muted mb-1">Bottle Code</label>
-                  <input
-                    type="text"
-                    className="form-control shadow-none bg-white border-light-subtle rounded-3 py-2"
-                    value={missingSpecData.code}
-                    onChange={(e) => setMissingSpecData({ ...missingSpecData, code: e.target.value })}
-                    placeholder="Optional code"
-                  />
-                </div>
-
-                <div className="row g-4 mb-4">
+                <div className="row g-3 mb-3">
                   <div className="col-md-6">
-                    <label className="form-label text-uppercase small fw-bold text-muted mb-1">Printing Type</label>
-                    <select
-                      className="form-select shadow-none bg-white border-light-subtle rounded-3 py-2"
-                      value={missingSpecData.printingTypeId}
-                      onChange={(e) => setMissingSpecData({ ...missingSpecData, printingTypeId: e.target.value })}
-                    >
-                      <option value="">None</option>
-                      {printingTypes.map(pt => (
-                        <option key={pt._id} value={pt._id}>{pt.name}</option>
-                      ))}
-                    </select>
+                    <label className="form-label text-uppercase small fw-bold mb-1" style={{ color: 'var(--text-secondary, #475569)', fontSize: '0.75rem', letterSpacing: '0.5px' }}>Company</label>
+                    <input type="text" className="form-control shadow-none rounded-3 py-2 fw-semibold" style={{ backgroundColor: '#f8fafc', borderColor: '#e2e8f0', color: 'var(--text-primary, #1e293b)' }} value={missingPlainBottleData.companyName} disabled />
                   </div>
                   <div className="col-md-6">
-                    <label className="form-label text-uppercase small fw-bold text-muted mb-1">Printing Color</label>
-                    <select
-                      className="form-select shadow-none bg-white border-light-subtle rounded-3 py-2"
-                      value={missingSpecData.printingColorId}
-                      onChange={(e) => setMissingSpecData({ ...missingSpecData, printingColorId: e.target.value })}
-                    >
-                      <option value="">None</option>
-                      {printingColors.map(pc => (
-                        <option key={pc._id} value={pc._id}>{pc.name}</option>
-                      ))}
-                    </select>
+                    <label className="form-label text-uppercase small fw-bold mb-1" style={{ color: 'var(--text-secondary, #475569)', fontSize: '0.75rem', letterSpacing: '0.5px' }}>Brand</label>
+                    <input type="text" className="form-control shadow-none rounded-3 py-2 fw-semibold" style={{ backgroundColor: '#f8fafc', borderColor: '#e2e8f0', color: 'var(--accent, #00aeef)' }} value={missingPlainBottleData.brandName} disabled />
                   </div>
                 </div>
+                <div className="mb-3">
+                  <label className="form-label text-uppercase small fw-bold mb-1" style={{ color: 'var(--text-secondary, #475569)', fontSize: '0.75rem', letterSpacing: '0.5px' }}>Plain Bottle Name</label>
+                  <input
+                    type="text"
+                    className="form-control shadow-none bg-white rounded-3 py-2 fw-bold"
+                    style={{ borderColor: 'var(--accent, #00aeef)', borderWidth: '1.5px', color: 'var(--text-primary, #1e293b)' }}
+                    value={missingPlainBottleData.bottleName}
+                    onChange={(e) => setMissingPlainBottleData({ ...missingPlainBottleData, bottleName: e.target.value })}
+                    placeholder="Enter Plain Bottle Name"
+                  />
+                </div>
 
-                <div>
-                  <label className="form-label text-uppercase small fw-bold text-muted mb-1">Bottle Per Box <span className="text-danger">*</span></label>
+                <div className="mb-3">
+                  <label className="form-label text-uppercase small fw-bold mb-1" style={{ color: 'var(--text-secondary, #475569)', fontSize: '0.75rem', letterSpacing: '0.5px' }}>Bottle Per Box</label>
                   <input
                     type="number"
-                    className="form-control shadow-none bg-white border-light-subtle rounded-3 py-2"
-                    value={missingSpecData.bottlePerBox}
-                    onChange={(e) => setMissingSpecData({ ...missingSpecData, bottlePerBox: e.target.value })}
+                    className="form-control shadow-none bg-white rounded-3 py-2"
+                    style={{ borderColor: '#e2e8f0' }}
+                    value={missingPlainBottleData.bottlePerBox}
+                    onChange={(e) => setMissingPlainBottleData({ ...missingPlainBottleData, bottlePerBox: e.target.value })}
+                    placeholder="Enter quantity per box"
                     min="1"
-                    placeholder="Required"
                   />
                 </div>
+
+                <div className="row g-3">
+                  <div className="col-md-6">
+                    <label className="form-label text-uppercase small fw-bold mb-1" style={{ color: 'var(--text-secondary, #475569)', fontSize: '0.75rem', letterSpacing: '0.5px' }}>Printing Type</label>
+                    <CreatableSelect
+                      options={printingTypeOptions}
+                      value={printingTypeOptions.find(o => o.value === missingPlainBottleData.printingTypeId) || (missingPlainBottleData.printingTypeId ? { value: missingPlainBottleData.printingTypeId, label: missingPlainBottleData.printingTypeId } : null)}
+                      onChange={(selected) => setMissingPlainBottleData({ ...missingPlainBottleData, printingTypeId: selected ? selected.value : '' })}
+                      onCreateOption={handleCreatePrintingTypeForPlainBottle}
+                      placeholder="Select or type new..."
+                      isClearable
+                      isSearchable
+                      closeMenuOnScroll={(e) => true}
+                      menuPosition="fixed"
+                      menuPlacement="auto"
+                      menuPortalTarget={document.body}
+                      styles={{
+                        menuPortal: base => ({ ...base, zIndex: 9999 }),
+                        control: (base, state) => ({
+                          ...base,
+                          borderColor: state.isFocused ? 'var(--accent, #00aeef)' : '#e2e8f0',
+                          borderRadius: '0.5rem',
+                          minHeight: '38px',
+                          boxShadow: state.isFocused ? '0 0 0 3px rgba(0, 174, 239, 0.15)' : 'none',
+                          '&:hover': {
+                            borderColor: 'var(--accent, #00aeef)'
+                          }
+                        })
+                      }}
+                      formatCreateLabel={(inputValue) => `Create "${inputValue}"`}
+                    />
+                  </div>
+                  <div className="col-md-6">
+                    <label className="form-label text-uppercase small fw-bold mb-1" style={{ color: 'var(--text-secondary, #475569)', fontSize: '0.75rem', letterSpacing: '0.5px' }}>Printing Color</label>
+                    <CreatableSelect
+                      options={printingColorOptions}
+                      value={printingColorOptions.find(o => o.value === missingPlainBottleData.printingColorId) || (missingPlainBottleData.printingColorId ? { value: missingPlainBottleData.printingColorId, label: missingPlainBottleData.printingColorId } : null)}
+                      onChange={(selected) => setMissingPlainBottleData({ ...missingPlainBottleData, printingColorId: selected ? selected.value : '' })}
+                      onCreateOption={handleCreatePrintingColorForPlainBottle}
+                      placeholder="Select or type new..."
+                      isClearable
+                      isSearchable
+                      closeMenuOnScroll={(e) => true}
+                      menuPosition="fixed"
+                      menuPlacement="auto"
+                      menuPortalTarget={document.body}
+                      styles={{
+                        menuPortal: base => ({ ...base, zIndex: 9999 }),
+                        control: (base, state) => ({
+                          ...base,
+                          borderColor: state.isFocused ? 'var(--accent, #00aeef)' : '#e2e8f0',
+                          borderRadius: '0.5rem',
+                          minHeight: '38px',
+                          boxShadow: state.isFocused ? '0 0 0 3px rgba(0, 174, 239, 0.15)' : 'none',
+                          '&:hover': {
+                            borderColor: 'var(--accent, #00aeef)'
+                          }
+                        })
+                      }}
+                      formatCreateLabel={(inputValue) => `Create "${inputValue}"`}
+                    />
+                  </div>
+                </div>
               </div>
-              <div className="modal-footer bg-white border-top p-4 d-flex justify-content-end gap-2">
-                <button type="button" className="btn btn-light px-4 py-2 fw-500 rounded-3" onClick={() => setShowMissingSpecModal(false)}>Cancel</button>
-                <button type="button" className="btn btn-primary px-4 py-2 fw-500 rounded-3 d-flex align-items-center"
-                  onClick={async () => {
-                    if (!missingSpecData.bottlePerBox || missingSpecData.bottlePerBox <= 0) {
-                      Swal.fire('Error', 'Please provide a valid bottle per box value.', 'error');
-                      return;
-                    }
-                    setCreatingSpec(true);
-                    try {
-                      // Also save to bottle-per-box
-                      await API.post('/bottle-per-box', {
-                        bottleName: missingSpecData.bottleName,
-                        bottlePerBox: Number(missingSpecData.bottlePerBox)
-                      });
-
-                      const payload = {
-                        brandId: missingSpecData.brandId,
-                        bottleName: missingSpecData.bottleName,
-                        code: missingSpecData.code || '',
-                        printingTypeId: missingSpecData.printingTypeId || null,
-                        printingColorId: missingSpecData.printingColorId || null,
-                        isPrinting: true,
-                        isCoating: true,
-                        status: true
-                      };
-                      await API.post('/bottle-spec', payload);
-
-                      await dispatch(fetchBottleSpecs({ limit: 1000, status: true, type: 'all' }));
-                      await dispatch(fetchBottlePerBoxes({ limit: 1000, status: true }));
-
-                      if (missingSpecData.blockIndex !== null && missingSpecData.itemIndex !== null) {
-                        const newBlocks = [...blocks];
-                        newBlocks[missingSpecData.blockIndex].items[missingSpecData.itemIndex].boxQty = missingSpecData.bottlePerBox;
-                        setBlocks(newBlocks);
-                      }
-
-                      setShowMissingSpecModal(false);
-                      Swal.fire({
-                        title: 'Success!',
-                        text: 'Bottle specification added to master.',
-                        icon: 'success',
-                        toast: true,
-                        position: 'top-end',
-                        showConfirmButton: false,
-                        timer: 3000
-                      });
-                    } catch (err) {
-                      console.error(err);
-                      Swal.fire('Error', err.response?.data?.message || 'Failed to create bottle spec', 'error');
-                    } finally {
-                      setCreatingSpec(false);
-                    }
-                  }}
-                  disabled={creatingSpec}>
+              <div className="modal-footer bg-light bg-opacity-50 border-top px-4 py-3 d-flex justify-content-end gap-2" style={{ borderColor: 'var(--card-border, #e2e8f0)' }}>
+                <button type="button" className="btn-ghost px-4 py-2" onClick={() => setShowMissingPlainBottleModal(false)}>Cancel</button>
+                <button type="button" className="btn-accent px-4 py-2 d-flex align-items-center gap-2" onClick={handleSaveMissingPlainBottle} disabled={creatingSpec}>
                   {creatingSpec ? (
-                    <><span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span> Saving...</>
+                    <><span className="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Saving...</>
                   ) : (
-                    <><i className="bi bi-check2-circle me-2"></i> Save Spec</>
+                    <><i className="bi bi-plus-circle"></i> Create Plain Bottle</>
                   )}
                 </button>
               </div>

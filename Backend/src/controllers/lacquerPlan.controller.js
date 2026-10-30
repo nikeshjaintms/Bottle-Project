@@ -1,7 +1,7 @@
 
 const LacquerPlan = require("../models/LacquerPlan");
 const PlainBottleStock = require("../models/PlainBottleStock");
-const { recomputePlainStock, computeLivePlainStock } = require("../utils/stockRecompute");
+const { recomputePlainStock, computeLivePlainStock, replayStockAllocations, validateStockBeforeSave, validateStockAllocation, getBottleSourcesInfo } = require("../utils/stockRecompute");
 const { computePlanGroupKey, resolveCanonicalPlainBottle, normalizeBottleName: normalizeBottleCanonical } = require("../utils/lacquerGroupKey");
 const BottlePerBox = require("../models/BottlePerBox");
 const CoatingProduction = require("../models/CoatingProduction");
@@ -11,6 +11,11 @@ const Company = require("../models/Company");
 const Brand = require("../models/Brand");
 const Variant = require("../models/Variant");
 const mongoose = require("mongoose");
+const { decodeCursor, encodeCursor, parseLimit } = require("../utils/keyset-pagination");
+
+// 30-second cache for totals
+const lacquerTotalsCache = new Map();
+const LACQUER_TOTALS_CACHE_TTL = 30000;
 const { isPrintingProcess } = require("../utils/processRouting");
 const {
   detectGujaratiHeaders,
@@ -227,7 +232,7 @@ const getCompletedCombinationsSet = async (targetDate = null, resolveBrand = nul
 };
 
 // Helper to get all rows marked as sent to Ready To Dispatch before target date
-// Returns a Set of combination keys for all rows with readyToDispatch mark
+// Returns a Set of combination keys for rows that are fully sent or completed
 // This is used to skip sent rows during import (similar to completed rows)
 const getSentToDispatchCombinationsSet = async (targetDate = null, resolveBrand = null, resolveVariant = null, includeTargetDate = false) => {
   const query = {
@@ -255,8 +260,18 @@ const getSentToDispatchCombinationsSet = async (targetDate = null, resolveBrand 
 
   const sentSet = new Set();
   sentPlans.forEach(p => {
-    const keys = getPlanCombinationKeys(p, resolveBrand, resolveVariant);
-    keys.forEach(k => sentSet.add(k));
+    const order = Number(p.orderQty || 0);
+    const coated = Number(p.coatingCompletedQty ?? p.coatedQty ?? 0);
+    const sent = Number(p.sentToReadyQty || 0);
+    const isCompleted = order > 0 && coated >= order;
+    const isFullySent = (order > 0 && sent >= order) || (coated > 0 && sent >= coated && isCompleted);
+
+    // Only skip rows that are completed or sent in full.
+    // Rows that still have balance (coated < order) must continue to come into the new date's plan!
+    if (isCompleted || isFullySent) {
+      const keys = getPlanCombinationKeys(p, resolveBrand, resolveVariant);
+      keys.forEach(k => sentSet.add(k));
+    }
   });
 
   return sentSet;
@@ -328,6 +343,27 @@ const validatePlanCompanyBottleVariant = async (planData, isUpdate = false, exis
       throw new Error("Company selection is required.");
     }
     return;
+  }
+
+  if (company.isStockSupplier) {
+    throw new Error("Stock supplier companies cannot be used for Lacquer Plan.");
+  }
+
+  if (planData.stockSources !== undefined) {
+    let sources = Array.isArray(planData.stockSources) ? planData.stockSources : [planData.stockSources];
+    sources = sources.map(s => s ? (s._id || s).toString() : null).filter(Boolean);
+    const suppliers = await Company.find({ isStockSupplier: true, isDeleted: { $ne: true } }).lean();
+    const validSupplierIds = new Set(suppliers.map(s => s._id.toString()));
+    const compIdStr = company._id.toString();
+
+    for (const src of sources) {
+      if (src !== compIdStr && !validSupplierIds.has(src)) {
+        throw new Error("Invalid stock sources. Only own company and stock supplier companies are allowed.");
+      }
+    }
+    planData.stockSources = sources.map(s => new mongoose.Types.ObjectId(s));
+  } else if (!isUpdate) {
+    planData.stockSources = [company._id];
   }
 
   planData.companyId = company._id;
@@ -667,10 +703,13 @@ const validateCoatedQtyLimit = async (items, excludePlanIds = null) => {
     const poolKey = `${compId}::${canonicalBottle}::${dateStr}`;
 
     if (!pools.has(poolKey)) {
+      let rawSources = (item.stockSources || []).map(s => s ? (s._id || s).toString() : null).filter(Boolean);
+      if (rawSources.length === 0) rawSources = [compId];
       pools.set(poolKey, {
         companyId: compId,
         bottleName: canonicalBottle,
         planDate: item.planDate,
+        stockSources: rawSources,
         totalCoated: 0
       });
     }
@@ -679,15 +718,19 @@ const validateCoatedQtyLimit = async (items, excludePlanIds = null) => {
 
   for (const [key, pool] of pools.entries()) {
     if (pool.totalCoated > 0) {
-      const stock = await computeLivePlainStock(pool.bottleName, pool.companyId, pool.planDate, excludePlanIds);
-      const available = stock.plainStock !== undefined ? stock.plainStock : stock;
+      const stock = await computeLivePlainStock(pool.bottleName, pool.stockSources || pool.companyId, pool.planDate, excludePlanIds);
+      const available = stock.available !== undefined ? stock.available : (stock.plainStock !== undefined ? stock.plainStock : stock);
       if (pool.totalCoated > available) {
+        const breakdownParts = (stock.sources || []).map(s => `${s.companyName}: ${s.available}`);
+        const breakdownText = breakdownParts.length > 0 ? `<${breakdownParts.join(', ')}>` : '';
         return {
           exceeded: true,
           available,
           totalCoated: pool.totalCoated,
           plainBottle: pool.bottleName,
-          message: `Only ${available} bottles available for ${pool.bottleName} (this entry adds up to ${pool.totalCoated}).`
+          message: breakdownText 
+            ? `Only ${available} bottles available from the selected stock (${breakdownText})`
+            : `Only ${available} bottles available for ${pool.bottleName} (this entry adds up to ${pool.totalCoated}).`
         };
       }
     }
@@ -698,8 +741,11 @@ const validateCoatedQtyLimit = async (items, excludePlanIds = null) => {
 
 const assignGroupsAndSequences = async (items) => {
   const groupSeqMap = new Map();
+  const promptJGroupMap = new Map();
+
   for (const item of items) {
     if (!item) continue;
+    // 1. Legacy groupKey & rowSeq (for backward compatibility)
     const gKey = await computePlanGroupKey(item);
     item.groupKey = gKey;
     if (!groupSeqMap.has(gKey)) {
@@ -710,6 +756,56 @@ const assignGroupsAndSequences = async (items) => {
     const nextSeq = groupSeqMap.get(gKey) + 1;
     groupSeqMap.set(gKey, nextSeq);
     item.rowSeq = nextSeq;
+
+    // 2. Prompt J groupId & rowOrder (same company, brand, and date joins existing group, next rowOrder)
+    const dateStr = item.planDate ? new Date(item.planDate).toISOString().split('T')[0] : '';
+    const compId = (item.canonicalCompanyId || (item.companyId?._id || item.companyId) || item.companyName || 'UNASSIGNED').toString().trim();
+    const brandId = (item.brandId?._id || item.brandId || item.brandName || 'UNASSIGNED').toString().trim();
+    const jKey = `${dateStr}__${compId}__${brandId}`;
+
+    if (!promptJGroupMap.has(jKey)) {
+      let existingGroupId = null;
+      let maxOrder = 0;
+
+      if (item.planDate && (item.companyId || item.companyName)) {
+        const startOfDay = new Date(item.planDate);
+        startOfDay.setUTCHours(0, 0, 0, 0);
+        const endOfDay = new Date(item.planDate);
+        endOfDay.setUTCHours(23, 59, 59, 999);
+
+        const q = {
+          isDeleted: false,
+          planDate: { $gte: startOfDay, $lte: endOfDay }
+        };
+        if (item.companyId) {
+          q.companyId = item.companyId;
+        } else if (item.companyName) {
+          q.companyName = item.companyName;
+        }
+        if (item.brandId) {
+          q.brandId = item.brandId;
+        } else if (item.brandName) {
+          q.brandName = item.brandName;
+        }
+
+        const existingPromptJPlans = await LacquerPlan.find(q).sort({ rowOrder: 1, rowSeq: 1 }).lean();
+        for (const p of existingPromptJPlans) {
+          if (p.groupId && !existingGroupId) {
+            existingGroupId = p.groupId;
+          }
+          const ord = Number(p.rowOrder ?? p.rowSeq ?? 0);
+          if (ord > maxOrder) maxOrder = ord;
+        }
+      }
+
+      const assignedGroupId = existingGroupId || `grp_${jKey}`;
+      promptJGroupMap.set(jKey, { groupId: assignedGroupId, maxOrder });
+    }
+
+    const jTracker = promptJGroupMap.get(jKey);
+    jTracker.maxOrder += 1;
+    item.groupId = item.groupId || jTracker.groupId;
+    item.rowOrder = jTracker.maxOrder;
   }
 };
 
@@ -721,14 +817,16 @@ function escapeRegex(str) {
  * Synchronizes remaining plain stock across ALL plans sharing the same canonical bottle
  * and company on a given planDate.
  */
+// Date-isolated stock synchronization:
+// Recomputes and updates stored plainStock snapshot ONLY for plans with planDate >= targetDate
+// for the given canonical plain bottle and company pool.
+// Older plans (planDate < startOfDay(targetDate)) are NEVER queried for update and NEVER modified.
 async function syncSameDayPlansPlainStock(bottleName, companyId, planDate, userId = null) {
   try {
     if (!bottleName || !companyId || !planDate) return;
 
     const startOfDay = new Date(planDate);
     startOfDay.setUTCHours(0, 0, 0, 0);
-    const endOfDay = new Date(planDate);
-    endOfDay.setUTCHours(23, 59, 59, 999);
 
     const canonicalBottle = await resolveCanonicalPlainBottle(bottleName, companyId);
     if (!canonicalBottle) return;
@@ -770,19 +868,39 @@ async function syncSameDayPlansPlainStock(bottleName, companyId, planDate, userI
       };
     }
 
-    // Recompute live remaining stock for this target date
-    const stockRes = await computeLivePlainStock(canonicalBottle, companyId, planDate);
-    const remainingPlainStock = stockRes.plainStock !== undefined ? stockRes.plainStock : Number(stockRes);
+    // Find all distinct planDates >= startOfDay for this pool (date-isolated: older plans never queried)
+    const affectedPlans = await LacquerPlan.find({
+      planDate: { $gte: startOfDay },
+      ...compCondition,
+      ...bottleMatchCondition,
+      isDeleted: false
+    }).select('planDate').lean();
 
-    await LacquerPlan.updateMany(
-      {
-        planDate: { $gte: startOfDay, $lte: endOfDay },
-        ...compCondition,
-        ...bottleMatchCondition,
-        isDeleted: false
-      },
-      { $set: { plainStock: remainingPlainStock } }
-    );
+    const distinctDates = Array.from(new Set(affectedPlans.map(p => {
+      const d = new Date(p.planDate);
+      return d.toISOString().split('T')[0];
+    })));
+
+    for (const dStr of distinctDates) {
+      const dDate = new Date(dStr);
+      const dStart = new Date(dDate);
+      dStart.setUTCHours(0, 0, 0, 0);
+      const dEnd = new Date(dDate);
+      dEnd.setUTCHours(23, 59, 59, 999);
+
+      const stockRes = await computeLivePlainStock(canonicalBottle, companyId, dDate);
+      const remainingPlainStock = stockRes.plainStock !== undefined ? stockRes.plainStock : Number(stockRes);
+
+      await LacquerPlan.updateMany(
+        {
+          planDate: { $gte: dStart, $lte: dEnd },
+          ...compCondition,
+          ...bottleMatchCondition,
+          isDeleted: false
+        },
+        { $set: { plainStock: remainingPlainStock } }
+      );
+    }
 
     // Also recompute overall live plain bottle stock document
     await recomputePlainStock(canonicalBottle, companyId, userId);
@@ -795,6 +913,27 @@ async function syncSameDayPlansPlainStock(bottleName, companyId, planDate, userI
 exports.createPlan = async (req, res) => {
   try {
     const submissionItems = Array.isArray(req.body) ? req.body : [req.body];
+
+    // Validate stock allocation and source eligibility first
+    for (const item of submissionItems) {
+      const c = item.coatingCompletedQty !== undefined ? Number(item.coatingCompletedQty) : (Number(item.coatedQty) || 0);
+      const allocRes = await validateStockAllocation(
+        item.planDate,
+        item.bottleName,
+        item.companyId,
+        item.stockSources,
+        c,
+        item.stockAllocation,
+        null
+      );
+      item.stockSources = allocRes.stockSources;
+      item.stockAllocation = allocRes.stockAllocation;
+      if (c > 0) {
+        item.stockAllocationInitial = allocRes.stockAllocation;
+        item.coatedQtyInitial = c;
+      }
+    }
+
     const coatedLimitError = await validateCoatedQtyLimit(submissionItems, null);
     if (coatedLimitError) {
       return res.status(400).json({
@@ -863,17 +1002,33 @@ exports.createPlan = async (req, res) => {
             }
           }
 
-          const existing = await LacquerPlan.findOne(dupQuery);
+          const existing = await LacquerPlan.findOne(dupQuery).populate('variantId', 'variantName');
           if (existing) {
-            throw new Error(`A plan for Bottle "${item.bottleName}" ${item.variantId ? 'with this variant' : 'with this shade'} already exists for this date, company and brand.`);
+            const vName = existing.variantId?.variantName || (existing.variantId ? (await Variant.findById(existing.variantId))?.variantName : '') || item.variantName;
+            const shade = item.colour || item.coatingShade || existing.colour || existing.coatingShade;
+            const detail = vName ? `with variant "${vName}"` : (shade ? `with shade "${shade}"` : 'with this variant');
+            throw new Error(`A plan for Bottle "${item.bottleName}" ${detail} already exists for this date, company and brand.`);
           }
         }
+      }
+      for (const item of req.body) {
+        const c = item.coatingCompletedQty !== undefined ? Number(item.coatingCompletedQty) : (Number(item.coatedQty) || 0);
+        const o = Number(item.orderQty) || 0;
+        item.balanceToMake = Number(c) - Number(o);
+        item.status = (Number(o) > 0 && Number(c) >= Number(o));
       }
       const plans = await LacquerPlan.insertMany(req.body);
       for (const plan of plans) {
         await syncLacquerPlanStockDeduction(plan, plan.coatingCompletedQty ?? plan.coatedQty, req.user?._id);
         await createPrintingPlanIfApplicable(plan);
 
+
+        await replayStockAllocations(
+          plan.bottleName,
+          plan.planDate,
+          [plan.companyId, ...(plan.stockSources || [])],
+          req.user?._id
+        );
       }
 
       // Sync live remaining plain stock across all plans on this day
@@ -937,16 +1092,36 @@ exports.createPlan = async (req, res) => {
           }
         }
 
-        const existing = await LacquerPlan.findOne(dupQuery);
+        const existing = await LacquerPlan.findOne(dupQuery).populate('variantId', 'variantName');
         if (existing) {
-          throw new Error(`A plan for Bottle "${req.body.bottleName}" ${req.body.variantId ? 'with this variant' : 'with this shade'} already exists for this date, company and brand.`);
+          const vName = existing.variantId?.variantName || (existing.variantId ? (await Variant.findById(existing.variantId))?.variantName : '') || req.body.variantName;
+          const shade = req.body.colour || req.body.coatingShade || existing.colour || existing.coatingShade;
+          const detail = vName ? `with variant "${vName}"` : (shade ? `with shade "${shade}"` : 'with this variant');
+          throw new Error(`A plan for Bottle "${req.body.bottleName}" ${detail} already exists for this date, company and brand.`);
         }
       }
+
+      const c = req.body.coatingCompletedQty !== undefined ? Number(req.body.coatingCompletedQty) : (Number(req.body.coatedQty) || 0);
+      const o = Number(req.body.orderQty) || 0;
+      req.body.balanceToMake = Number(c) - Number(o);
+      req.body.status = (Number(o) > 0 && Number(c) >= Number(o));
 
       const plan = new LacquerPlan(req.body);
       await plan.save();
       await syncLacquerPlanStockDeduction(plan, plan.coatingCompletedQty ?? plan.coatedQty, req.user?._id);
       await createPrintingPlanIfApplicable(plan);
+
+      // Auto-send to Ready To Dispatch if completed process C row
+      const { syncLacquerPlanReadyToDispatch } = require('./readyToDispatch.controller');
+      await syncLacquerPlanReadyToDispatch(plan._id);
+
+
+      await replayStockAllocations(
+        plan.bottleName,
+        plan.planDate,
+        [plan.companyId, ...(plan.stockSources || [])],
+        req.user?._id
+      );
 
       const pBottle = (plan.plainBottle || plan.bottleName || '').trim();
       const pComp = plan.canonicalCompanyId || plan.companyId;
@@ -954,12 +1129,41 @@ exports.createPlan = async (req, res) => {
         await syncSameDayPlansPlainStock(pBottle, pComp, plan.planDate, req.user?._id);
       }
 
-      return res.status(201).json({ success: true, data: plan });
+      const freshPlan = await LacquerPlan.findById(plan._id);
+      return res.status(201).json({ success: true, data: freshPlan });
     }
   } catch (error) {
     res.status(400).json({ success: false, message: error.message });
   }
 };
+
+
+function extractBottleSizeForGrouping(bottleName) {
+  if (!bottleName) return Infinity;
+  const match = String(bottleName).match(/(\d+(?:\.\d+)?)/);
+  return match ? parseFloat(match[1]) : Infinity;
+}
+
+function compareBottleNamesForGrouping(aName, bName) {
+  const sizeA = extractBottleSizeForGrouping(aName);
+  const sizeB = extractBottleSizeForGrouping(bName);
+  if (sizeA !== sizeB) return sizeA - sizeB;
+  return String(aName || '').localeCompare(String(bName || ''));
+}
+
+function compareBrandsForGrouping(aBrand, bBrand) {
+  if (!aBrand && !bBrand) return 0;
+  if (!aBrand) return 1;
+  if (!bBrand) return -1;
+  return String(aBrand).localeCompare(String(bBrand));
+}
+
+function compareVariantsForGrouping(aVariant, bVariant) {
+  if (!aVariant && !bVariant) return 0;
+  if (!aVariant) return 1;
+  if (!bVariant) return -1;
+  return String(aVariant).localeCompare(String(bVariant));
+}
 
 // Get Plans
 exports.getPlans = async (req, res) => {
@@ -1110,6 +1314,10 @@ exports.getPlans = async (req, res) => {
 
     const plans = await LacquerPlan.aggregate(pipeline).collation({ locale: 'en', strength: 2 });
 
+    const allCompaniesList = await Company.find({ isDeleted: { $ne: true } }).select('_id name isStockSupplier').lean();
+    const companyNameMap = new Map(allCompaniesList.map(c => [c._id.toString(), c.name]));
+    const supplierIdSet = new Set(allCompaniesList.filter(c => c.isStockSupplier).map(c => c._id.toString()));
+
     // Augment plans with computed fields using live day-based stock (Rule L3)
     const stockCache = new Map();
     const augmentedPlans = await Promise.all(plans.map(async (plan) => {
@@ -1120,7 +1328,8 @@ exports.getPlans = async (req, res) => {
 
       // 1. Fetch live day-based plain stock (Rule L3)
       if (plan.bottleName) {
-        const compId = plan.canonicalCompanyId || plan.companyId;
+        const rawCompId = plan.canonicalCompanyId || (plan.companyId?._id || plan.companyId);
+        const compId = (rawCompId && rawCompId.toString) ? rawCompId.toString() : (rawCompId || '');
         const dayStr = plan.planDate ? new Date(plan.planDate).toISOString().split('T')[0] : '';
         const canonicalBottle = await resolveCanonicalPlainBottle(plan.plainBottle || plan.bottleName, compId);
         const cacheKey = `${compId}::${canonicalBottle}::${dayStr}`;
@@ -1130,8 +1339,10 @@ exports.getPlans = async (req, res) => {
           openingStock = cached.openingStock;
         } else {
           const stock = await computeLivePlainStock(canonicalBottle, compId, plan.planDate);
-          plainStock = stock.plainStock !== undefined ? stock.plainStock : stock;
-          openingStock = stock.openingStock !== undefined ? stock.openingStock : plainStock;
+          const rawPlain = stock && stock.plainStock !== undefined ? stock.plainStock : stock;
+          const rawOpening = stock && stock.openingStock !== undefined ? stock.openingStock : rawPlain;
+          plainStock = Number.isFinite(Number(rawPlain)) ? Number(rawPlain) : 0;
+          openingStock = Number.isFinite(Number(rawOpening)) ? Number(rawOpening) : 0;
           stockCache.set(cacheKey, { plainStock, openingStock });
         }
       }
@@ -1180,7 +1391,32 @@ exports.getPlans = async (req, res) => {
         plainStock: plainStock,  // ALWAYS use live stock for list display, NOT stored snapshot
         openingStock: openingStock,
         coatedQty: plan.coatedQty !== null && plan.coatedQty !== undefined ? plan.coatedQty : coatedQty,
-        balanceToMake: plan.balanceToMake !== null && plan.balanceToMake !== undefined ? plan.balanceToMake : balanceToMake
+        balanceToMake: balanceToMake,
+        status: ((plan.orderQty || 0) > 0 && coatedQty >= (plan.orderQty || 0)),
+        usedFrom: (() => {
+          if (!Array.isArray(plan.stockAllocation) || plan.stockAllocation.length === 0) return [];
+          const hasSupplier = plan.stockAllocation.some(a => supplierIdSet.has((a.companyId?._id || a.companyId)?.toString()) && Number(a.qty) > 0);
+          if (!hasSupplier) return [];
+          return plan.stockAllocation
+            .filter(a => Number(a.qty) > 0)
+            .map(a => {
+              const cIdStr = (a.companyId?._id || a.companyId)?.toString();
+              return {
+                companyId: cIdStr,
+                companyName: companyNameMap.get(cIdStr) || 'Company',
+                qty: Number(a.qty)
+              };
+            });
+        })(),
+        usedFromTooltip: (() => {
+          if (!Array.isArray(plan.stockAllocation) || plan.stockAllocation.length === 0) return '';
+          const hasSupplier = plan.stockAllocation.some(a => supplierIdSet.has((a.companyId?._id || a.companyId)?.toString()) && Number(a.qty) > 0);
+          if (!hasSupplier) return '';
+          return plan.stockAllocation
+            .filter(a => Number(a.qty) > 0)
+            .map(a => `${companyNameMap.get((a.companyId?._id || a.companyId)?.toString()) || 'Company'}: ${a.qty}`)
+            .join(', ');
+        })()
       };
     }));
 
@@ -1199,53 +1435,182 @@ exports.getPlans = async (req, res) => {
       });
     }
 
-    // Sort augmented plans
+    // Sort augmented plans with canonical plain bottle resolution
+    for (const plan of augmentedPlans) {
+      const rawCompId = plan.canonicalCompanyId || (plan.companyId?._id || plan.companyId);
+      const compIdStr = (rawCompId && rawCompId.toString) ? rawCompId.toString() : (rawCompId || '');
+      const canonicalBottle = await resolveCanonicalPlainBottle(plan.plainBottle || plan.plainBottleName || plan.bottleName, compIdStr);
+      plan.canonicalBottle = canonicalBottle;
+      plan.canonicalBottleNormalized = normalizeBottleCanonical(canonicalBottle);
+      plan.plainBottle = canonicalBottle;
+      plan.plainBottleName = canonicalBottle;
+    }
+
+    // Sort augmented plans strictly according to:
+    // company, canonical plain bottle (normalized), brand, process, import group and index, rowOrder, then variant.
+    // NOTE: NEVER sort by orderQty!
     filteredPlans.sort((a, b) => {
-      const getNum = (str) => {
-        if (!str) return 0;
-        const match = str.match(/^(\d+)/);
-        return match ? parseInt(match[1], 10) : 0;
-      };
+      // 1. Company
+      const compA = String(a.company?.name || a.companyName || '').trim();
+      const compB = String(b.company?.name || b.companyName || '').trim();
+      const compCmp = compA.localeCompare(compB, undefined, { numeric: true, sensitivity: 'base' });
+      if (compCmp !== 0) return compCmp;
 
-      const numA = getNum(a.bottleName);
-      const numB = getNum(b.bottleName);
+      // 2. Canonical Plain Bottle (normalized, natural numeric size then alpha)
+      const bottleA = a.canonicalBottleNormalized || '';
+      const bottleB = b.canonicalBottleNormalized || '';
+      const bottleCmp = compareBottleNamesForGrouping(bottleA, bottleB);
+      if (bottleCmp !== 0) return bottleCmp;
 
-      if (numA !== numB) {
-        return numA - numB;
+      // 3. Process
+      const procA = String(a.process || '').trim().toUpperCase();
+      const procB = String(b.process || '').trim().toUpperCase();
+      if (procA !== procB) return procA.localeCompare(procB);
+
+      // 4. Brand
+      const brandA = a.brandId?.name || a.brandName || '';
+      const brandB = b.brandId?.name || b.brandName || '';
+      const brandCmp = compareBrandsForGrouping(brandA, brandB);
+      if (brandCmp !== 0) return brandCmp;
+
+      // 5. Import Group and Index
+      const grpA = String(a.importGroupId || a.groupId || '');
+      const grpB = String(b.importGroupId || b.groupId || '');
+      if (grpA && grpB) {
+        if (grpA === grpB) {
+          const idxA = a.importGroupIndex !== null && a.importGroupIndex !== undefined ? Number(a.importGroupIndex) : null;
+          const idxB = b.importGroupIndex !== null && b.importGroupIndex !== undefined ? Number(b.importGroupIndex) : null;
+          if (idxA !== null && idxB !== null && idxA !== idxB) {
+            return idxA - idxB;
+          }
+        } else {
+          const gCmp = grpA.localeCompare(grpB);
+          if (gCmp !== 0) return gCmp;
+        }
+      } else if (grpA !== grpB) {
+        return grpA ? -1 : 1;
       }
 
-      const nameA = a.bottleName || '';
-      const nameB = b.bottleName || '';
-      const nameCmp = nameA.localeCompare(nameB);
-      if (nameCmp !== 0) return nameCmp;
+      // 6. Row Order (saved row sequence)
+      const ordA = a.rowOrder !== undefined && a.rowOrder !== null ? Number(a.rowOrder) : (a.rowSeq !== undefined && a.rowSeq !== null ? Number(a.rowSeq) : 0);
+      const ordB = b.rowOrder !== undefined && b.rowOrder !== null ? Number(b.rowOrder) : (b.rowSeq !== undefined && b.rowSeq !== null ? Number(b.rowSeq) : 0);
+      if (ordA !== ordB) return ordA - ordB;
 
-      const vA = a.variantName || (a.variantId && a.variantId.variantName) || '';
-      const vB = b.variantName || (b.variantId && b.variantId.variantName) || '';
-      const vCmp = vA.localeCompare(vB);
-      if (vCmp !== 0) return vCmp;
+      // 7. Variant
+      const varA = a.variantId?.variantName || a.variantName || '';
+      const varB = b.variantId?.variantName || b.variantName || '';
+      const varCmp = compareVariantsForGrouping(varA, varB);
+      if (varCmp !== 0) return varCmp;
 
-      const brandA = a.brandName || (a.brandId && a.brandId.name) || '';
-      const brandB = b.brandName || (b.brandId && b.brandId.name) || '';
-      return brandA.localeCompare(brandB);
+      // 8. Deterministic tiebreak
+      return String(a._id || '').localeCompare(String(b._id || ''));
     });
 
-    // Handle pagination
+    // Partition sorted rows into contiguous Pool Blocks sharing (company, canonical bottle, planDate)
+    const poolBlocks = [];
+    let currentBlock = [];
+    let currentBlockKey = null;
+
+    for (const plan of filteredPlans) {
+      const dateStr = plan.planDate ? new Date(plan.planDate).toISOString().split('T')[0] : '';
+      const rawCompId = plan.canonicalCompanyId || (plan.companyId?._id || plan.companyId) || plan.companyName || 'UNASSIGNED';
+      const compIdStr = String(rawCompId).trim();
+      const bKey = `${dateStr}__${compIdStr}__${plan.canonicalBottleNormalized}`;
+
+      if (bKey !== currentBlockKey) {
+        if (currentBlock.length > 0) {
+          poolBlocks.push(currentBlock);
+        }
+        currentBlock = [plan];
+        currentBlockKey = bKey;
+      } else {
+        currentBlock.push(plan);
+      }
+    }
+    if (currentBlock.length > 0) {
+      poolBlocks.push(currentBlock);
+    }
+
+    // Compute pool block fields and sub-block spans
+    for (const block of poolBlocks) {
+      const blockSize = block.length;
+      const blockKey = `${block[0].planDate ? new Date(block[0].planDate).toISOString().split('T')[0] : ''}__${String(block[0].canonicalCompanyId || (block[0].companyId?._id || block[0].companyId) || block[0].companyName || 'UNASSIGNED').trim()}__${block[0].canonicalBottleNormalized}`;
+
+      // Process spans: merge across all consecutive rows with same process (across brands)
+      let procRunStart = 0;
+      while (procRunStart < blockSize) {
+        const proc = String(block[procRunStart].process || '').trim().toUpperCase();
+        let procRunEnd = procRunStart + 1;
+        while (procRunEnd < blockSize) {
+          const nextProc = String(block[procRunEnd].process || '').trim().toUpperCase();
+          if (nextProc === proc) {
+            procRunEnd++;
+          } else {
+            break;
+          }
+        }
+        const procSpan = procRunEnd - procRunStart;
+
+        // Brand per row (not grouped): each row shows its brand individually
+        for (let bIdx = procRunStart; bIdx < procRunEnd; bIdx++) {
+          block[bIdx].brandSpan = 1;
+          block[bIdx].isFirstInBrand = true;
+        }
+
+        for (let pIdx = procRunStart; pIdx < procRunEnd; pIdx++) {
+          block[pIdx].processSpan = (pIdx === procRunStart) ? procSpan : 0;
+          block[pIdx].isFirstInProcess = (pIdx === procRunStart);
+        }
+
+        procRunStart = procRunEnd;
+      }
+
+      // Assign blockKey, blockSize, blockIndex, bottleSpan, stockSpan, boxSpan
+      for (let i = 0; i < blockSize; i++) {
+        const row = block[i];
+        row.blockKey = blockKey;
+        row.blockSize = blockSize;
+        row.blockIndex = i;
+        row.isFirstInBlock = (i === 0);
+        row.bottleSpan = (i === 0) ? blockSize : 0;
+        row.stockSpan = (i === 0) ? blockSize : 0;
+        row.boxSpan = (i === 0) ? blockSize : 0;
+        row.groupId = row.groupId || null;
+        row.rowOrder = row.rowOrder !== undefined ? row.rowOrder : (row.rowSeq || 1);
+      }
+    }
+
+    // Handle pagination (never split a block across page boundaries!)
     const total = filteredPlans.length;
     const enablePagination = pagination === "true";
 
     if (!enablePagination) {
-      // Return all records without pagination
       return res.status(200).json({ success: true, data: filteredPlans, total });
     }
 
-    // Parse page and limit from query
     const parsedPage = parseInt(page) || 1;
     const parsedLimit = parseInt(limit) || 10;
-    const skip = (parsedPage - 1) * parsedLimit;
 
-    // Paginate the filtered results
-    const paginatedPlans = filteredPlans.slice(skip, skip + parsedLimit);
-    const totalPages = Math.ceil(total / parsedLimit);
+    // Pack full blocks into pages so that no block is ever split across page boundaries
+    const pages = [];
+    let currentPage = [];
+    let currentPageRowCount = 0;
+
+    for (const block of poolBlocks) {
+      if (currentPageRowCount > 0 && (currentPageRowCount + block.length > parsedLimit)) {
+        pages.push(currentPage);
+        currentPage = [];
+        currentPageRowCount = 0;
+      }
+      currentPage.push(...block);
+      currentPageRowCount += block.length;
+    }
+    if (currentPage.length > 0) {
+      pages.push(currentPage);
+    }
+
+    const totalPages = Math.max(1, pages.length);
+    const paginatedPlans = pages[parsedPage - 1] || [];
 
     res.status(200).json({
       success: true,
@@ -1254,6 +1619,573 @@ exports.getPlans = async (req, res) => {
       page: parsedPage,
       totalPages,
       limit: parsedLimit
+    });
+  } catch (error) {
+    res.status(400).json({ success: false, message: error.message });
+  }
+};
+
+
+/**
+ * GET /api/lacquer-plan/totals
+ * Aggregate totals and counts for all records matching current filters
+ * Query params: date, fromDate, toDate, companyId, brandId, search
+ * Returns: { totalCount, totalOrderQty, totalCoatingCompletedQty, totalBalanceToMake, totalSoldQty, totalDispatchPendingQty }
+ * Cached for 30 seconds per filter combination.
+ */
+exports.getPlansTotals = async (req, res) => {
+  try {
+    const { date, fromDate, toDate, companyId, brandId, search } = req.query;
+
+    const cacheKey = JSON.stringify({ date, fromDate, toDate, companyId, brandId, search });
+    const cached = lacquerTotalsCache.get(cacheKey);
+    if (cached && (Date.now() - cached.timestamp < LACQUER_TOTALS_CACHE_TTL)) {
+      return res.status(200).json({ success: true, data: cached.data });
+    }
+
+    let query = { isDeleted: false };
+
+    if (brandId && mongoose.Types.ObjectId.isValid(brandId)) {
+      query.brandId = new mongoose.Types.ObjectId(brandId);
+    }
+
+    if (date) {
+      const startOfDay = new Date(date);
+      startOfDay.setUTCHours(0, 0, 0, 0);
+      const endOfDay = new Date(date);
+      endOfDay.setUTCHours(23, 59, 59, 999);
+      query.planDate = { $gte: startOfDay, $lte: endOfDay };
+    } else if (fromDate || toDate) {
+      query.planDate = {};
+      if (fromDate) {
+        const start = new Date(fromDate);
+        start.setUTCHours(0, 0, 0, 0);
+        query.planDate.$gte = start;
+      }
+      if (toDate) {
+        const end = new Date(toDate);
+        end.setUTCHours(23, 59, 59, 999);
+        query.planDate.$lte = end;
+      }
+    }
+
+    if (companyId) {
+      if (companyId === 'UNASSIGNED') {
+        query.companyId = { $in: [null, undefined] };
+      } else if (mongoose.Types.ObjectId.isValid(companyId)) {
+        const cOid = new mongoose.Types.ObjectId(companyId);
+        const companyBrands = await Brand.find({ companyId: cOid, isDeleted: false }).select('_id').lean();
+        const brandIds = companyBrands.map(b => b._id);
+        query.$or = [
+          { companyId: cOid },
+          { brandId: { $in: brandIds } }
+        ];
+      }
+    }
+
+    if (search) {
+      const sRegex = { $regex: search, $options: 'i' };
+      query.$or = query.$or || [];
+      query.$or.push(
+        { bottleName: sRegex },
+        { plainBottle: sRegex },
+        { colour: sRegex },
+        { coatingShade: sRegex },
+        { brandName: sRegex }
+      );
+    }
+
+    const pipeline = [
+      { $match: query },
+      {
+        $group: {
+          _id: null,
+          totalCount: { $sum: 1 },
+          totalOrderQty: { $sum: { $ifNull: [{ $toInt: "$orderQty" }, 0] } },
+          totalCoatingCompletedQty: { $sum: { $ifNull: [{ $toInt: "$coatingCompletedQty" }, { $ifNull: [{ $toInt: "$coatedQty" }, 0] }] } },
+          totalSoldQty: { $sum: { $ifNull: [{ $toInt: "$soldQty" }, 0] } },
+          totalDispatchPendingQty: { $sum: { $ifNull: [{ $toInt: "$dispatchPendingQty" }, 0] } }
+        }
+      }
+    ];
+
+    const results = await LacquerPlan.aggregate(pipeline).option({ maxTimeMS: 15000 });
+    const agg = results.length > 0 ? results[0] : {
+      totalCount: 0,
+      totalOrderQty: 0,
+      totalCoatingCompletedQty: 0,
+      totalSoldQty: 0,
+      totalDispatchPendingQty: 0
+    };
+
+    const totalsData = {
+      totalCount: agg.totalCount,
+      totalOrderQty: agg.totalOrderQty,
+      totalCoatingCompletedQty: agg.totalCoatingCompletedQty,
+      totalBalanceToMake: agg.totalCoatingCompletedQty - agg.totalOrderQty,
+      totalSoldQty: agg.totalSoldQty,
+      totalDispatchPendingQty: agg.totalDispatchPendingQty
+    };
+
+    lacquerTotalsCache.set(cacheKey, { timestamp: Date.now(), data: totalsData });
+
+    res.status(200).json({ success: true, data: totalsData });
+  } catch (error) {
+    res.status(400).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * GET /api/lacquer-plan/paginated
+ * Keyset cursor pagination with strict whole-block preservation.
+ * Returns: { items: [], nextCursor: string|null, hasMore: boolean }
+ */
+exports.getPlansPaginated = async (req, res) => {
+  try {
+    const { limit: limitParam, cursor, date, fromDate, toDate, companyId, brandId, search } = req.query;
+    const limit = parseLimit(limitParam, 20, 50);
+
+    let query = { isDeleted: false };
+    if (brandId && mongoose.Types.ObjectId.isValid(brandId)) {
+      query.brandId = new mongoose.Types.ObjectId(brandId);
+    }
+    if (date) {
+      const startOfDay = new Date(date);
+      startOfDay.setUTCHours(0, 0, 0, 0);
+      const endOfDay = new Date(date);
+      endOfDay.setUTCHours(23, 59, 59, 999);
+      query.planDate = { $gte: startOfDay, $lte: endOfDay };
+    } else if (fromDate || toDate) {
+      query.planDate = {};
+      if (fromDate) {
+        const start = new Date(fromDate);
+        start.setUTCHours(0, 0, 0, 0);
+        query.planDate.$gte = start;
+      }
+      if (toDate) {
+        const end = new Date(toDate);
+        end.setUTCHours(23, 59, 59, 999);
+        query.planDate.$lte = end;
+      }
+    }
+
+    if (companyId) {
+      if (companyId === 'UNASSIGNED') {
+        // Will be filtered after lookup
+      } else if (mongoose.Types.ObjectId.isValid(companyId)) {
+        const cOid = new mongoose.Types.ObjectId(companyId);
+        const companyBrands = await Brand.find({ companyId: cOid, isDeleted: false }).select('_id').lean();
+        const brandIds = companyBrands.map(b => b._id);
+        query.$or = [
+          { companyId: cOid },
+          { brandId: { $in: brandIds } }
+        ];
+      }
+    }
+
+    const pipeline = [
+      { $match: query },
+      {
+        $lookup: {
+          from: 'variants',
+          localField: 'variantId',
+          foreignField: '_id',
+          as: 'variantId'
+        }
+      },
+      { $unwind: { path: '$variantId', preserveNullAndEmptyArrays: true } },
+      {
+        $lookup: {
+          from: 'brands',
+          localField: 'brandId',
+          foreignField: '_id',
+          as: 'brandId'
+        }
+      },
+      { $unwind: { path: '$brandId', preserveNullAndEmptyArrays: true } },
+      {
+        $lookup: {
+          from: 'companies',
+          localField: 'companyId',
+          foreignField: '_id',
+          as: 'directCompany'
+        }
+      },
+      { $unwind: { path: '$directCompany', preserveNullAndEmptyArrays: true } },
+      {
+        $lookup: {
+          from: 'companies',
+          localField: 'brandId.companyId',
+          foreignField: '_id',
+          as: 'brandCompany'
+        }
+      },
+      { $unwind: { path: '$brandCompany', preserveNullAndEmptyArrays: true } },
+      {
+        $lookup: {
+          from: 'companies',
+          let: { cName: '$companyName' },
+          pipeline: [
+            {
+              $match: {
+                $expr: {
+                  $and: [
+                    { $ne: ["$isDeleted", true] },
+                    { $ne: [{ $type: "$cName" }, "missing"] },
+                    { $ne: ["$cName", null] },
+                    { $eq: [{ $toLower: { $trim: { input: "$name" } } }, { $toLower: { $trim: { input: "$cName" } } }] }
+                  ]
+                }
+              }
+            }
+          ],
+          as: 'nameCompany'
+        }
+      },
+      { $unwind: { path: '$nameCompany', preserveNullAndEmptyArrays: true } },
+      {
+        $addFields: {
+          company: { $ifNull: ['$directCompany', { $ifNull: ['$nameCompany', '$brandCompany'] }] }
+        }
+      },
+      {
+        $addFields: {
+          companyId: '$company._id',
+          companyName: { $ifNull: ['$company.name', { $ifNull: ['$companyName', 'Unassigned'] }] },
+          canonicalCompanyId: '$company._id'
+        }
+      }
+    ];
+
+    if (search || companyId) {
+      const matchStage = {};
+      if (search) {
+        matchStage.$or = [
+          { bottleName: { $regex: search, $options: 'i' } },
+          { plainBottle: { $regex: search, $options: 'i' } },
+          { brandName: { $regex: search, $options: 'i' } },
+          { 'brandId.name': { $regex: search, $options: 'i' } },
+          { 'company.name': { $regex: search, $options: 'i' } },
+          { colour: { $regex: search, $options: 'i' } },
+          { coatingShade: { $regex: search, $options: 'i' } }
+        ];
+      }
+      if (companyId) {
+        if (companyId === 'UNASSIGNED') {
+          matchStage['company._id'] = { $exists: false };
+        } else {
+          matchStage['company._id'] = new mongoose.Types.ObjectId(companyId);
+        }
+      }
+      pipeline.push({ $match: matchStage });
+    }
+
+    const rawPlans = await LacquerPlan.aggregate(pipeline)
+      .option({ maxTimeMS: 15000 })
+      .collation({ locale: 'en', strength: 2 });
+
+    if (!rawPlans || rawPlans.length === 0) {
+      return res.status(200).json({
+        success: true,
+        data: { items: [], nextCursor: null, hasMore: false }
+      });
+    }
+
+    // Canonical bottle resolution
+    await Promise.all(rawPlans.map(async (plan) => {
+      const rawCompId = plan.canonicalCompanyId || (plan.companyId?._id || plan.companyId);
+      const compIdStr = (rawCompId && rawCompId.toString) ? rawCompId.toString() : (rawCompId || '');
+      const canonicalBottle = await resolveCanonicalPlainBottle(plan.plainBottle || plan.plainBottleName || plan.bottleName, compIdStr);
+      plan.canonicalBottle = canonicalBottle;
+      plan.canonicalBottleNormalized = normalizeBottleCanonical(canonicalBottle);
+      plan.plainBottle = canonicalBottle;
+      plan.plainBottleName = canonicalBottle;
+    }));
+
+    // Sort strictly according to Prompt O
+    rawPlans.sort((a, b) => {
+      const compA = String(a.company?.name || a.companyName || '').trim();
+      const compB = String(b.company?.name || b.companyName || '').trim();
+      const compCmp = compA.localeCompare(compB, undefined, { numeric: true, sensitivity: 'base' });
+      if (compCmp !== 0) return compCmp;
+
+      const bottleA = a.canonicalBottleNormalized || '';
+      const bottleB = b.canonicalBottleNormalized || '';
+      const bottleCmp = compareBottleNamesForGrouping(bottleA, bottleB);
+      if (bottleCmp !== 0) return bottleCmp;
+
+      const procA = String(a.process || '').trim().toUpperCase();
+      const procB = String(b.process || '').trim().toUpperCase();
+      if (procA !== procB) return procA.localeCompare(procB);
+
+      const brandA = a.brandId?.name || a.brandName || '';
+      const brandB = b.brandId?.name || b.brandName || '';
+      const brandCmp = compareBrandsForGrouping(brandA, brandB);
+      if (brandCmp !== 0) return brandCmp;
+
+      const grpA = String(a.importGroupId || a.groupId || '');
+      const grpB = String(b.importGroupId || b.groupId || '');
+      if (grpA && grpB) {
+        if (grpA === grpB) {
+          const idxA = a.importGroupIndex !== null && a.importGroupIndex !== undefined ? Number(a.importGroupIndex) : null;
+          const idxB = b.importGroupIndex !== null && b.importGroupIndex !== undefined ? Number(b.importGroupIndex) : null;
+          if (idxA !== null && idxB !== null && idxA !== idxB) {
+            return idxA - idxB;
+          }
+        } else {
+          const gCmp = grpA.localeCompare(grpB);
+          if (gCmp !== 0) return gCmp;
+        }
+      } else if (grpA !== grpB) {
+        return grpA ? -1 : 1;
+      }
+
+      const ordA = a.rowOrder !== undefined && a.rowOrder !== null ? Number(a.rowOrder) : (a.rowSeq !== undefined && a.rowSeq !== null ? Number(a.rowSeq) : 0);
+      const ordB = b.rowOrder !== undefined && b.rowOrder !== null ? Number(b.rowOrder) : (b.rowSeq !== undefined && b.rowSeq !== null ? Number(b.rowSeq) : 0);
+      if (ordA !== ordB) return ordA - ordB;
+
+      const varA = a.variantId?.variantName || a.variantName || '';
+      const varB = b.variantId?.variantName || b.variantName || '';
+      const varCmp = compareVariantsForGrouping(varA, varB);
+      if (varCmp !== 0) return varCmp;
+
+      return String(a._id || '').localeCompare(String(b._id || ''));
+    });
+
+    // Partition into pool blocks
+    const poolBlocks = [];
+    let currentBlock = [];
+    let currentBlockKey = null;
+
+    for (const plan of rawPlans) {
+      const dateStr = plan.planDate ? new Date(plan.planDate).toISOString().split('T')[0] : '';
+      const rawCompId = plan.canonicalCompanyId || (plan.companyId?._id || plan.companyId) || plan.companyName || 'UNASSIGNED';
+      const compIdStr = String(rawCompId).trim();
+      const bKey = `${dateStr}__${compIdStr}__${plan.canonicalBottleNormalized}`;
+
+      if (bKey !== currentBlockKey) {
+        if (currentBlock.length > 0) {
+          poolBlocks.push(currentBlock);
+        }
+        currentBlock = [plan];
+        currentBlockKey = bKey;
+      } else {
+        currentBlock.push(plan);
+      }
+    }
+    if (currentBlock.length > 0) {
+      poolBlocks.push(currentBlock);
+    }
+
+    // Keyset cursor resolution
+    let startBlockIdx = 0;
+    if (cursor) {
+      const decoded = decodeCursor(cursor);
+      if (decoded && decoded._id) {
+        let foundBlockIdx = poolBlocks.findIndex(block =>
+          block.some(row => String(row._id) === String(decoded._id))
+        );
+        if (foundBlockIdx === -1 && decoded.sortValue) {
+          const sortValStr = String(decoded.sortValue);
+          foundBlockIdx = poolBlocks.findIndex(block => {
+            const first = block[0];
+            const bKey = `${first.planDate ? new Date(first.planDate).toISOString().split('T')[0] : ''}__${String(first.canonicalCompanyId || first.companyId?._id || first.companyId || first.companyName || 'UNASSIGNED').trim()}__${first.canonicalBottleNormalized}`;
+            return bKey === sortValStr;
+          });
+        }
+        if (foundBlockIdx !== -1) {
+          startBlockIdx = foundBlockIdx + 1;
+        }
+      }
+    }
+
+    const selectedBlocks = [];
+    let selectedRowCount = 0;
+    let nextBlockIdx = startBlockIdx;
+
+    while (nextBlockIdx < poolBlocks.length) {
+      const blk = poolBlocks[nextBlockIdx];
+      selectedBlocks.push(blk);
+      selectedRowCount += blk.length;
+      nextBlockIdx++;
+      if (selectedRowCount >= limit) {
+        break;
+      }
+    }
+
+    const hasMore = nextBlockIdx < poolBlocks.length;
+
+    if (selectedBlocks.length === 0) {
+      return res.status(200).json({
+        success: true,
+        data: { items: [], nextCursor: null, hasMore: false }
+      });
+    }
+
+    // Batch augmentations for selected items only
+    const items = selectedBlocks.flat();
+
+    // 1. Stock pools
+    const poolStockMap = new Map();
+    const uniquePools = new Map();
+    for (const plan of items) {
+      const rawCompId = plan.canonicalCompanyId || (plan.companyId?._id || plan.companyId);
+      const compId = (rawCompId && rawCompId.toString) ? rawCompId.toString() : (rawCompId || '');
+      const dayStr = plan.planDate ? new Date(plan.planDate).toISOString().split('T')[0] : '';
+      const poolKey = `${compId}::${plan.canonicalBottle}::${dayStr}`;
+      if (!uniquePools.has(poolKey)) {
+        uniquePools.set(poolKey, { compId, canonicalBottle: plan.canonicalBottle, planDate: plan.planDate });
+      }
+    }
+
+    await Promise.all(Array.from(uniquePools.entries()).map(async ([poolKey, pInfo]) => {
+      const stock = await computeLivePlainStock(pInfo.canonicalBottle, pInfo.compId, pInfo.planDate);
+      const rawPlain = stock && stock.plainStock !== undefined ? stock.plainStock : stock;
+      const rawOpening = stock && stock.openingStock !== undefined ? stock.openingStock : rawPlain;
+      const plainStock = Number.isFinite(Number(rawPlain)) ? Number(rawPlain) : 0;
+      const openingStock = Number.isFinite(Number(rawOpening)) ? Number(rawOpening) : 0;
+      poolStockMap.set(poolKey, { plainStock, openingStock });
+    }));
+
+    // 2. BottleSpec & CoatingProduction batch lookups
+    const uniqueBottleNames = Array.from(new Set(items.map(p => p.bottleName).filter(Boolean)));
+    const bSpecs = await BottleSpec.find({ bottleName: { $in: uniqueBottleNames }, isDeleted: false }).lean().maxTimeMS(15000);
+    const bSpecMap = new Map(bSpecs.map(s => [s.bottleName, s]));
+
+    const coatingOrConditions = [];
+    for (const p of items) {
+      const spec = bSpecMap.get(p.bottleName);
+      const brandOid = p.brandId?._id || p.brandId;
+      if (spec && brandOid && p.colour) {
+        coatingOrConditions.push({
+          coatingSpecId: spec._id,
+          brandId: brandOid,
+          coatingShade: p.colour,
+          isDeleted: false
+        });
+      }
+    }
+
+    const coatingSumMap = new Map();
+    if (coatingOrConditions.length > 0) {
+      const coatingRecords = await CoatingProduction.find({ $or: coatingOrConditions }).lean().maxTimeMS(15000);
+      for (const rec of coatingRecords) {
+        const key = `${rec.coatingSpecId}_${rec.brandId}_${rec.coatingShade}`;
+        coatingSumMap.set(key, (coatingSumMap.get(key) || 0) + (rec.actualQuantity || 0));
+      }
+    }
+
+    const allCompaniesList = await Company.find({ isDeleted: { $ne: true } }).select('_id name isStockSupplier').lean();
+    const companyNameMap = new Map(allCompaniesList.map(c => [c._id.toString(), c.name]));
+    const supplierIdSet = new Set(allCompaniesList.filter(c => c.isStockSupplier).map(c => c._id.toString()));
+
+    // 3. Spans & Block calculations
+    const augmentedItems = [];
+    for (const block of selectedBlocks) {
+      const blockSize = block.length;
+      const firstRow = block[0];
+      const dateStr = firstRow.planDate ? new Date(firstRow.planDate).toISOString().split('T')[0] : '';
+      const rawCompId = firstRow.canonicalCompanyId || (firstRow.companyId?._id || firstRow.companyId) || firstRow.companyName || 'UNASSIGNED';
+      const compIdStr = String(rawCompId).trim();
+      const blockKey = `${dateStr}__${compIdStr}__${firstRow.canonicalBottleNormalized}`;
+
+      const poolKey = `${compIdStr}::${firstRow.canonicalBottle}::${dateStr}`;
+      const poolStock = poolStockMap.get(poolKey) || { plainStock: 0, openingStock: 0 };
+
+      // Process runs: merge across all consecutive rows with same process (across brands)
+      let procRunStart = 0;
+      while (procRunStart < blockSize) {
+        const proc = String(block[procRunStart].process || '').trim().toUpperCase();
+        let procRunEnd = procRunStart + 1;
+        while (procRunEnd < blockSize) {
+          const nextProc = String(block[procRunEnd].process || '').trim().toUpperCase();
+          if (nextProc === proc) {
+            procRunEnd++;
+          } else {
+            break;
+          }
+        }
+        const procSpan = procRunEnd - procRunStart;
+
+        // Brand per row (not grouped): each row shows its brand individually
+        for (let bIdx = procRunStart; bIdx < procRunEnd; bIdx++) {
+          block[bIdx].brandSpan = 1;
+          block[bIdx].isFirstInBrand = true;
+        }
+
+        for (let pIdx = procRunStart; pIdx < procRunEnd; pIdx++) {
+          block[pIdx].processSpan = (pIdx === procRunStart) ? procSpan : 0;
+          block[pIdx].isFirstInProcess = (pIdx === procRunStart);
+        }
+
+        procRunStart = procRunEnd;
+      }
+
+      // Assign block fields
+      for (let i = 0; i < blockSize; i++) {
+        const row = block[i];
+        const spec = bSpecMap.get(row.bottleName);
+        const brandOid = row.brandId?._id || row.brandId;
+        const cKey = spec && brandOid && row.colour ? `${spec._id}_${brandOid}_${row.colour}` : null;
+        const liveCoated = cKey ? (coatingSumMap.get(cKey) || 0) : 0;
+        const coatedQty = row.coatedQty !== null && row.coatedQty !== undefined ? row.coatedQty : (row.coatingCompletedQty !== null && row.coatingCompletedQty !== undefined ? row.coatingCompletedQty : liveCoated);
+        const balanceToMake = coatedQty - (row.orderQty || 0);
+        const isCompleted = (row.orderQty || 0) > 0 && coatedQty >= (row.orderQty || 0);
+
+        let rowUsedFrom = [];
+        let rowUsedFromTooltip = '';
+        if (Array.isArray(row.stockAllocation) && row.stockAllocation.length > 0) {
+          const hasSupplier = row.stockAllocation.some(a => supplierIdSet.has((a.companyId?._id || a.companyId)?.toString()) && Number(a.qty) > 0);
+          if (hasSupplier) {
+            rowUsedFrom = row.stockAllocation
+              .filter(a => Number(a.qty) > 0)
+              .map(a => {
+                const cIdStr = (a.companyId?._id || a.companyId)?.toString();
+                const cName = companyNameMap.get(cIdStr) || 'Company';
+                return {
+                  companyId: cIdStr,
+                  companyName: cName,
+                  qty: Number(a.qty)
+                };
+              });
+            rowUsedFromTooltip = rowUsedFrom.map(u => `${u.companyName}: ${u.qty}`).join(', ');
+          }
+        }
+
+        const augmentedRow = {
+          ...row,
+          blockKey,
+          blockSize,
+          blockIndex: i,
+          isFirstInBlock: (i === 0),
+          bottleSpan: (i === 0) ? blockSize : 0,
+          stockSpan: (i === 0) ? blockSize : 0,
+          boxSpan: (i === 0) ? blockSize : 0,
+          plainStock: poolStock.plainStock,
+          openingStock: poolStock.openingStock,
+          availableStock: poolStock.plainStock,
+          livePlainStock: poolStock.plainStock,
+          coatedQty,
+          balanceToMake,
+          status: isCompleted,
+          sentToReadyQty: row.sentToReadyQty || 0,
+          usedFrom: rowUsedFrom,
+          usedFromTooltip: rowUsedFromTooltip
+        };
+        augmentedItems.push(augmentedRow);
+      }
+    }
+
+    const lastRow = augmentedItems[augmentedItems.length - 1];
+    const nextCursor = hasMore && lastRow ? `${lastRow.blockKey || lastRow.planDate || 'c'}|${lastRow._id}` : null;
+
+    res.status(200).json({
+      success: true,
+      data: {
+        items: augmentedItems,
+        nextCursor,
+        hasMore
+      }
     });
   } catch (error) {
     res.status(400).json({ success: false, message: error.message });
@@ -1447,18 +2379,35 @@ exports.importPreviousDay = async (req, res) => {
 
     // Also mark any plan in candidatePlans that is already completed or sent on sourceDate
     candidatePlans.forEach(c => {
-      if (isPlanRowCompleted(c.values)) {
+      const order = Number(c.values.orderQty || 0);
+      const coated = Number(c.values.coatingCompletedQty ?? c.values.coatedQty ?? 0);
+      const sent = Number(c.sourcePlan?.sentToReadyQty || c.values.sentToReadyQty || 0);
+      const isCompleted = order > 0 && coated >= order;
+      const isFullySent = (order > 0 && sent >= order) || (coated > 0 && sent >= coated && isCompleted);
+
+      if (isCompleted) {
         const keys = getPlanCombinationKeys(c.values, resolveBrandKey, resolveVariantKey);
         keys.forEach(k => completedSet.add(k));
       }
+      if (isFullySent) {
+        const keys = getPlanCombinationKeys(c.values, resolveBrandKey, resolveVariantKey);
+        keys.forEach(k => sentSet.add(k));
+      }
     });
 
-    // Skip any combination that is already completed OR sent to ready-to-dispatch
+    // Skip any combination that is already completed OR fully sent to ready-to-dispatch
+    // Rows that still have balance (coated < order) continue to come as today!
     const openCandidates = candidatePlans.filter(c => {
       if (isPlanRowCompleted(c.values)) return false;
+      const order = Number(c.values.orderQty || 0);
+      const coated = Number(c.values.coatingCompletedQty ?? c.values.coatedQty ?? 0);
+      const sent = Number(c.sourcePlan?.sentToReadyQty || c.values.sentToReadyQty || 0);
+      if (order > 0 && sent >= order) return false;
+      if (coated > 0 && sent >= coated && isPlanRowCompleted(c.values)) return false;
+
       const keys = getPlanCombinationKeys(c.values, resolveBrandKey, resolveVariantKey);
       if (keys.some(k => completedSet.has(k))) return false;
-      if (keys.some(k => sentSet.has(k))) return false; // Skip rows sent to ready-to-dispatch
+      if (keys.some(k => sentSet.has(k))) return false;
       return true;
     });
 
@@ -1635,12 +2584,244 @@ exports.importPreviousDay = async (req, res) => {
 };
 
 // Get Plan by ID
+
+/**
+ * Computes full chronological history for a Lacquer Plan row.
+ * Handles Order Qty and Coating Completed Qty entries, initial opening balance,
+ * edit adjustments, soft-deleted entries, running totals, and balance after each entry.
+ */
+function formatUsedFrom(allocation, fallbackCompanyId, fallbackCompanyName, fallbackQty, companyNameMap) {
+  let list = [];
+  if (Array.isArray(allocation) && allocation.length > 0) {
+    list = allocation
+      .filter(a => Number(a.qty) !== 0)
+      .map(a => {
+        const cid = (a.companyId?._id || a.companyId)?.toString();
+        const cName = (companyNameMap && companyNameMap.get(cid)) || a.companyName || a.companyId?.name || 'Company';
+        return {
+          companyId: cid,
+          companyName: cName,
+          qty: Math.abs(Number(a.qty))
+        };
+      });
+  }
+
+  if (list.length === 0 && Number(fallbackQty) > 0) {
+    const cid = (fallbackCompanyId?._id || fallbackCompanyId)?.toString();
+    const cName = fallbackCompanyName || (companyNameMap && companyNameMap.get(cid)) || 'Own Company';
+    list = [{
+      companyId: cid,
+      companyName: cName,
+      qty: Math.abs(Number(fallbackQty) || 0)
+    }];
+  }
+
+  let text = '-';
+  if (list.length === 1) {
+    text = list[0].companyName;
+  } else if (list.length > 1) {
+    text = list.map(s => `${s.companyName} ${s.qty}`).join(', ');
+  }
+
+  return {
+    usedFrom: list,
+    usedFromText: text
+  };
+}
+
+function computePlanRowHistory(plan, plainStock, companyNameMap = new Map()) {
+  const entries = Array.isArray(plan.qtyEntries) ? [...plan.qtyEntries] : [];
+  entries.sort((a, b) => new Date(a.at || a.createdAt || 0) - new Date(b.at || b.createdAt || 0));
+
+  // 1. Order initial & active additions
+  const orderEntries = entries.filter(e => e.subType === 'order' || e.type === 'orderQty' || (e.type === 'added' && !e.subType) || (e.type === 'edit-adjustment' && e.subType === 'order'));
+  const activeOrderEntriesSum = orderEntries.filter(e => !e.isDeleted).reduce((sum, e) => sum + Number(e.qty || 0), 0);
+
+  let initialOrder = (typeof plan.orderQtyInitial === 'number' && plan.orderQtyInitial >= 0)
+    ? plan.orderQtyInitial
+    : (Number(plan.orderQty || 0) - activeOrderEntriesSum);
+  if (initialOrder < 0) initialOrder = 0;
+
+  // 2. Coated initial & active additions
+  const coatingEntries = entries.filter(e => e.subType === 'coated' || e.type === 'coatedQty' || (e.type === 'edit-adjustment' && e.subType === 'coated'));
+  const activeCoatedEntriesSum = coatingEntries.filter(e => !e.isDeleted).reduce((sum, e) => sum + Number(e.qty || 0), 0);
+
+  const currentCoated = Number(plan.coatingCompletedQty ?? plan.coatedQty ?? 0);
+  let initialCoated = (typeof plan.coatedQtyInitial === 'number' && plan.coatedQtyInitial >= 0)
+    ? plan.coatedQtyInitial
+    : (currentCoated - activeCoatedEntriesSum);
+  if (initialCoated < 0) initialCoated = 0;
+
+  const finalOrder = (plan.orderQty !== undefined && plan.orderQty !== null) ? Number(plan.orderQty) : (initialOrder + activeOrderEntriesSum);
+  const finalCoated = currentCoated;
+
+  // Build Order History Rows
+  let runningOrder = initialOrder;
+  const orderRows = [];
+  orderRows.push({
+    sr: 1,
+    at: plan.createdAt || plan.planDate || new Date(),
+    type: 'Opening balance',
+    rawType: 'opening',
+    qtyChange: `${initialOrder}`,
+    displayQty: `${initialOrder}`,
+    runningTotal: initialOrder,
+    balance: initialCoated - initialOrder,
+    by: plan.createdBy?.name || plan.createdBy || 'System',
+    note: 'Opening balance',
+    isDeleted: false
+  });
+
+  orderEntries.forEach((entry, idx) => {
+    const isDel = !!entry.isDeleted;
+    const qtyVal = Number(entry.qty || 0);
+    if (!isDel) {
+      runningOrder += qtyVal;
+    }
+    const typeLabel = isDel ? 'Removed' : (entry.type === 'edit-adjustment' ? 'Edit adjustment' : 'Added');
+    const signPrefix = qtyVal > 0 ? `+${qtyVal}` : `${qtyVal}`;
+    orderRows.push({
+      sr: idx + 2,
+      at: entry.at || new Date(),
+      type: typeLabel,
+      rawType: isDel ? 'removed' : (entry.type === 'edit-adjustment' ? 'edit-adjustment' : 'added'),
+      qtyChange: signPrefix,
+      displayQty: signPrefix,
+      runningTotal: runningOrder,
+      balance: finalCoated - runningOrder,
+      by: isDel ? (entry.deletedBy || entry.by || 'unknown') : (entry.by || 'unknown'),
+      deletedAt: entry.deletedAt,
+      note: entry.note || (isDel ? `Removed by ${entry.deletedBy || 'unknown'}` : ''),
+      isDeleted: isDel,
+      _id: entry._id
+    });
+  });
+
+  // Build Coating History Rows
+  const ownCompId = (plan.companyId?._id || plan.companyId)?.toString();
+  const ownCompName = (companyNameMap && companyNameMap.get(ownCompId)) || plan.companyName || plan.companyId?.name || 'Own Company';
+  const openingAlloc = (Array.isArray(plan.stockAllocationInitial) && plan.stockAllocationInitial.length > 0)
+    ? plan.stockAllocationInitial
+    : ((Array.isArray(plan.stockAllocation) && plan.stockAllocation.length > 0 && coatingEntries.length === 0)
+      ? plan.stockAllocation
+      : []);
+  const openingUsedFrom = formatUsedFrom(openingAlloc, ownCompId, ownCompName, initialCoated, companyNameMap);
+
+  let runningCoated = initialCoated;
+  const coatingRows = [];
+  coatingRows.push({
+    sr: 1,
+    at: plan.createdAt || plan.planDate || new Date(),
+    type: 'Opening balance',
+    rawType: 'opening',
+    qtyChange: `${initialCoated}`,
+    displayQty: `${initialCoated}`,
+    runningTotal: initialCoated,
+    stockRemaining: plainStock !== undefined ? plainStock : (plan.plainStock ?? 0),
+    balance: initialCoated - finalOrder,
+    by: plan.createdBy?.name || plan.createdBy || 'System',
+    note: 'Opening balance',
+    isDeleted: false,
+    usedFrom: openingUsedFrom.usedFrom,
+    usedFromText: openingUsedFrom.usedFromText
+  });
+
+  coatingEntries.forEach((entry, idx) => {
+    const isDel = !!entry.isDeleted;
+    const qtyVal = Number(entry.qty || 0);
+    if (!isDel) {
+      runningCoated += qtyVal;
+    }
+    const typeLabel = isDel ? 'Removed' : (entry.type === 'edit-adjustment' ? 'Edit adjustment' : 'Added');
+    const signPrefix = qtyVal > 0 ? `+${qtyVal}` : `${qtyVal}`;
+    const entryUsedFrom = formatUsedFrom(entry.stockAllocation, ownCompId, ownCompName, Math.abs(qtyVal), companyNameMap);
+
+    coatingRows.push({
+      sr: idx + 2,
+      at: entry.at || new Date(),
+      type: typeLabel,
+      rawType: isDel ? 'removed' : (entry.type === 'edit-adjustment' ? 'edit-adjustment' : 'added'),
+      qtyChange: signPrefix,
+      displayQty: signPrefix,
+      runningTotal: runningCoated,
+      stockRemaining: plainStock !== undefined ? plainStock : (plan.plainStock ?? 0),
+      balance: runningCoated - finalOrder,
+      by: isDel ? (entry.deletedBy || entry.by || 'unknown') : (entry.by || 'unknown'),
+      deletedAt: entry.deletedAt,
+      note: entry.note || (isDel ? `Removed by ${entry.deletedBy || 'unknown'}` : ''),
+      isDeleted: isDel,
+      stockAllocation: entry.stockAllocation || [],
+      usedFrom: entryUsedFrom.usedFrom,
+      usedFromText: entryUsedFrom.usedFromText,
+      _id: entry._id
+    });
+  });
+
+  // Calculate current total used from
+  const totalAllocMap = new Map();
+  for (const a of (openingUsedFrom.usedFrom || [])) {
+    if (a.companyId) {
+      totalAllocMap.set(a.companyId, {
+        companyName: a.companyName,
+        qty: (totalAllocMap.get(a.companyId)?.qty || 0) + a.qty
+      });
+    }
+  }
+  for (const row of coatingRows) {
+    if (row.isDeleted || row.rawType === 'opening') continue;
+    for (const a of (row.usedFrom || [])) {
+      if (a.companyId) {
+        totalAllocMap.set(a.companyId, {
+          companyName: a.companyName,
+          qty: (totalAllocMap.get(a.companyId)?.qty || 0) + a.qty
+        });
+      }
+    }
+  }
+  const currentTotalList = Array.from(totalAllocMap.entries())
+    .filter(([cid, info]) => info.qty > 0)
+    .map(([cid, info]) => ({ companyId: cid, companyName: info.companyName, qty: info.qty }));
+
+  let totalUsedFromText = '-';
+  if (currentTotalList.length === 1) {
+    totalUsedFromText = currentTotalList[0].companyName;
+  } else if (currentTotalList.length > 1) {
+    totalUsedFromText = currentTotalList.map(s => `${s.companyName} ${s.qty}`).join(', ');
+  } else if (ownCompName) {
+    totalUsedFromText = ownCompName;
+  }
+
+  return {
+    orderHistory: orderRows,
+    coatingHistory: coatingRows,
+    orderSummary: {
+      opening: initialOrder,
+      totalAdded: activeOrderEntriesSum,
+      current: finalOrder
+    },
+    coatingSummary: {
+      opening: initialCoated,
+      totalAdded: activeCoatedEntriesSum,
+      current: finalCoated,
+      totalUsedFromText,
+      usedFrom: currentTotalList
+    },
+    currentTotalOrder: finalOrder,
+    currentTotalCoated: finalCoated,
+    totalOrderEntries: orderRows.length,
+    totalCoatingEntries: coatingRows.length
+  };
+}
+exports.computePlanRowHistory = computePlanRowHistory;
+
 exports.getPlanById = async (req, res) => {
   try {
     const plan = await LacquerPlan.findById(req.params.id)
       .populate("companyId", "name")
       .populate("brandId", "name")
-      .populate("variantId", "variantName");
+      .populate("variantId", "variantName")
+      .populate("stockSources", "name")
+      .populate("stockAllocation.companyId", "name");
     if (!plan || plan.isDeleted) {
       return res.status(404).json({ success: false, message: "Plan not found" });
     }
@@ -1656,6 +2837,8 @@ exports.getPlanById = async (req, res) => {
         .populate("companyId", "name")
         .populate("brandId", "name")
         .populate("variantId", "variantName")
+        .populate("stockSources", "name")
+        .populate("stockAllocation.companyId", "name")
         .lean();
       groupPlanIds = groupPlans.map(p => p._id.toString());
     } else {
@@ -1666,10 +2849,17 @@ exports.getPlanById = async (req, res) => {
     const compId = plan.canonicalCompanyId || (plan.companyId?._id || plan.companyId);
     const canonicalBottle = await resolveCanonicalPlainBottle(plan.plainBottle || plan.bottleName, compId);
 
-    // Compute stock excluding the plan's own group IDs (no double deduction)
-    const stockRes = await computeLivePlainStock(canonicalBottle, compId, plan.planDate, groupPlanIds);
+    const compSources = (plan.stockSources && plan.stockSources.length > 0)
+      ? plan.stockSources.map(s => (s._id || s).toString())
+      : [compId ? compId.toString() : ''];
+
+    // Compute accurate live day-based plain stock for this pool (excluding group plans for edit accuracy)
+    const stockRes = await computeLivePlainStock(canonicalBottle, compSources, plan.planDate, groupPlanIds);
     const plainStock = stockRes.plainStock !== undefined ? stockRes.plainStock : Number(stockRes);
     const openingStock = stockRes.openingStock !== undefined ? stockRes.openingStock : plainStock;
+
+    const allCompanies = await Company.find({ isDeleted: { $ne: true } }).select('_id name').lean();
+    const companyNameMap = new Map(allCompanies.map(c => [c._id.toString(), c.name]));
 
     const planObj = plan.toObject();
     planObj.livePlainStock = plainStock;
@@ -1683,13 +2873,31 @@ exports.getPlanById = async (req, res) => {
       openingStock: openingStock
     }));
 
+    planObj.history = computePlanRowHistory(planObj, plainStock, companyNameMap);
+
+    groupPlans = groupPlans.map(p => {
+      const pObj = {
+        ...p,
+        livePlainStock: plainStock,
+        plainStock: plainStock,
+        openingStock: openingStock
+      };
+      pObj.history = computePlanRowHistory(pObj, plainStock, companyNameMap);
+      return pObj;
+    });
+
+    planObj.groupPlans = groupPlans;
+
     res.status(200).json({
       success: true,
       data: planObj,
       groupPlans,
       groupPlanIds,
       plainStock,
-      openingStock
+      openingStock,
+      sources: stockRes.sources || [],
+      hasSuppliers: stockRes.hasSuppliers || false,
+      eligibleSuppliers: stockRes.eligibleSuppliers || []
     });
   } catch (error) {
     res.status(400).json({ success: false, message: error.message });
@@ -1776,9 +2984,12 @@ exports.updatePlan = async (req, res) => {
         }
       }
 
-      const duplicate = await LacquerPlan.findOne(dupQuery);
+      const duplicate = await LacquerPlan.findOne(dupQuery).populate('variantId', 'variantName');
       if (duplicate) {
-        throw new Error(`A plan for Bottle "${bottleName}" ${variantId ? 'with this variant' : 'with this shade'} already exists for this date, company and brand.`);
+        const vName = duplicate.variantId?.variantName || (duplicate.variantId ? (await Variant.findById(duplicate.variantId))?.variantName : '') || req.body.variantName;
+        const shade = req.body.colour || req.body.coatingShade || duplicate.colour || duplicate.coatingShade;
+        const detail = vName ? `with variant "${vName}"` : (shade ? `with shade "${shade}"` : 'with this variant');
+        throw new Error(`A plan for Bottle "${bottleName}" ${detail} already exists for this date, company and brand.`);
       }
     }
 
@@ -1789,6 +3000,18 @@ exports.updatePlan = async (req, res) => {
     });
 
     const updateData = { ...req.body };
+    delete updateData.sentToReadyQty;
+    delete updateData.readyToDispatch;
+
+    if (req.body.coatingCompletedQty !== undefined || req.body.coatedQty !== undefined || req.body.orderQty !== undefined || updateData.balanceToMake !== undefined) {
+      const newCoated = updateData.coatingCompletedQty !== undefined ? updateData.coatingCompletedQty : (updateData.coatedQty !== undefined ? updateData.coatedQty : (existingPlan.coatingCompletedQty ?? existingPlan.coatedQty ?? 0));
+      const newOrder = updateData.orderQty !== undefined ? updateData.orderQty : (existingPlan.orderQty ?? 0);
+      updateData.balanceToMake = Number(newCoated) - Number(newOrder);
+      if (updateData.status === undefined || req.body.status === undefined) {
+        updateData.status = (Number(newOrder) > 0 && Number(newCoated) >= Number(newOrder));
+      }
+    }
+
     let newHistory = null;
     if (updateData.newOrderHistoryEntry) {
       newHistory = updateData.newOrderHistoryEntry;
@@ -1813,6 +3036,14 @@ exports.updatePlan = async (req, res) => {
       updateData.groupKey = targetGroupKey || existingPlan.groupKey;
       if (req.body.rowSeq !== undefined) {
         updateData.rowSeq = req.body.rowSeq;
+      }
+      if (existingPlan.groupId && !updateData.groupId) {
+        updateData.groupId = existingPlan.groupId;
+      }
+      if (req.body.rowOrder !== undefined) {
+        updateData.rowOrder = req.body.rowOrder;
+      } else if (existingPlan.rowOrder !== undefined) {
+        updateData.rowOrder = existingPlan.rowOrder;
       }
     }
 
@@ -1844,6 +3075,100 @@ exports.updatePlan = async (req, res) => {
       }
     }
 
+    // Validate stock allocation for updated plan
+    const newCoatedVal = updateData.coatingCompletedQty !== undefined
+      ? Number(updateData.coatingCompletedQty)
+      : (updateData.coatedQty !== undefined ? Number(updateData.coatedQty) : Number(existingPlan.coatingCompletedQty ?? existingPlan.coatedQty ?? 0));
+    const allocDate = updateData.planDate || existingPlan.planDate;
+    const allocBottle = updateData.bottleName || existingPlan.bottleName;
+    const allocComp = updateData.companyId || existingPlan.companyId;
+    const allocSources = updateData.stockSources !== undefined ? updateData.stockSources : existingPlan.stockSources;
+    const allocSplit = updateData.stockAllocation !== undefined ? updateData.stockAllocation : null;
+
+    const allocRes = await validateStockAllocation(
+      allocDate,
+      allocBottle,
+      allocComp,
+      allocSources,
+      newCoatedVal,
+      allocSplit,
+      existingPlan._id
+    );
+    updateData.stockSources = allocRes.stockSources;
+    updateData.stockAllocation = allocRes.stockAllocation;
+
+    // History edit adjustments
+    const oldOrder = Number(existingPlan.orderQty || 0);
+    const newOrder = updateData.orderQty !== undefined ? Number(updateData.orderQty) : oldOrder;
+    const diffOrder = newOrder - oldOrder;
+
+    const oldCoated = Number(existingPlan.coatingCompletedQty ?? existingPlan.coatedQty ?? 0);
+    const newCoated = newCoatedVal;
+    const diffCoated = newCoated - oldCoated;
+
+    if (diffOrder !== 0 || diffCoated !== 0) {
+      if (existingPlan.orderQtyInitial === null || existingPlan.orderQtyInitial === undefined) {
+        updateData.orderQtyInitial = oldOrder;
+      }
+      if (existingPlan.coatedQtyInitial === null || existingPlan.coatedQtyInitial === undefined) {
+        updateData.coatedQtyInitial = oldCoated;
+      }
+      if (existingPlan.stockAllocationInitial === null || existingPlan.stockAllocationInitial === undefined || existingPlan.stockAllocationInitial.length === 0) {
+        updateData.stockAllocationInitial = (existingPlan.stockAllocation && existingPlan.stockAllocation.length > 0)
+          ? existingPlan.stockAllocation
+          : (oldCoated > 0 ? [{ companyId: existingPlan.companyId, qty: oldCoated }] : []);
+      }
+
+      const editUser = req.user?.email || req.user?.name || 'unknown';
+      const newEntries = Array.isArray(existingPlan.qtyEntries) ? [...existingPlan.qtyEntries] : [];
+      if (diffOrder !== 0) {
+        newEntries.push({
+          type: 'edit-adjustment',
+          subType: 'order',
+          qty: diffOrder,
+          at: new Date(),
+          by: editUser,
+          note: req.body.editNote || 'Edit adjustment',
+          runningTotal: newOrder,
+          isDeleted: false
+        });
+      }
+      if (diffCoated !== 0) {
+        // Delta allocation for edit adjustment
+        const oldAllocMap = new Map();
+        (existingPlan.stockAllocation || []).forEach(a => {
+          const cid = (a.companyId?._id || a.companyId)?.toString();
+          oldAllocMap.set(cid, Number(a.qty) || 0);
+        });
+        const newAllocMap = new Map();
+        (allocRes.stockAllocation || []).forEach(a => {
+          const cid = (a.companyId?._id || a.companyId)?.toString();
+          newAllocMap.set(cid, Number(a.qty) || 0);
+        });
+        const allCids = new Set([...oldAllocMap.keys(), ...newAllocMap.keys()]);
+        const entryAllocDiff = [];
+        for (const cid of allCids) {
+          const qDiff = (newAllocMap.get(cid) || 0) - (oldAllocMap.get(cid) || 0);
+          if (qDiff !== 0) {
+            entryAllocDiff.push({ companyId: new mongoose.Types.ObjectId(cid), qty: qDiff });
+          }
+        }
+
+        newEntries.push({
+          type: 'edit-adjustment',
+          subType: 'coated',
+          qty: diffCoated,
+          at: new Date(),
+          by: editUser,
+          note: req.body.editNote || 'Edit adjustment',
+          runningTotal: newCoated,
+          stockAllocation: entryAllocDiff,
+          isDeleted: false
+        });
+      }
+      updateData.qtyEntries = newEntries;
+    }
+
     const plan = await LacquerPlan.findByIdAndUpdate(
       req.params.id,
       updateData,
@@ -1867,6 +3192,18 @@ exports.updatePlan = async (req, res) => {
       const newCoated = req.body.coatingCompletedQty !== undefined ? req.body.coatingCompletedQty : req.body.coatedQty;
       await syncLacquerPlanStockDeduction(plan, newCoated, req.user?._id);
     }
+
+
+    await replayStockAllocations(
+      plan.bottleName,
+      plan.planDate,
+      [plan.companyId, ...(plan.stockSources || [])],
+      req.user?._id
+    );
+
+    // Auto-send or sync differences to Ready To Dispatch
+    const { syncLacquerPlanReadyToDispatch } = require('./readyToDispatch.controller');
+    await syncLacquerPlanReadyToDispatch(plan._id);
 
     // Sync live remaining plain stock across all same-day plans of this bottle
     const pBottle = (plan.plainBottle || plan.bottleName || '').trim();
@@ -1918,6 +3255,13 @@ exports.deletePlan = async (req, res) => {
       await recomputePlainStock(plan.bottleName, plan.canonicalCompanyId || plan.companyId, req.user?._id);
     }
 
+    await replayStockAllocations(
+      plan.bottleName,
+      plan.planDate,
+      [plan.companyId, ...(plan.stockSources || [])],
+      req.user?._id
+    );
+
     res.status(200).json({ success: true, message: "Plan deleted successfully" });
   } catch (error) {
     res.status(400).json({ success: false, message: error.message });
@@ -1942,13 +3286,23 @@ exports.getComputedStats = async (req, res) => {
       }
     }
 
+    let sourcesToQuery = [];
+    if (req.query.stockSources) {
+      sourcesToQuery = (Array.isArray(req.query.stockSources) ? req.query.stockSources : String(req.query.stockSources).split(',')).map(s => s.trim()).filter(Boolean);
+    } else if (effectiveCompanyId) {
+      sourcesToQuery = [effectiveCompanyId];
+    }
+
+    let sources = [];
     // 1. Fetch live day-based plain stock (Rule L3)
+    let stockRes = null;
     if (bottleName) {
       const canonicalBottle = await resolveCanonicalPlainBottle(bottleName, effectiveCompanyId);
-      const stockRes = await computeLivePlainStock(canonicalBottle, effectiveCompanyId, planDate, excludePlanIds);
+      stockRes = await computeLivePlainStock(canonicalBottle, sourcesToQuery, planDate, excludePlanIds);
       plainStock = stockRes.plainStock !== undefined ? stockRes.plainStock : Number(stockRes);
       openingStock = stockRes.openingStock !== undefined ? stockRes.openingStock : plainStock;
       totalCoatedToday = stockRes.sameDayCoated || 0;
+      sources = stockRes.sources || [];
     }
 
     // 2. Fetch cumulative coatedQty
@@ -1993,7 +3347,10 @@ exports.getComputedStats = async (req, res) => {
         plainStock: Number(plainStock),
         openingStock: Number(openingStock),
         totalCoatedToday: Number(totalCoatedToday),
-        coatedQty: Number(coatedQty)
+        coatedQty: Number(coatedQty),
+        sources: sources || [],
+        hasSuppliers: stockRes ? (stockRes.hasSuppliers || false) : false,
+        eligibleSuppliers: stockRes ? (stockRes.eligibleSuppliers || []) : []
       }
     });
   } catch (error) {
@@ -3269,6 +4626,8 @@ exports.commitImportExcel = async (req, res) => {
         for (const plan of createdPlans) {
           await syncLacquerPlanStockDeduction(plan, plan.coatingCompletedQty ?? plan.coatedQty, req.user?._id);
           await syncPrintingPlanForLacquerPlan(plan, req.user?._id);
+          const { syncLacquerPlanReadyToDispatch } = require('./readyToDispatch.controller');
+          await syncLacquerPlanReadyToDispatch(plan);
         }
         totalImported += createdPlans.length;
         importedResults.push({ date, imported: createdPlans.length, skippedCompleted: validRows.length - toInsertRows.length });
@@ -3315,5 +4674,475 @@ exports.verifyImportedData = async (req, res) => {
       success: false,
       message: error.message
     });
+  }
+};
+
+
+// Per-pool locks to serialize quantity updates (keyed by "companyId|plainBottleName")
+const poolLocks = new Map();
+
+async function acquirePoolLock(companyId, plainBottleName) {
+  const lockKey = `${companyId}|${plainBottleName}`;
+  while (poolLocks.has(lockKey)) {
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  poolLocks.set(lockKey, true);
+  return lockKey;
+}
+
+function releasePoolLock(lockKey) {
+  poolLocks.delete(lockKey);
+}
+
+/**
+ * POST /lacquer-plan/:id/add-order-qty
+ * Add to order quantity. Increases orderQty by the added amount.
+ * Stores a qtyEntries history entry.
+ */
+exports.addOrderQty = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { qty, note, date } = req.body;
+    const userId = req.user?.email || req.user?.name || 'unknown';
+
+    // Validation - supports add (+) or subtract (-)
+    const quantity = Number(qty);
+    if (!qty || !Number.isInteger(quantity) || quantity === 0) {
+      return res.status(400).json({ success: false, message: 'Qty must be a non-zero integer' });
+    }
+
+    const plan = await LacquerPlan.findById(id);
+    if (!plan) {
+      return res.status(404).json({ success: false, message: 'Plan not found' });
+    }
+
+    if (plan.isDeleted) {
+      return res.status(400).json({ success: false, message: 'Cannot modify deleted plan' });
+    }
+
+    if (plan.orderQtyInitial === null || plan.orderQtyInitial === undefined) {
+      plan.orderQtyInitial = plan.orderQty || 0;
+    }
+    if (plan.coatedQtyInitial === null || plan.coatedQtyInitial === undefined) {
+      plan.coatedQtyInitial = plan.coatingCompletedQty ?? plan.coatedQty ?? 0;
+    }
+
+    // Create entry
+    const newOrderQty = (plan.orderQty || 0) + Number(qty);
+    if (newOrderQty < 0) {
+      return res.status(400).json({ success: false, message: 'Order quantity cannot reduce the total below zero' });
+    }
+    const entry = {
+      type: 'added',
+      subType: 'order',
+      qty: Number(qty),
+      at: date ? new Date(date) : new Date(),
+      by: userId,
+      note: note || '',
+      runningTotal: newOrderQty
+    };
+
+    // Update plan
+    plan.orderQty = newOrderQty;
+    plan.balanceToMake = (plan.coatingCompletedQty || 0) - newOrderQty;
+    
+    // Update status based on completion
+    const isCompleted = newOrderQty > 0 && (plan.coatingCompletedQty || 0) >= newOrderQty;
+    plan.status = isCompleted;
+
+    // Recompute boxes if applicable
+    if (plan.boxQty && plan.boxQty > 0) {
+      plan.noOfBoxes = Math.ceil(newOrderQty / plan.boxQty);
+    }
+
+    plan.qtyEntries = plan.qtyEntries || [];
+    plan.qtyEntries.push(entry);
+
+    await plan.save();
+
+    // Refresh and return
+    const updated = await LacquerPlan.findById(id);
+    res.status(200).json({
+      success: true,
+      data: updated,
+      message: `Order quantity increased to ${newOrderQty}`
+    });
+  } catch (error) {
+    console.error('Error in addOrderQty:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * POST /lacquer-plan/:id/add-coated-qty
+ * Add to coating completed quantity.
+ * First entry sets the coated qty; subsequent entries add to it.
+ * Validates against available plain stock of the pool.
+ */
+exports.addCoatedQty = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { qty, note, date } = req.body;
+    const userId = req.user?.email || req.user?.name || 'unknown';
+
+    // Validation
+    const quantity = Number(qty);
+    if (qty === undefined || qty === null || !Number.isInteger(quantity) || quantity === 0) {
+      return res.status(400).json({ success: false, message: 'Qty must be a non-zero integer' });
+    }
+
+    const plan = await LacquerPlan.findById(id);
+    if (!plan) {
+      return res.status(404).json({ success: false, message: 'Plan not found' });
+    }
+
+    if (plan.isDeleted) {
+      return res.status(400).json({ success: false, message: 'Cannot modify deleted plan' });
+    }
+
+    // Acquire pool lock
+    const plainBottleName = plan.bottleName;
+    const companyId = plan.companyId?.toString();
+    const lockKey = await acquirePoolLock(companyId, plainBottleName);
+
+    try {
+      // Re-fetch after lock to get latest state
+      const freshPlan = await LacquerPlan.findById(id);
+      const newCoatedQty = (freshPlan.coatingCompletedQty || 0) + quantity;
+      if (newCoatedQty < 0) {
+        releasePoolLock(lockKey);
+        return res.status(400).json({
+          success: false,
+          message: 'Coating quantity cannot reduce the total below zero.'
+        });
+      }
+
+      // Get pool's available plain stock
+      const availableStock = await computeLivePlainStock(plainBottleName, companyId, freshPlan.planDate);
+
+      // Calculate current usage by this plan
+      const currentCoatedByThisPlan = freshPlan.coatingCompletedQty || 0;
+      // Available for this plan = total available - (all other coating by all plans in the pool)
+      // But we need to account for what THIS plan already took
+      const usedByOthers = await LacquerPlan.aggregate([
+        {
+          $match: {
+            companyId: new mongoose.Types.ObjectId(companyId),
+            bottleName: plainBottleName,
+            isDeleted: false,
+            _id: { $ne: new mongoose.Types.ObjectId(id) },
+            planDate: { $lte: new Date(freshPlan.planDate) }
+          }
+        },
+        {
+          $group: {
+            _id: null,
+            totalCoated: { $sum: '$coatingCompletedQty' }
+          }
+        }
+      ]);
+
+      const otherCoated = usedByOthers[0]?.totalCoated || 0;
+      const availableForThisPlan = availableStock - otherCoated;
+
+      if (quantity > 0 && newCoatedQty > availableForThisPlan) {
+        releasePoolLock(lockKey);
+        return res.status(400).json({
+          success: false,
+          message: `Cannot exceed available stock. Available for this pool: ${availableForThisPlan}`,
+          availableQuantity: availableForThisPlan
+        });
+      }
+
+      if (freshPlan.orderQtyInitial === null || freshPlan.orderQtyInitial === undefined) {
+        freshPlan.orderQtyInitial = freshPlan.orderQty || 0;
+      }
+      if (freshPlan.coatedQtyInitial === null || freshPlan.coatedQtyInitial === undefined) {
+        freshPlan.coatedQtyInitial = freshPlan.coatingCompletedQty ?? freshPlan.coatedQty ?? 0;
+      }
+
+      // Determine entry stockAllocation
+      const planSources = (freshPlan.stockSources && freshPlan.stockSources.length > 0)
+        ? freshPlan.stockSources.map(s => (s._id || s).toString())
+        : [companyId];
+
+      let entryAllocation = [];
+      const userSplit = req.body.stockAllocation;
+
+      if (planSources.length > 1) {
+        if (!userSplit || !Array.isArray(userSplit) || userSplit.length === 0) {
+          releasePoolLock(lockKey);
+          return res.status(400).json({
+            success: false,
+            message: 'A stock split is required when multiple stock sources are selected.'
+          });
+        }
+
+        const canonicalBottle = await resolveCanonicalPlainBottle(plainBottleName, companyId);
+        const stockRes = await computeLivePlainStock(canonicalBottle, planSources, freshPlan.planDate);
+        const availMap = new Map();
+        (stockRes.sources || []).forEach(s => {
+          availMap.set(s.companyId?.toString(), Number(s.available) || 0);
+        });
+
+        let splitSum = 0;
+        for (const a of userSplit) {
+          const aCid = (a.companyId?._id || a.companyId)?.toString();
+          const aQty = Number(a.qty);
+          if (isNaN(aQty) || !Number.isInteger(aQty) || aQty < 0) {
+            releasePoolLock(lockKey);
+            return res.status(400).json({ success: false, message: 'Split quantities must be non-negative integers.' });
+          }
+          if (!planSources.includes(aCid)) {
+            releasePoolLock(lockKey);
+            return res.status(400).json({ success: false, message: 'Company in split is not one of the plan sources.' });
+          }
+          const maxAvail = availMap.get(aCid) || 0;
+          if (quantity > 0 && aQty > maxAvail) {
+            releasePoolLock(lockKey);
+            return res.status(400).json({
+              success: false,
+              message: `Only ${maxAvail} bottles available from this source (requested ${aQty})`
+            });
+          }
+          splitSum += aQty;
+          entryAllocation.push({ companyId: new mongoose.Types.ObjectId(aCid), qty: aQty });
+        }
+
+        if (splitSum !== quantity) {
+          releasePoolLock(lockKey);
+          return res.status(400).json({
+            success: false,
+            message: `Split must add up to ${quantity} (now ${splitSum})`
+          });
+        }
+      } else {
+        const soleSource = planSources[0] || companyId;
+        entryAllocation = [{ companyId: new mongoose.Types.ObjectId(soleSource), qty: quantity }];
+      }
+
+      if (freshPlan.stockAllocationInitial === null || freshPlan.stockAllocationInitial === undefined || freshPlan.stockAllocationInitial.length === 0) {
+        freshPlan.stockAllocationInitial = (freshPlan.stockAllocation && freshPlan.stockAllocation.length > 0)
+          ? freshPlan.stockAllocation
+          : ((freshPlan.coatedQtyInitial || 0) > 0 ? [{ companyId: new mongoose.Types.ObjectId(planSources[0] || companyId), qty: freshPlan.coatedQtyInitial }] : []);
+      }
+
+      // Create entry with optional date
+      const entry = {
+        type: 'added',
+        subType: 'coated',
+        qty: quantity,
+        at: date ? new Date(date) : new Date(),
+        by: userId,
+        note: note || '',
+        runningTotal: newCoatedQty,
+        stockAllocation: entryAllocation,
+        isDeleted: false
+      };
+
+      // Update plan
+      freshPlan.coatingCompletedQty = newCoatedQty;
+      freshPlan.coatedQty = newCoatedQty; // Keep both in sync
+      freshPlan.balanceToMake = newCoatedQty - (freshPlan.orderQty || 0);
+
+      // Update status based on completion
+      const isCompleted = (freshPlan.orderQty || 0) > 0 && newCoatedQty >= (freshPlan.orderQty || 0);
+      freshPlan.status = isCompleted;
+
+      freshPlan.qtyEntries = freshPlan.qtyEntries || [];
+      freshPlan.qtyEntries.push(entry);
+
+      // Recompute plan total stockAllocation
+      const totalsMap = new Map();
+      (freshPlan.stockAllocationInitial || []).forEach(a => {
+        const cid = (a.companyId?._id || a.companyId)?.toString();
+        totalsMap.set(cid, (totalsMap.get(cid) || 0) + (Number(a.qty) || 0));
+      });
+      for (const e of freshPlan.qtyEntries) {
+        if (e.isDeleted) continue;
+        if (e.stockAllocation && Array.isArray(e.stockAllocation)) {
+          for (const sa of e.stockAllocation) {
+            const cid = (sa.companyId?._id || sa.companyId)?.toString();
+            totalsMap.set(cid, (totalsMap.get(cid) || 0) + (Number(sa.qty) || 0));
+          }
+        }
+      }
+      freshPlan.stockAllocation = Array.from(totalsMap.entries()).map(([cid, q]) => ({
+        companyId: new mongoose.Types.ObjectId(cid),
+        qty: q
+      }));
+
+      await freshPlan.save();
+
+      // Replay allocations and stock deduction
+      await replayStockAllocations(
+        plainBottleName,
+        freshPlan.planDate,
+        [freshPlan.companyId, ...(freshPlan.stockSources || [])],
+        req.user?._id
+      );
+      await recomputePlainStock(plainBottleName, companyId, req.user?._id);
+      await syncSameDayPlansPlainStock(plainBottleName, companyId, freshPlan.planDate, req.user?._id);
+
+      // Sync Printing Plan if applicable (C+P rows)
+      if (freshPlan.process === 'C+P' || freshPlan.process === 'CP') {
+        // TODO: Sync to Printing Plan with new coated qty
+      }
+
+      // Auto-send to Ready To Dispatch if row is completed and is process C
+      if (isCompleted && freshPlan.process === 'C' && !freshPlan.readyToDispatch) {
+        // TODO: Auto-send logic
+      }
+
+      releasePoolLock(lockKey);
+
+      // Refresh and return
+      const updated = await LacquerPlan.findById(id);
+      res.status(200).json({
+        success: true,
+        data: updated,
+        message: `Coating quantity updated to ${newCoatedQty}`
+      });
+    } catch (error) {
+      releasePoolLock(lockKey);
+      throw error;
+    }
+  } catch (error) {
+    console.error('Error in addCoatedQty:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * DELETE /lacquer-plan/:id/entries/:entryId
+ * Delete a history entry by ID. Recomputes totals.
+ */
+exports.deleteQtyEntry = async (req, res) => {
+  try {
+    const { id, entryId } = req.params;
+
+    const plan = await LacquerPlan.findById(id);
+    if (!plan) {
+      return res.status(404).json({ success: false, message: 'Plan not found' });
+    }
+
+    // Find entry to soft-delete
+    const entry = (plan.qtyEntries || []).find(e => e._id?.toString() === entryId);
+    if (!entry) {
+      return res.status(404).json({ success: false, message: 'Entry not found' });
+    }
+
+    // Mark as soft-deleted
+    entry.isDeleted = true;
+    entry.deletedAt = new Date();
+    entry.deletedBy = req.user?.email || req.user?.name || 'unknown';
+
+    // Recompute totals from initial + active entries
+    let newOrderQty = (plan.orderQtyInitial !== null && plan.orderQtyInitial !== undefined) ? plan.orderQtyInitial : 0;
+    let newCoatedQty = (plan.coatedQtyInitial !== null && plan.coatedQtyInitial !== undefined) ? plan.coatedQtyInitial : 0;
+
+    for (const e of plan.qtyEntries) {
+      if (e.isDeleted) continue;
+      const q = Number(e.qty || 0);
+      if (e.subType === 'order' || e.type === 'orderQty') {
+        newOrderQty += q;
+      } else if (e.subType === 'coated' || e.type === 'coatedQty') {
+        newCoatedQty += q;
+      } else if (e.type === 'edit-adjustment') {
+        if (e.subType === 'order') newOrderQty += q;
+        else if (e.subType === 'coated') newCoatedQty += q;
+      } else if (e.type === 'added') {
+        if (e.subType === 'coated') newCoatedQty += q;
+        else newOrderQty += q;
+      }
+    }
+
+    if (newOrderQty < 0 || newCoatedQty < 0) {
+      entry.isDeleted = false;
+      return res.status(400).json({
+        success: false,
+        message: 'Deletion would result in invalid totals (negative quantities)'
+      });
+    }
+
+    // Update plan
+    plan.orderQty = newOrderQty;
+    plan.coatingCompletedQty = newCoatedQty;
+    plan.coatedQty = newCoatedQty;
+    plan.balanceToMake = newCoatedQty - newOrderQty;
+    plan.status = newOrderQty > 0 && newCoatedQty >= newOrderQty;
+
+    // Recompute plan total stockAllocation from initial + active entries
+    const totalsMap = new Map();
+    (plan.stockAllocationInitial || []).forEach(a => {
+      const cid = (a.companyId?._id || a.companyId)?.toString();
+      totalsMap.set(cid, (totalsMap.get(cid) || 0) + (Number(a.qty) || 0));
+    });
+    for (const e of plan.qtyEntries) {
+      if (e.isDeleted) continue;
+      if (e.stockAllocation && Array.isArray(e.stockAllocation)) {
+        for (const sa of e.stockAllocation) {
+          const cid = (sa.companyId?._id || sa.companyId)?.toString();
+          totalsMap.set(cid, (totalsMap.get(cid) || 0) + (Number(sa.qty) || 0));
+        }
+      }
+    }
+    plan.stockAllocation = Array.from(totalsMap.entries()).map(([cid, q]) => ({
+      companyId: new mongoose.Types.ObjectId(cid),
+      qty: q
+    }));
+
+    await plan.save();
+
+    await replayStockAllocations(
+      plan.bottleName,
+      plan.planDate,
+      [plan.companyId, ...(plan.stockSources || [])],
+      req.user?._id
+    );
+
+    // Recompute pool stock on this and later dates
+    await recomputePlainStock(plan.bottleName, plan.companyId, req.user?._id);
+    await syncSameDayPlansPlainStock(plan.bottleName, plan.companyId, plan.planDate, req.user?._id);
+
+    // Refresh and return
+    const updated = await LacquerPlan.findById(id);
+    res.status(200).json({
+      success: true,
+      data: updated,
+      message: 'Entry deleted and totals recomputed'
+    });
+  } catch (error) {
+    console.error('Error in deleteQtyEntry:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+
+// GET opening-stock
+exports.getOpeningStock = async (req, res) => {
+  try {
+    const { bottleName, companyId, planDate, stockSources, excludePlanIds } = req.query;
+    let sources = [];
+    if (stockSources) {
+      sources = (Array.isArray(stockSources) ? stockSources : String(stockSources).split(',')).map(s => s.trim()).filter(Boolean);
+    } else if (companyId) {
+      sources = [companyId];
+    }
+    const canonicalBottle = await resolveCanonicalPlainBottle(bottleName, companyId);
+    const stockRes = await computeLivePlainStock(canonicalBottle, sources, planDate, excludePlanIds);
+    return res.json({
+      success: true,
+      plainStock: stockRes.plainStock,
+      openingStock: stockRes.openingStock,
+      available: stockRes.available,
+      totalStock: stockRes.totalStock,
+      sameDayCoated: stockRes.sameDayCoated,
+      sources: stockRes.sources || [],
+      hasSuppliers: stockRes.hasSuppliers || false,
+      eligibleSuppliers: stockRes.eligibleSuppliers || []
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
   }
 };

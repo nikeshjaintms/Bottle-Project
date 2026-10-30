@@ -21,6 +21,7 @@ export default function DispatchCompanies() {
       page: urlPage,
       limit: itemsPerPage,
       search,
+      sortBy: 'name',
     }));
   }, [dispatch, urlPage, itemsPerPage, search]);
 
@@ -94,7 +95,7 @@ export default function DispatchCompanies() {
         </div>
 
         <div className="companies-list-mobile">
-          {companies.map((b, index) => (
+          {(companies || []).filter(c => !c.isStockSupplier).map((b, index) => (
             <div key={b._id} className="companies-mobile-card brands-mobile-card">
               <div className="d-flex align-items-start gap-3 w-100 min-w-0">
                 <div
@@ -139,7 +140,7 @@ export default function DispatchCompanies() {
               </tr>
             </thead>
             <tbody>
-              {companies.map((b, index) => (
+              {(companies || []).filter(c => !c.isStockSupplier).map((b, index) => (
                 <tr 
                   key={b._id} 
                   className="align-middle border-bottom transition-all hover-bg-light" 
@@ -220,7 +221,7 @@ export default function DispatchCompanies() {
         show={showImportModal} 
         onClose={() => setShowImportModal(false)}
         onImportComplete={() => {
-          dispatch(fetchCompanies({ page: currentPage, limit: itemsPerPage, search }));
+          dispatch(fetchCompanies({ page: currentPage, limit: itemsPerPage, search, sortBy: 'name' }));
         }}
       />
     </div>

@@ -121,7 +121,13 @@ const lacquerPlanSchema = new mongoose.Schema({
     index: true,
     default: null
   },
-  rowSeq: {
+  
+  groupId: {
+    type: String,
+    index: true,
+    default: null
+  },
+  rowOrder: {
     type: Number,
     default: 1
   },
@@ -180,9 +186,82 @@ const lacquerPlanSchema = new mongoose.Schema({
       lineId: mongoose.Schema.Types.ObjectId,
       sentAt: Date
     }
+  },
+  sentToReadyQty: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
+  // Quantity entries history for Order Qty and Coating Completed Qty additions
+    qtyEntries: [{
+    type: {
+      type: String
+    },
+    subType: String,
+    qty: Number,
+    at: { type: Date, default: Date.now },
+    by: String,
+    note: String,
+    runningTotal: Number,
+    stockAllocation: [{
+      companyId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "Company"
+      },
+      qty: {
+        type: Number,
+        default: 0
+      }
+    }],
+    isDeleted: { type: Boolean, default: false },
+    deletedAt: Date,
+    deletedBy: String
+  }],
+  orderQtyInitial: {
+    type: Number,
+    default: null
+  },
+  coatedQtyInitial: {
+    type: Number,
+    default: null
+  },
+  stockAllocationInitial: [{
+    companyId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Company"
+    },
+    qty: {
+      type: Number,
+      default: 0
+    }
+  }],
+  stockSources: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Company"
+  }],
+  stockAllocation: [{
+    companyId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Company"
+    },
+    qty: {
+      type: Number,
+      default: 0
+    }
+  }],
+  allocationShortfall: {
+    type: Boolean,
+    default: false
+  },
+  shortfallQty: {
+    type: Number,
+    default: 0
   }
 }, { timestamps: true });
 
-
+// Indexes for lacquerplan queries with common filters
+lacquerPlanSchema.index({ companyId: 1, isDeleted: 1, bottleName: 1 });
+lacquerPlanSchema.index({ companyId: 1, planDate: -1, isDeleted: 1 });
+lacquerPlanSchema.index({ coatingShade: 1, isDeleted: 1 });
 
 module.exports = mongoose.model("LacquerPlan", lacquerPlanSchema);

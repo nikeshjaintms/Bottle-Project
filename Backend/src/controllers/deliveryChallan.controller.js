@@ -5,6 +5,245 @@ const { generateChallanHtml } = require("../templates/deliveryChallanHtml");
 const { generateMcnoreChallanHtml } = require("../templates/mcnoreChallanHtml");
 const { generateShrenoChallanHtml } = require("../templates/shrenoChallanHtml");
 const { getSharedBrowser } = require("../services/sharedPuppeteer");
+const mongoose = require("mongoose");
+const Brand = require("../models/Brand");
+const BottlePerBox = require("../models/BottlePerBox");
+const BottleSpec = require("../models/Bottlespecs");
+const Variant = require("../models/Variant");
+const { derivePlainBottleName } = require("../utils/derivePlainBottleName");
+
+const normalizeBottleName = (value) => String(value || "").trim().toUpperCase().replace(/\s+/g, " ");
+const normalizeRollOnBottleName = (value) => normalizeBottleName(value).replace(/ROLL\s*ON|ROLL-ON/g, "ROLLON");
+
+const matchesPlainBottleSpec = (specName, bottle) => {
+  const names = [
+    bottle.plainBottleName,
+    bottle.bottleName,
+    ...(Array.isArray(bottle.bottleNames) ? bottle.bottleNames : []),
+  ].filter(Boolean);
+  const derivedName = derivePlainBottleName(String(specName || "")).plainBottleName;
+
+  return names.some((name) =>
+    normalizeBottleName(name) === normalizeBottleName(specName) ||
+    normalizeRollOnBottleName(name) === normalizeRollOnBottleName(specName) ||
+    normalizeBottleName(name) === normalizeBottleName(derivedName) ||
+    normalizeRollOnBottleName(name) === normalizeRollOnBottleName(derivedName)
+  );
+};
+
+const validateChallanProductItems = async (companyId, items) => {
+  if (!Array.isArray(items)) return "Challan items must be provided as an array.";
+  if (!items.length) return null;
+  if (items.some((item) => !item?.plainBottleId)) return "Select a plain bottle for every challan item.";
+  if (items.some((item) => !item?.variantId)) return "Select a variant for every challan item.";
+  if (!companyId || !mongoose.isValidObjectId(companyId)) {
+    return "A valid company is required to validate the selected plain bottle and variant.";
+  }
+
+  const brandIds = (await Brand.find({ companyId, isDeleted: { $ne: true } }).select("_id").lean())
+    .map((brand) => brand._id);
+  if (!brandIds.length) {
+    return "The selected company has no bottle specifications, so its plain bottle and variant cannot be validated.";
+  }
+
+  const [specs, bottles] = await Promise.all([
+    BottleSpec.find({ brandId: { $in: brandIds }, isDeleted: { $ne: true } })
+      .select("_id bottleName variantId isCoating")
+      .lean(),
+    Promise.all(items.map((item) =>
+      mongoose.isValidObjectId(item.plainBottleId)
+        ? BottlePerBox.findById(item.plainBottleId).lean()
+        : null
+    )),
+  ]);
+  const bottleById = new Map();
+  items.forEach((item, index) => {
+    if (item.plainBottleId) bottleById.set(String(item.plainBottleId), bottles[index]);
+  });
+
+  for (const item of items) {
+    const bottleId = String(item.plainBottleId || "");
+    if (!mongoose.isValidObjectId(bottleId)) {
+      return "The selected plain bottle is invalid. Please select it again.";
+    }
+
+    const bottle = bottleById.get(bottleId);
+    if (!bottle || bottle.isDeleted) return "The selected plain bottle could not be found. Please select it again.";
+
+    const matchingSpecs = specs.filter((spec) => matchesPlainBottleSpec(spec.bottleName, bottle));
+    if (!matchingSpecs.length) {
+      return `Plain bottle "${bottle.plainBottleName || bottle.bottleName}" does not belong to the selected company.`;
+    }
+    if (!mongoose.isValidObjectId(item.variantId)) {
+      return "The selected variant is invalid. Please select it again.";
+    }
+
+    const variant = await Variant.findOne({
+      _id: item.variantId,
+      isDeleted: { $ne: true },
+    }).select("_id bottleSpecId").lean();
+    const matchingSpecIds = new Set(matchingSpecs.map((spec) => String(spec._id)));
+    const belongsToBottle = variant && matchingSpecIds.has(String(variant.bottleSpecId));
+    const coatingSpecReferencesVariant = specs.some((spec) =>
+      spec.isCoating &&
+      matchingSpecIds.has(String(spec._id)) &&
+      String(spec.variantId || "") === String(item.variantId)
+    );
+    if (!belongsToBottle && !coatingSpecReferencesVariant) {
+      return `Variant does not belong to plain bottle "${bottle.plainBottleName || bottle.bottleName}" and the selected company.`;
+    }
+  }
+
+  return null;
+};
+
+const getVariantMaterialCodeUpdates = async (items, preservedItemIndexes = new Set()) => {
+  const candidates = items
+    .map((item, itemIndex) => ({ item, itemIndex }))
+    .filter(({ item, itemIndex }) => item?.variantId && !preservedItemIndexes.has(itemIndex));
+  const variantIds = [...new Set(candidates.map(({ item }) => String(item.variantId)))];
+  if (!variantIds.length) return { updates: [] };
+
+  const variants = await Variant.find({ _id: { $in: variantIds } })
+    .select("_id variantName materialCode")
+    .lean();
+  const variantById = new Map(variants.map((variant) => [String(variant._id), variant]));
+  const updatesByVariant = new Map();
+
+  for (const { item, itemIndex } of candidates) {
+    const variant = variantById.get(String(item.variantId));
+    if (!variant) continue;
+
+    const materialCode = String(item.materialCode ?? "").trim();
+    const oldMaterialCode = String(variant.materialCode ?? "").trim();
+    if (!materialCode || materialCode === oldMaterialCode) continue;
+
+    const existingUpdate = updatesByVariant.get(String(variant._id));
+    if (existingUpdate) {
+      if (existingUpdate.materialCode !== materialCode) {
+        return {
+          error: {
+            status: 400,
+            body: {
+              success: false,
+              message: `Conflicting Material Codes were submitted for variant "${variant.variantName || variant._id}".`,
+            },
+          },
+        };
+      }
+      continue;
+    }
+
+    if (oldMaterialCode && item.confirmVariantCodeUpdate !== true) {
+      return {
+        error: {
+          status: 409,
+          body: {
+            success: false,
+            code: "VARIANT_MATERIAL_CODE_CONFLICT",
+            message: `Variant ${variant.variantName || variant._id} already has Material Code ${oldMaterialCode}.`,
+            conflict: {
+              itemIndex,
+              variantId: String(variant._id),
+              variantName: variant.variantName || "",
+              oldMaterialCode,
+              newMaterialCode: materialCode,
+            },
+          },
+        },
+      };
+    }
+
+    updatesByVariant.set(String(variant._id), {
+      variantId: variant._id,
+      oldMaterialCode,
+      materialCode,
+    });
+  }
+
+  return { updates: [...updatesByVariant.values()] };
+};
+
+const applyVariantMaterialCodeUpdates = async (updates, session) => {
+  const applied = [];
+  try {
+    for (const update of updates) {
+      const filter = { _id: update.variantId };
+      if (update.oldMaterialCode) {
+        filter.materialCode = update.oldMaterialCode;
+      } else {
+        filter.$or = [
+          { materialCode: "" },
+          { materialCode: { $exists: false } },
+        ];
+      }
+
+      const result = await Variant.updateOne(
+        filter,
+        { $set: { materialCode: update.materialCode } },
+        session ? { session } : {}
+      );
+      if (!result.matchedCount) {
+        const error = new Error("Variant Material Code changed while the challan was being saved. Please try again.");
+        error.code = "VARIANT_MATERIAL_CODE_RACE";
+        throw error;
+      }
+      applied.push(update);
+    }
+  } catch (error) {
+    if (!session) await rollbackVariantMaterialCodeUpdates(applied);
+    throw error;
+  }
+  return applied;
+};
+
+const rollbackVariantMaterialCodeUpdates = async (updates) => {
+  for (const update of [...updates].reverse()) {
+    await Variant.updateOne(
+      { _id: update.variantId, materialCode: update.materialCode },
+      { $set: { materialCode: update.oldMaterialCode } }
+    );
+  }
+};
+
+const persistChallanAndVariantCodes = async ({ updates, saveChallan, rollbackChallan }) => {
+  if (!updates.length) return saveChallan();
+
+  const hello = await mongoose.connection.db.admin().command({ hello: 1 });
+  const transactionsSupported = Boolean(hello.setName || hello.msg === "isdbgrid");
+  if (transactionsSupported) {
+    const session = await mongoose.startSession();
+    let savedChallan;
+    try {
+      await session.withTransaction(async () => {
+        await applyVariantMaterialCodeUpdates(updates, session);
+        savedChallan = await saveChallan(session);
+      });
+      return savedChallan;
+    } finally {
+      await session.endSession();
+    }
+  }
+
+  if (rollbackChallan) {
+    const savedChallan = await saveChallan();
+    try {
+      await applyVariantMaterialCodeUpdates(updates);
+    } catch (error) {
+      await rollbackChallan(savedChallan);
+      throw error;
+    }
+    return savedChallan;
+  }
+
+  await applyVariantMaterialCodeUpdates(updates);
+  try {
+    return await saveChallan();
+  } catch (error) {
+    await rollbackVariantMaterialCodeUpdates(updates);
+    throw error;
+  }
+};
 
 // Helper to calculate total boxes from an expression or string
 function parseBoxCount(boxStr) {
@@ -77,7 +316,15 @@ exports.createChallan = async (req, res) => {
     // Lookup company name
     let companyName = "";
     const comp = await Company.findById(targetCompanyId);
+    if (!comp || comp.isDeleted) {
+      return res.status(400).json({ success: false, message: "Selected company could not be found." });
+    }
     if (comp) companyName = comp.name;
+
+    const productValidationError = await validateChallanProductItems(targetCompanyId, items);
+    if (productValidationError) {
+      return res.status(400).json({ success: false, message: productValidationError });
+    }
 
     const isMcnoreChallan = challanType === "mcnore" ||
       (companyName && companyName.toLowerCase().includes("mcn")) ||
@@ -158,6 +405,8 @@ exports.createChallan = async (req, res) => {
 
       return {
         title: it.title || "",
+        plainBottleId: it.plainBottleId || null,
+        variantId: it.variantId || null,
         description: it.description || "",
         box: String(it.box || ""),
         boxCount: bCount,
@@ -173,7 +422,7 @@ exports.createChallan = async (req, res) => {
       };
     });
 
-    const challan = await DeliveryChallan.create({
+    const challan = new DeliveryChallan({
       challanType: finalChallanType,
       poMode: poMode || (isMcnoreChallan ? "with_po" : "without_po"),
       taxInvoiceNo: taxInvoiceNo || "",
@@ -208,6 +457,17 @@ exports.createChallan = async (req, res) => {
       checkedTime: checkedTime || "",
       remarks: remarks || "",
       createdBy: req.user?._id || null,
+    });
+
+    const { updates, error: codeUpdateError } = await getVariantMaterialCodeUpdates(items || []);
+    if (codeUpdateError) {
+      return res.status(codeUpdateError.status).json(codeUpdateError.body);
+    }
+
+    await persistChallanAndVariantCodes({
+      updates,
+      saveChallan: (session) => challan.save(session ? { session } : {}),
+      rollbackChallan: (saved) => DeliveryChallan.deleteOne({ _id: saved._id }),
     });
 
     const populated = await challan.populate("companyId", "name");
@@ -379,6 +639,69 @@ exports.getChallanById = async (req, res) => {
 exports.updateChallan = async (req, res) => {
   try {
     const body = { ...req.body };
+    const currentChallan = await DeliveryChallan.findById(req.params.id).select("companyId items");
+    if (!currentChallan) {
+      return res.status(404).json({ success: false, message: "Delivery Challan not found" });
+    }
+
+    const targetCompanyId = body.companyId || currentChallan.companyId;
+    if (body.items !== undefined && !Array.isArray(body.items)) {
+      return res.status(400).json({
+        success: false,
+        message: "Challan items must be provided as an array.",
+      });
+    }
+    const submittedItems = body.items || currentChallan.items;
+    const companyUnchanged = String(targetCompanyId) === String(currentChallan.companyId);
+    const matchedLegacyItemIndexes = new Set();
+    const itemsToValidate = [];
+    for (const item of submittedItems) {
+      if (item?.plainBottleId && item?.variantId) {
+        itemsToValidate.push(item);
+        continue;
+      }
+
+      const legacyIndex = companyUnchanged
+        ? currentChallan.items.findIndex((savedItem, index) =>
+          !matchedLegacyItemIndexes.has(index) &&
+          String(savedItem.plainBottleId || "") === String(item?.plainBottleId || "") &&
+          String(savedItem.variantId || "") === String(item?.variantId || "") &&
+          String(savedItem.title || "") === String(item?.title || "") &&
+          String(savedItem.description || "") === String(item?.description || "")
+        )
+        : -1;
+      if (legacyIndex < 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Select a plain bottle and variant for every changed challan item.",
+        });
+      }
+      matchedLegacyItemIndexes.add(legacyIndex);
+    }
+
+    const productValidationError = await validateChallanProductItems(targetCompanyId, itemsToValidate);
+    if (productValidationError) {
+      return res.status(400).json({ success: false, message: productValidationError });
+    }
+
+    const preservedItemIndexes = new Set();
+    (body.items || []).forEach((item, itemIndex) => {
+      const savedItem = currentChallan.items[itemIndex];
+      if (
+        savedItem &&
+        String(savedItem.variantId || "") === String(item?.variantId || "") &&
+        String(savedItem.title || "") === String(item?.title || "") &&
+        String(savedItem.description || "") === String(item?.description || "") &&
+        String(savedItem.materialCode || "").trim() === String(item?.materialCode || "").trim()
+      ) {
+        preservedItemIndexes.add(itemIndex);
+      }
+    });
+    const { updates: variantCodeUpdates, error: codeUpdateError } =
+      await getVariantMaterialCodeUpdates(body.items || [], preservedItemIndexes);
+    if (codeUpdateError) {
+      return res.status(codeUpdateError.status).json(codeUpdateError.body);
+    }
 
     if (body.challanNo) {
       const existing = await DeliveryChallan.findOne({
@@ -411,6 +734,8 @@ exports.updateChallan = async (req, res) => {
         totalQuantity += itTotal;
         return {
           title: it.title || "",
+          plainBottleId: it.plainBottleId || null,
+          variantId: it.variantId || null,
           description: it.description || "",
           box: String(it.box || ""),
           boxCount: bCount,
@@ -429,16 +754,35 @@ exports.updateChallan = async (req, res) => {
       body.totalQuantity = totalQuantity;
     }
 
-    const updated = await DeliveryChallan.findByIdAndUpdate(req.params.id, body, {
-      returnDocument: "after",
-    })
-      .populate("companyId", "name")
-      .populate("billedToAddressId")
-      .populate("shippedToAddressId");
-
+    let updated;
+    try {
+      updated = await persistChallanAndVariantCodes({
+        updates: variantCodeUpdates,
+        saveChallan: async (session) => {
+          const options = { returnDocument: "after" };
+          if (session) options.session = session;
+          const saved = await DeliveryChallan.findByIdAndUpdate(req.params.id, body, options);
+          if (!saved) {
+            const error = new Error("Delivery Challan not found");
+            error.statusCode = 404;
+            throw error;
+          }
+          return saved;
+        },
+      });
+    } catch (error) {
+      if (error.statusCode === 404) {
+        return res.status(404).json({ success: false, message: "Delivery Challan not found" });
+      }
+      throw error;
+    }
     if (!updated) {
       return res.status(404).json({ success: false, message: "Delivery Challan not found" });
     }
+
+    await updated.populate("companyId", "name");
+    await updated.populate("billedToAddressId");
+    await updated.populate("shippedToAddressId");
 
     res.json({
       success: true,

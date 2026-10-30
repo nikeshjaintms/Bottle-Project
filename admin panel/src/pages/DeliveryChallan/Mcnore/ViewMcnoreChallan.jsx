@@ -191,7 +191,7 @@ export default function ViewMcnoreChallan() {
             <img
               src={logo}
               alt="Shayona Glass Decor logo"
-              style={{ position: 'absolute', top: 5, left: 10, width: 140, height: 92, objectFit: 'contain' }}
+              style={{ position: 'absolute', top: 0, left: 0, width: 140, height: 92, objectFit: 'contain' }}
             />
             <div
               style={{
@@ -975,6 +975,14 @@ export default function ViewMcnoreChallan() {
 
       {/* Print Styles */}
       <style>{`
+        .mcnore-challan-sheet,
+        .mcnore-challan-sheet * {
+          border-width: 1px !important;
+        }
+        .mcnore-challan-sheet {
+          border: 1px solid #000 !important;
+          outline: none !important;
+        }
         @media print {
           body {
             background-color: #fff !important;
@@ -988,7 +996,7 @@ export default function ViewMcnoreChallan() {
           }
           .mcnore-challan-sheet {
             box-shadow: none !important;
-            border: 2px solid #000 !important;
+            border: 1px solid #000 !important;
             outline: none !important;
             max-width: 100% !important;
             width: 100% !important;

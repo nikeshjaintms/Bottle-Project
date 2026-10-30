@@ -101,7 +101,7 @@ export default function BottleSpecs() {
                     <span className="fw-semibold text-truncate">{s.bottleName}</span>
                     <span className="badge bg-light text-dark border fw-normal small">{s.code}</span>
                   </div>
-                  <div className="small text-muted">{s.brandId?.companyId?.name || 'N/A'} · {s.brandId?.name || 'N/A'}</div>
+                  <div className="small text-muted">{s.brandId?.companyId?.name || s.companyId?.name || 'N/A'} · {s.brandId?.name || 'N/A'}</div>
                   <div className="small text-muted mt-1">
                     {s.printingTypeId?.name || 'N/A'} — {s.printingColorId?.name || 'No Color'}
                   </div>
@@ -165,7 +165,7 @@ export default function BottleSpecs() {
                   </td>
                   <td className="py-3 text-center">
                     <span className="fw-600 text-dark" style={{ fontSize: 13 }}>
-                      {s.brandId?.companyId?.name || 'N/A'}
+                      {s.brandId?.companyId?.name || s.companyId?.name || 'N/A'}
                     </span>
                   </td>
                   <td className="py-3 text-center">

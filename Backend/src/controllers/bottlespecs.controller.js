@@ -37,6 +37,21 @@ exports.createSpec = async (req, res) => {
         }
         const existing = await BottleSpec.findOne(dupQuery);
         if (existing) {
+          if (body.upsert === true || body.upsert === 'true') {
+            if (body.printingTypeId !== undefined) existing.printingTypeId = body.printingTypeId || null;
+            if (body.printingColorId !== undefined) existing.printingColorId = body.printingColorId || null;
+            if (body.code !== undefined) existing.code = body.code;
+            if (body.status !== undefined) existing.status = body.status;
+            existing.isCoating = true;
+            if (body.isPrinting !== undefined) existing.isPrinting = body.isPrinting;
+            await existing.save();
+            const populated = await BottleSpec.findById(existing._id)
+              .populate({ path: "brandId", populate: { path: "companyId" } })
+              .populate("companyId")
+              .populate("printingTypeId")
+              .populate("printingColorId");
+            return res.json(populated);
+          }
           return res.status(409).json({
             success: false,
             message: `A coating spec for "${body.bottleName}" already exists for this brand.`
@@ -57,6 +72,17 @@ exports.createSpec = async (req, res) => {
           printingColorId: body.printingColorId || null
         });
         if (existing) {
+          if (body.upsert === true || body.upsert === 'true') {
+            if (body.isCoating !== undefined) existing.isCoating = body.isCoating;
+            if (body.status !== undefined) existing.status = body.status;
+            await existing.save();
+            const populated = await BottleSpec.findById(existing._id)
+              .populate({ path: "brandId", populate: { path: "companyId" } })
+              .populate("companyId")
+              .populate("printingTypeId")
+              .populate("printingColorId");
+            return res.json(populated);
+          }
           return res.status(409).json({
             success: false,
             message: `A bottle spec for "${body.bottleName}" with the same Printing Type and Color already exists.`
@@ -135,6 +161,7 @@ exports.createSpec = async (req, res) => {
         path: "brandId",
         populate: { path: "companyId" }
       })
+      .populate("companyId")
       .populate("printingTypeId")
       .populate("printingColorId");
     res.json(populated);
@@ -252,6 +279,7 @@ exports.getSpecs = async (req, res) => {
         path: "brandId",
         populate: { path: "companyId" }
       },
+      "companyId",  // Also populate direct companyId for bottles created from Incoming
       "printingTypeId",
       "printingColorId",
       "coatingTypeId",
@@ -300,6 +328,7 @@ exports.updateSpec = async (req, res) => {
       path: "brandId",
       populate: { path: "companyId" }
     })
+      .populate("companyId")
       .populate("printingTypeId")
       .populate("printingColorId");
     res.json(spec);
@@ -353,6 +382,7 @@ exports.getBottleNames = async (req, res) => {
         }
       }
       if (doc.bottleName && doc.bottleName.trim()) namesSet.add(doc.bottleName.trim());
+      if (doc.plainBottleName && doc.plainBottleName.trim()) namesSet.add(doc.plainBottleName.trim());
     }
 
     const allBottleNames = Array.from(namesSet).sort((a, b) => a.localeCompare(b));

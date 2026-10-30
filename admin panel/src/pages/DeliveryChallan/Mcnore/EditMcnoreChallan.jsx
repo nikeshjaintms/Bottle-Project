@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useNavigate, useParams, Link } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
 import {
@@ -6,10 +6,37 @@ import {
   updateDeliveryChallan,
 } from '../../../redux/slices/deliveryChallanSlice';
 import { fetchCompanies } from '../../../redux/slices/companySlice';
-import Select from 'react-select';
-import SearchableSelect from '../../../components/SearchableSelect';
 import API from '../../../services/api';
 import Swal from 'sweetalert2';
+import ChallanProductSelector from '../ChallanProductSelector';
+
+async function submitChallanWithMaterialCodeConfirmation({ payload, submit, onReject }) {
+  let response = await submit(payload);
+
+  while (response.error && response.payload?.code === 'VARIANT_MATERIAL_CODE_CONFLICT') {
+    const { conflict } = response.payload;
+    const confirmation = await Swal.fire({
+      icon: 'warning',
+      title: `Variant ${conflict.variantName} already has Material Code ${conflict.oldMaterialCode}. Update it to ${conflict.newMaterialCode}?`,
+      showCancelButton: true,
+      confirmButtonText: 'Yes',
+      cancelButtonText: 'No',
+    });
+
+    if (!confirmation.isConfirmed) {
+      onReject(conflict);
+      return null;
+    }
+
+    const item = payload.items[conflict.itemIndex];
+    if (!item) return response;
+    item.confirmVariantCodeUpdate = true;
+    response = await submit(payload);
+  }
+
+  if (!response.error) ChallanProductSelector.clearOptionCache();
+  return response;
+}
 
 export default function EditMcnoreChallan() {
   const { id } = useParams();
@@ -76,8 +103,6 @@ export default function EditMcnoreChallan() {
   // Bottle Per Box master
   const [bottlePerBoxes, setBottlePerBoxes] = useState([]);
 
-  // Cache variants per bottleSpecId
-  const [specVariantsCache, setSpecVariantsCache] = useState({});
 
   // Items grouped by Bottle Specification
   const [specGroups, setSpecGroups] = useState([]);
@@ -166,8 +191,6 @@ export default function EditMcnoreChallan() {
         if (c.items && c.items.length > 0) {
           const groups = [];
           let currGrp = null;
-          const variantsCacheMap = {};
-
           for (const it of c.items) {
             const title = (it.title || 'General').trim();
             if (!currGrp || currGrp.title !== title) {
@@ -183,6 +206,7 @@ export default function EditMcnoreChallan() {
               currGrp = {
                 id: `grp_${Date.now()}_${Math.random()}`,
                 plainBottle: title,
+                plainBottleId: it.plainBottleId?._id || it.plainBottleId || '',
                 bottleSpecId: specId,
                 title: title,
                 hsn: it.hsn || '70109000',
@@ -190,21 +214,6 @@ export default function EditMcnoreChallan() {
               };
               groups.push(currGrp);
 
-              if (title && !variantsCacheMap[title]) {
-                try {
-                  const resVar = await API.get('/variant', {
-                    params: {
-                      plainBottleName: title,
-                      companyId: cId || undefined,
-                      pagination: 'false',
-                    },
-                  });
-                  variantsCacheMap[title] = resVar.data?.data || [];
-                } catch (e) {
-                  console.error('Failed to fetch variants:', e);
-                  variantsCacheMap[title] = [];
-                }
-              }
             }
 
             // Parse box expression if possible
@@ -220,30 +229,11 @@ export default function EditMcnoreChallan() {
               fullBox = String(it.box || '');
             }
 
-            // Try to match variantId
-            let matchedVariantId = '';
-            const bottleKey = currGrp.plainBottle || currGrp.title || currGrp.bottleSpecId;
-            const availableVars = bottleKey ? (variantsCacheMap[bottleKey] || []) : [];
-            if (availableVars.length > 0 && it.description) {
-              const cleanDesc = it.description.trim().toLowerCase();
-              const foundVar = availableVars.find((v) => {
-                const vName = (v.variantName || v.name || '').trim().toLowerCase();
-                if (!vName) return false;
-                return (
-                  cleanDesc === vName ||
-                  cleanDesc.includes(vName) ||
-                  (v.coatingShade && cleanDesc.includes(v.coatingShade.trim().toLowerCase()))
-                );
-              });
-              if (foundVar) {
-                matchedVariantId = String(foundVar._id);
-              }
-            }
-
             currGrp.variantLines.push({
               id: `line_${Date.now()}_${Math.random()}`,
-              variantId: matchedVariantId,
+              variantId: it.variantId?._id || it.variantId || '',
               materialCode: it.materialCode || '',
+              materialCodeDirty: false,
               description: it.description || '',
               boxFormatType: match ? 'loose' : 'single',
               fullBox,
@@ -260,7 +250,6 @@ export default function EditMcnoreChallan() {
             });
           }
 
-          setSpecVariantsCache((prev) => ({ ...prev, ...variantsCacheMap }));
           setSpecGroups(groups);
         }
       };
@@ -268,70 +257,6 @@ export default function EditMcnoreChallan() {
       initData();
     }
   }, [currentChallan, id]);
-
-  // Memoized Plain Bottle Options (Company Plain Bottles first, then remaining Master Bottles)
-  const plainBottleOptions = useMemo(() => {
-    const companyPlainNames = new Set();
-    (companyBottleSpecs || []).forEach((spec) => {
-      const raw = (spec.bottleName || spec.name || '').trim();
-      if (!raw) return;
-      const matchedBpb = (bottlePerBoxes || []).find((b) => {
-        const pName = (b.plainBottleName || b.bottleName || '').trim();
-        if (pName.toLowerCase() === raw.toLowerCase()) return true;
-        if (Array.isArray(b.bottleNames) && b.bottleNames.some((n) => n.toLowerCase() === raw.toLowerCase())) {
-          return true;
-        }
-        return false;
-      });
-      if (matchedBpb) {
-        companyPlainNames.add(matchedBpb.plainBottleName || matchedBpb.bottleName);
-      } else {
-        companyPlainNames.add(raw);
-      }
-    });
-
-    const companyList = Array.from(companyPlainNames).sort();
-    const masterList = (bottlePerBoxes || [])
-      .map((b) => (b.plainBottleName || b.bottleName || '').trim())
-      .filter(Boolean)
-      .filter((name) => !companyPlainNames.has(name))
-      .sort();
-
-    return [
-      ...companyList.map((name) => ({
-        value: name,
-        label: name,
-        sublabel: companyBottleSpecs.length > 0 ? 'Company Bottle' : '',
-      })),
-      ...masterList.map((name) => ({
-        value: name,
-        label: name,
-        sublabel: 'Master Bottle',
-      })),
-    ];
-  }, [companyBottleSpecs, bottlePerBoxes]);
-
-  // Helper to fetch variants for a plain bottle
-  const fetchVariantsForBottle = async (bottleName) => {
-    if (!bottleName) return [];
-    if (specVariantsCache[bottleName]) return specVariantsCache[bottleName];
-
-    try {
-      const res = await API.get('/variant', {
-        params: {
-          plainBottleName: bottleName,
-          companyId: companyId || undefined,
-          pagination: 'false',
-        },
-      });
-      const variants = res.data?.data || [];
-      setSpecVariantsCache((prev) => ({ ...prev, [bottleName]: variants }));
-      return variants;
-    } catch (err) {
-      console.error(`Failed to load variants for bottle ${bottleName}:`, err);
-      return [];
-    }
-  };
 
   const loadCompanyDependencies = async (cId) => {
     try {
@@ -390,12 +315,13 @@ export default function EditMcnoreChallan() {
     return partial?.bottlePerBox ? String(partial.bottlePerBox) : '';
   };
 
-  const handleGroupBottleChange = async (grpIdx, selectedBottleName) => {
+  const handleGroupBottleChange = (grpIdx, selectedBottle) => {
     const newGroups = [...specGroups];
     const grp = newGroups[grpIdx];
-    const cleanName = (selectedBottleName || '').trim();
+    const cleanName = selectedBottle?.name || '';
 
     grp.plainBottle = cleanName;
+    grp.plainBottleId = selectedBottle?.id || selectedBottle?.value || '';
     grp.title = cleanName;
 
     const foundSpec = companyBottleSpecs.find(
@@ -404,8 +330,6 @@ export default function EditMcnoreChallan() {
     grp.bottleSpecId = foundSpec ? foundSpec._id : '';
 
     const suggestedUnit = lookupUnitForBottle(cleanName);
-    const variants = await fetchVariantsForBottle(cleanName);
-
     // Apply unit to variant lines if empty
     grp.variantLines = grp.variantLines.map((vl) => {
       const updatedUnit = vl.unit || suggestedUnit;
@@ -421,6 +345,10 @@ export default function EditMcnoreChallan() {
       );
       return {
         ...vl,
+        variantId: '',
+        materialCode: '',
+        materialCodeDirty: true,
+        description: '',
         unit: updatedUnit,
         ...rec,
       };
@@ -480,18 +408,18 @@ export default function EditMcnoreChallan() {
     };
   };
 
-  const handleVariantLineChange = (grpIdx, lineIdx, field, value) => {
+  const handleVariantLineChange = (grpIdx, lineIdx, field, value, selectedVariant) => {
     const newGroups = [...specGroups];
     const line = newGroups[grpIdx].variantLines[lineIdx];
     line[field] = value;
 
-    if (field === 'variantId') {
-      const bottleKey = newGroups[grpIdx].plainBottle || newGroups[grpIdx].title || newGroups[grpIdx].bottleSpecId;
-      const variants = specVariantsCache[bottleKey] || [];
-      const foundVar = variants.find((v) => v._id === value);
-      if (foundVar) {
-        line.description = foundVar.variantName || foundVar.name || '';
-      }
+    if (field === 'variantId' && selectedVariant !== undefined) {
+      line.variantId = selectedVariant?.variantId || '';
+      line.description = selectedVariant?.name || '';
+      line.materialCode = selectedVariant?.materialCode || '';
+      line.materialCodeDirty = true;
+    } else if (field === 'materialCode') {
+      line.materialCodeDirty = true;
     }
 
     if (
@@ -642,7 +570,7 @@ export default function EditMcnoreChallan() {
       };
     }, [specGroups, poMode, billedTo]);
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
 
     if (!challanNo || !challanNo.trim()) {
@@ -654,13 +582,17 @@ export default function EditMcnoreChallan() {
     }
 
     const payloadItems = [];
+    const lineRefs = [];
     specGroups.forEach((g) => {
       g.variantLines.forEach((vl) => {
         if (vl.description && vl.description.trim()) {
+          lineRefs.push({ groupIndex: specGroups.indexOf(g), lineIndex: g.variantLines.indexOf(vl) });
           payloadItems.push({
             title: g.title,
+            plainBottleId: g.plainBottleId || null,
             hsn: g.hsn || (poMode === 'with_po' ? '70109000' : '7010'),
-            materialCode: vl.materialCode || '',
+            materialCode: String(vl.materialCode || '').trim(),
+            variantId: vl.variantId || null,
             description: vl.description,
             box: vl.box || (vl.fullBox ? String(vl.fullBox) : '0'),
             boxCount: Number(vl.boxCount) || 0,
@@ -714,7 +646,26 @@ export default function EditMcnoreChallan() {
       remarks,
     };
 
-    dispatch(updateDeliveryChallan({ id, ...payload })).then((res) => {
+    const res = await submitChallanWithMaterialCodeConfirmation({
+      payload,
+      submit: (requestPayload) => dispatch(updateDeliveryChallan({ id, ...requestPayload })),
+      onReject: ({ itemIndex, oldMaterialCode }) => {
+        const lineRef = lineRefs[itemIndex];
+        if (!lineRef) return;
+        setSpecGroups((groups) => {
+          const next = [...groups];
+          next[lineRef.groupIndex] = { ...next[lineRef.groupIndex], variantLines: [...next[lineRef.groupIndex].variantLines] };
+          next[lineRef.groupIndex].variantLines[lineRef.lineIndex] = {
+            ...next[lineRef.groupIndex].variantLines[lineRef.lineIndex],
+            materialCode: oldMaterialCode,
+            materialCodeDirty: false,
+          };
+          return next;
+        });
+      },
+    });
+    if (!res) return;
+    {
       if (!res.error) {
         Swal.fire({
           icon: 'success',
@@ -731,9 +682,9 @@ export default function EditMcnoreChallan() {
           }
         });
       } else {
-        Swal.fire('Error!', res.payload || 'Failed to update Delivery Challan.', 'error');
+        Swal.fire('Error!', res.payload?.message || res.payload || 'Failed to update Delivery Challan.', 'error');
       }
-    });
+    }
   };
 
   return (
@@ -796,18 +747,19 @@ export default function EditMcnoreChallan() {
                   <i className="bi bi-building me-2 text-primary fs-6" />
                   Company <span className="text-danger">*</span>
                 </label>
-                <SearchableSelect
-                  options={companies.map((c) => ({ value: c._id, label: c.name }))}
-                  value={companyId}
+                <ChallanProductSelector
+                  level="company"
+                  companies={companies}
+                  companyId={companyId}
                   onChange={(val) => {
+                    if (String(val || '') !== String(companyId || '')) {
+                      setSpecGroups((groups) => ChallanProductSelector.clearSelections(groups));
+                    }
                     setCompanyId(val);
-                    const comp = companies.find((c) => c._id === val);
+                    const comp = companies.find((c) => String(c._id) === String(val));
                     if (comp) setCompanyName(comp.name);
                     loadCompanyDependencies(val);
                   }}
-                  placeholder="-- Select Company --"
-                  disabled={true}
-                  displayValue={companyName || 'MCNORE'}
                 />
                 <div className="small text-muted mt-2 d-flex align-items-center gap-1">
                   <i className="bi bi-check-circle-fill text-success" />
@@ -1181,9 +1133,6 @@ export default function EditMcnoreChallan() {
 
           <div className="card-body p-4">
             {specGroups.map((grp, grpIdx) => {
-              const bottleKey = grp.plainBottle || grp.title || grp.bottleSpecId;
-              const variants = bottleKey ? specVariantsCache[bottleKey] || [] : [];
-
               return (
                 <div key={grp.id} className="mcnore-item-group border border-light-subtle rounded-3 mb-4 bg-white p-4 shadow-sm">
                   {/* Group Header: Plain Bottle Selector */}
@@ -1192,19 +1141,13 @@ export default function EditMcnoreChallan() {
                       <label className="form-label small fw-bold text-muted mb-1">
                         Plain Bottle
                       </label>
-                      <Select
-                        options={plainBottleOptions}
-                        value={plainBottleOptions.find((option) => option.value === (grp.plainBottle || grp.title)) || null}
-                        onChange={(selected) => handleGroupBottleChange(grpIdx, selected?.value || '')}
+                      <ChallanProductSelector
+                        level="plainBottle"
+                        companyId={companyId}
+                        value={grp.plainBottleId || ''}
+                        legacyLabel={grp.plainBottle || grp.title}
+                        onChange={(selected) => handleGroupBottleChange(grpIdx, selected)}
                         placeholder="Select Plain Bottle..."
-                        isClearable
-                        menuPortalTarget={document.body}
-                        styles={{
-                          menuPortal: (base) => ({ ...base, zIndex: 9999 }),
-                          control: (base) => ({ ...base, minHeight: 42, height: 'auto', alignItems: 'flex-start' }),
-                          valueContainer: (base) => ({ ...base, minHeight: 40, flexWrap: 'wrap', whiteSpace: 'normal' }),
-                          singleValue: (base) => ({ ...base, position: 'relative', top: 'auto', transform: 'none', maxWidth: '100%', whiteSpace: 'normal', overflow: 'visible', textOverflow: 'clip', wordBreak: 'break-word' }),
-                        }}
                       />
                     </div>
 
@@ -1241,7 +1184,7 @@ export default function EditMcnoreChallan() {
                       className="table table-bordered table-sm align-middle mb-2 mcnore-variant-lines-table"
                       style={{
                         width: '100%',
-                        minWidth: poMode === 'with_po' ? 1180 : 1160,
+                        minWidth: poMode === 'with_po' ? 1280 : 1390,
                         tableLayout: 'fixed',
                       }}
                     >
@@ -1250,33 +1193,17 @@ export default function EditMcnoreChallan() {
                           {poMode === 'with_po' && <th style={{ width: 115 }}>Material Code</th>}
                           <th style={{ width: 200 }}>Variant / Shade</th>
                           <th style={{ width: 210 }}>Description</th>
-                          <th style={{ width: 190 }}>Boxes Calculation</th>
+                          <th style={{ width: 220 }}>Boxes Calculation</th>
                           <th style={{ width: 105 }}>BottlePerBox</th>
                           <th style={{ width: 90 }}>Total Qty</th>
-                          <th style={{ width: 95 }}>Rate</th>
-                          {poMode === 'without_po' && <th style={{ width: 95 }}>JW Rate</th>}
-                          <th style={{ width: 105 }}>Taxable Value</th>
+                          <th style={{ width: 110 }}>Rate (INR)</th>
+                          {poMode === 'without_po' && <th style={{ width: 110 }}>JW Rate (INR)</th>}
+                          <th style={{ width: 125 }}>Taxable Value (INR)</th>
                           <th style={{ width: 45 }}></th>
                         </tr>
                       </thead>
                       <tbody>
                         {grp.variantLines.map((vl, lineIdx) => {
-                          const variantOptions = variants.map((v) => {
-                            const label = [
-                              v.coatingShade,
-                              v.variantName,
-                              v.detectedTextColor && v.detectedTextColor !== 'Not Detected'
-                                ? v.detectedTextColor
-                                : '',
-                            ]
-                              .filter(Boolean)
-                              .join(' - ');
-                            return {
-                              value: v._id,
-                              label: label || v.variantName || v.name,
-                            };
-                          });
-
                           return (
                             <tr key={vl.id}>
                               {poMode === 'with_po' && (
@@ -1293,48 +1220,21 @@ export default function EditMcnoreChallan() {
                                 </td>
                               )}
                               <td data-label="Variant / Shade">
-                                <Select
-                                  options={variantOptions}
-                                  value={variantOptions.find((option) => option.value === vl.variantId) || null}
+                                <ChallanProductSelector
+                                  level="variant"
+                                  companyId={companyId}
+                                  plainBottleId={grp.plainBottleId}
+                                  value={vl.variantId}
+                                  legacyLabel={vl.description}
                                   onChange={(selected) =>
-                                    handleVariantLineChange(grpIdx, lineIdx, 'variantId', selected?.value || '')
+                                    handleVariantLineChange(
+                                      grpIdx,
+                                      lineIdx,
+                                      'variantId',
+                                      selected?.variantId || '',
+                                      selected || null
+                                    )
                                   }
-                                  placeholder={!bottleKey ? 'Choose bottle first' : variants.length ? 'Choose variant...' : 'No preset variants'}
-                                  isDisabled={!bottleKey || variants.length === 0}
-                                  isClearable
-                                  menuPortalTarget={document.body}
-                                  menuPosition="fixed"
-                                  menuPlacement="auto"
-                                  styles={{
-                                    menuPortal: (base) => ({ ...base, zIndex: 9999 }),
-                                    control: (base) => ({ ...base, minWidth: 0, minHeight: 38, height: 'auto', alignItems: 'center', flexWrap: 'nowrap' }),
-                                    valueContainer: (base) => ({
-                                      ...base,
-                                      flex: '1 1 0%',
-                                      width: 0,
-                                      minWidth: 0,
-                                      overflow: 'visible',
-                                      flexWrap: 'wrap',
-                                      whiteSpace: 'normal',
-                                    }),
-                                    placeholder: (base) => ({ ...base, whiteSpace: 'normal', wordBreak: 'normal', overflowWrap: 'break-word' }),
-                                    singleValue: (base) => ({
-                                      ...base,
-                                      position: 'relative',
-                                      top: 'auto',
-                                      transform: 'none',
-                                      maxWidth: '100%',
-                                      margin: 0,
-                                      whiteSpace: 'normal',
-                                      overflow: 'visible',
-                                      textOverflow: 'clip',
-                                      wordBreak: 'normal',
-                                      overflowWrap: 'break-word',
-                                    }),
-                                    indicatorsContainer: (base) => ({ ...base, flexShrink: 0, alignSelf: 'center' }),
-                                    indicatorSeparator: () => ({ display: 'none' }),
-                                    option: (base) => ({ ...base, whiteSpace: 'normal', wordBreak: 'normal', overflowWrap: 'break-word' }),
-                                  }}
                                 />
                               </td>
                               <td data-label="Description">
@@ -1351,11 +1251,20 @@ export default function EditMcnoreChallan() {
                                 />
                               </td>
                               <td data-label="Boxes Calculation">
-                                <div className="d-flex align-items-center gap-1">
+                                <div
+                                  className="mcnore-box-calculation"
+                                  style={{
+                                    display: 'grid',
+                                    gridTemplateColumns: 'minmax(0, 1fr) auto minmax(0, 1fr)',
+                                    alignItems: 'center',
+                                    gap: '0.25rem',
+                                    width: '100%',
+                                  }}
+                                >
                                   <input
                                     type="number"
                                     className="form-control form-control-sm text-center"
-                                    style={{ width: 78, minWidth: 78 }}
+                                    style={{ width: '100%', minWidth: 0 }}
                                     placeholder="Boxes"
                                     value={vl.fullBox}
                                     onChange={(e) =>
@@ -1366,7 +1275,7 @@ export default function EditMcnoreChallan() {
                                   <input
                                     type="number"
                                     className="form-control form-control-sm text-center"
-                                    style={{ width: 82, minWidth: 82 }}
+                                    style={{ width: '100%', minWidth: 0 }}
                                     placeholder="Loose"
                                     value={vl.looseQty}
                                     onChange={(e) =>
@@ -1398,7 +1307,7 @@ export default function EditMcnoreChallan() {
                                   placeholder="0"
                                 />
                               </td>
-                              <td data-label="Rate">
+                              <td data-label="Rate (INR)">
                                 <input
                                   type="number"
                                   step="0.01"
@@ -1407,11 +1316,12 @@ export default function EditMcnoreChallan() {
                                   onChange={(e) =>
                                     handleVariantLineChange(grpIdx, lineIdx, 'rate', e.target.value)
                                   }
-                                  placeholder="₹ Rate"
+                                  placeholder="Rate"
+                                  title="Rate in INR"
                                 />
                               </td>
                               {poMode === 'without_po' && (
-                                <td data-label="JW Rate">
+                                <td data-label="JW Rate (INR)">
                                   <input
                                     type="number"
                                     step="0.01"
@@ -1421,15 +1331,16 @@ export default function EditMcnoreChallan() {
                                       handleVariantLineChange(grpIdx, lineIdx, 'jobWorkRate', e.target.value)
                                     }
                                     placeholder="JW Rate"
+                                    title="Job-work rate in INR"
                                   />
                                 </td>
                               )}
-                              <td data-label="Taxable Value" className="text-end fw-500">
+                              <td data-label="Taxable Value (INR)" className="text-end fw-500">
                                 {vl.taxableValue || vl.jobWorkTaxableValue ? (
                                   <div>
-                                    {vl.taxableValue > 0 && <div>₹{vl.taxableValue}</div>}
+                                    {vl.taxableValue > 0 && <div>INR {vl.taxableValue}</div>}
                                     {vl.jobWorkTaxableValue > 0 && (
-                                      <small className="text-muted d-block">JW: ₹{vl.jobWorkTaxableValue}</small>
+                                      <small className="text-muted d-block">JW: INR {vl.jobWorkTaxableValue}</small>
                                     )}
                                   </div>
                                 ) : (
@@ -1506,30 +1417,30 @@ export default function EditMcnoreChallan() {
                       <div className="d-flex justify-content-between mb-1 small">
                         <span>GLASS BOTTLE VALUE:</span>
                         <span className="fw-bold">
-                          {glassBottleValue > 0 ? `₹${glassBottleValue.toLocaleString('en-IN')}` : '-'}
+                          {glassBottleValue > 0 ? `INR ${glassBottleValue.toLocaleString('en-IN')}` : '-'}
                         </span>
                       </div>
                       <div className="d-flex justify-content-between mb-1 small">
                         <span>JOB WORK CHARGES VALUE:</span>
                         <span className="fw-bold">
-                          {jobWorkChargesValue > 0 ? `₹${jobWorkChargesValue.toLocaleString('en-IN')}` : '-'}
+                          {jobWorkChargesValue > 0 ? `INR ${jobWorkChargesValue.toLocaleString('en-IN')}` : '-'}
                         </span>
                       </div>
                       <div className="d-flex justify-content-between mb-1 small">
                         <span>JOB WORK CHARGES SGST@9%:</span>
                         <span className="fw-bold">
-                          {sgst > 0 ? `₹${sgst.toLocaleString('en-IN')}` : '-'}
+                          {sgst > 0 ? `INR ${sgst.toLocaleString('en-IN')}` : '-'}
                         </span>
                       </div>
                       <div className="d-flex justify-content-between mb-2 small">
                         <span>JOB WORK CHARGES CGST@9%:</span>
                         <span className="fw-bold">
-                          {cgst > 0 ? `₹${cgst.toLocaleString('en-IN')}` : '-'}
+                          {cgst > 0 ? `INR ${cgst.toLocaleString('en-IN')}` : '-'}
                         </span>
                       </div>
                       <div className="d-flex justify-content-between pt-2 border-top fw-bold text-primary">
                         <span>TOTAL:</span>
-                        <span>{grandTotal > 0 ? `₹${grandTotal.toLocaleString('en-IN')}` : '-'}</span>
+                        <span>{grandTotal > 0 ? `INR ${grandTotal.toLocaleString('en-IN')}` : '-'}</span>
                       </div>
                     </>
                   ) : (
@@ -1538,34 +1449,34 @@ export default function EditMcnoreChallan() {
                         <span>TAXABLE VALUE:</span>
                         <span className="fw-bold">
                           {glassBottleValue + jobWorkChargesValue > 0
-                            ? `₹${(glassBottleValue + jobWorkChargesValue).toLocaleString('en-IN')}`
+                            ? `INR ${(glassBottleValue + jobWorkChargesValue).toLocaleString('en-IN')}`
                             : '-'}
                         </span>
                       </div>
                       {igst > 0 ? (
                         <div className="d-flex justify-content-between mb-1 small">
                           <span>IGST@18%:</span>
-                          <span className="fw-bold">₹{igst.toLocaleString('en-IN')}</span>
+                          <span className="fw-bold">INR {igst.toLocaleString('en-IN')}</span>
                         </div>
                       ) : (
                         <>
                           <div className="d-flex justify-content-between mb-1 small">
                             <span>SGST@9%:</span>
                             <span className="fw-bold">
-                              {sgst > 0 ? `₹${sgst.toLocaleString('en-IN')}` : '-'}
+                              {sgst > 0 ? `INR ${sgst.toLocaleString('en-IN')}` : '-'}
                             </span>
                           </div>
                           <div className="d-flex justify-content-between mb-1 small">
                             <span>CGST@9%:</span>
                             <span className="fw-bold">
-                              {cgst > 0 ? `₹${cgst.toLocaleString('en-IN')}` : '-'}
+                              {cgst > 0 ? `INR ${cgst.toLocaleString('en-IN')}` : '-'}
                             </span>
                           </div>
                         </>
                       )}
                       <div className="d-flex justify-content-between pt-2 border-top fw-bold text-success">
                         <span>TOTAL:</span>
-                        <span>{grandTotal > 0 ? `₹${grandTotal.toLocaleString('en-IN')}` : '-'}</span>
+                        <span>{grandTotal > 0 ? `INR ${grandTotal.toLocaleString('en-IN')}` : '-'}</span>
                       </div>
                     </>
                   )}

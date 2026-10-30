@@ -5,6 +5,14 @@ import { fetchDeliveryChallanById } from '../../../redux/slices/deliveryChallanS
 import html2pdf from 'html2pdf.js';
 import logo from '../../../assets/hero.png';
 
+const applyPrintLayout = (element) => {
+  element.style.width = '190mm';
+  element.style.maxWidth = 'none';
+  element.style.border = '1px solid #000';
+  element.style.padding = '12px';
+  element.style.boxShadow = 'none';
+};
+
 export default function ViewShayonaChallan() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -23,63 +31,84 @@ export default function ViewShayonaChallan() {
   };
 
   const handleDownloadPDF = async () => {
-    if (!currentChallan?._id) return;
+    if (!currentChallan?._id || !printRef.current) return;
     setDownloadingPdf(true);
 
     try {
-      // First try downloading high-fidelity backend generated PDF with exact pagination
-      const response = await fetch(`http://localhost:5000/api/delivery-challans/${currentChallan._id}/pdf`, {
-        headers: {
-          Authorization: `Bearer ${localStorage.getItem('token') || ''}`,
-        },
-      });
+      await html2pdf()
+        .set({
+          margin: [10, 10, 10, 10],
+          filename: `Delivery_Challan_${currentChallan.challanNo || 'Shayona'}.pdf`,
+          image: { type: 'jpeg', quality: 0.98 },
+          html2canvas: {
+            scale: 2,
+            useCORS: true,
+            letterRendering: true,
+            scrollY: 0,
+            onclone: (clonedDocument) => {
+              const printableDocument = clonedDocument.querySelector('.challan-document');
+              if (printableDocument) applyPrintLayout(printableDocument);
 
-      if (response.ok) {
-        const blob = await response.blob();
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `Delivery_Challan_${currentChallan.challanNo || 'Shayona'}.pdf`;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        window.URL.revokeObjectURL(url);
-        setDownloadingPdf(false);
-        return;
-      }
+              const pdfBorderStyles = clonedDocument.createElement('style');
+              pdfBorderStyles.textContent = `
+                .challan-document .table {
+                  border-collapse: collapse !important;
+                }
+                .challan-document .table th,
+                .challan-document .table td {
+                  border: 1px solid #000 !important;
+                }
+              `;
+              clonedDocument.head.appendChild(pdfBorderStyles);
+            },
+          },
+          jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+          pagebreak: { avoid: ['tr', '.challan-meta-grid', '.challan-signatures'] },
+        })
+        .from(printRef.current)
+        .save();
     } catch (err) {
-      console.warn('Backend PDF endpoint fallback to client html2pdf:', err);
-    }
-
-    // Client-side fallback if server puppeteer is busy
-    if (!printRef.current) {
+      console.error('PDF generation failed:', err);
+    } finally {
       setDownloadingPdf(false);
-      return;
     }
-
-    const opt = {
-      margin: [8, 8, 8, 8],
-      filename: `Delivery_Challan_${currentChallan.challanNo || 'Shayona'}.pdf`,
-      image: { type: 'jpeg', quality: 0.98 },
-      html2canvas: { scale: 2, useCORS: true, letterRendering: true, scrollY: 0 },
-      jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
-      pagebreak: { avoid: ['tr', '.challan-meta-grid', '.challan-signatures'] },
-    };
-
-    html2pdf()
-      .set(opt)
-      .from(printRef.current)
-      .save()
-      .then(() => setDownloadingPdf(false))
-      .catch((err) => {
-        console.error('PDF generation failed:', err);
-        setDownloadingPdf(false);
-      });
   };
 
   const handleOpenHtmlPreview = () => {
-    if (!currentChallan?._id) return;
-    window.open(`http://localhost:5000/api/delivery-challans/${currentChallan._id}/html`, '_blank');
+    if (!printRef.current) return;
+
+    const previewWindow = window.open('', '_blank');
+    if (!previewWindow) {
+      window.alert('Please allow pop-ups to open the challan preview.');
+      return;
+    }
+
+    const previewDocument = previewWindow.document;
+    previewDocument.open();
+    previewDocument.write('<!doctype html><html><head><meta charset="utf-8"><title>Delivery Challan Preview</title></head><body></body></html>');
+    previewDocument.close();
+
+    document.querySelectorAll('link[rel="stylesheet"]').forEach((stylesheet) => {
+      const previewStylesheet = previewDocument.createElement('link');
+      previewStylesheet.rel = 'stylesheet';
+      previewStylesheet.href = stylesheet.href;
+      previewDocument.head.appendChild(previewStylesheet);
+    });
+
+    document.querySelectorAll('style').forEach((style) => {
+      previewDocument.head.appendChild(style.cloneNode(true));
+    });
+
+    const wrapper = printRef.current.parentElement.cloneNode(false);
+    const printableDocument = printRef.current.cloneNode(true);
+    applyPrintLayout(printableDocument);
+    wrapper.style.width = '190mm';
+    wrapper.style.maxWidth = '100%';
+    wrapper.style.margin = '20px auto';
+    wrapper.appendChild(printableDocument);
+    previewDocument.body.style.margin = '0';
+    previewDocument.body.style.backgroundColor = '#f3f4f6';
+    previewDocument.body.appendChild(wrapper);
   };
 
   if (loading || !currentChallan) {
@@ -204,8 +233,7 @@ export default function ViewShayonaChallan() {
           style={{
             width: '100%',
             maxWidth: '850px',
-            border: '2px solid #000',
-            outline: '2px solid #000',
+            border: '1px solid #000',
             boxShadow: '0 4px 15px rgba(0,0,0,0.1)',
             fontFamily: '"Times New Roman", Times, serif',
             color: '#000',
@@ -214,11 +242,11 @@ export default function ViewShayonaChallan() {
           }}
         >
           {/* Header Section */}
-          <div className="text-center border-bottom border-dark border-2 pb-0" style={{ position: 'relative' }}>
+          <div className="text-center border-bottom border-dark pb-0" style={{ position: 'relative' }}>
             <img
               src={logo}
               alt="Shayona Glass Decor logo"
-              style={{ position: 'absolute', top: 5, left: 10, width: 140, height: 92, objectFit: 'contain' }}
+              style={{ position: 'absolute', top: 0, left: 0, width: 140, height: 92, objectFit: 'contain' }}
             />
             <h3
               className="fw-bold mb-1 pt-2"
@@ -238,7 +266,7 @@ export default function ViewShayonaChallan() {
               GSTIN NO:-24AAUCS9498K1Z5
             </div>
             <div
-              className="fw-bold text-uppercase py-1 text-decoration-underline border-top border-dark border-2"
+              className="fw-bold text-uppercase py-1 text-decoration-underline border-top border-dark"
               style={{ fontSize: '15px', letterSpacing: '1px' }}
             >
               DELIVERY CHALLAN
@@ -247,8 +275,8 @@ export default function ViewShayonaChallan() {
 
           {/* Meta Information Grid */}
           {isShreno ? (
-            <div className="row g-0 border-bottom border-dark border-2" style={{ fontSize: '13px' }}>
-              <div className="col-6 border-end border-dark border-2 p-3 text-start" style={{ lineHeight: 1.6 }}>
+            <div className="row g-0 border-bottom border-dark" style={{ fontSize: '13px' }}>
+              <div className="col-6 border-end border-dark p-3 text-start" style={{ lineHeight: 1.6 }}>
                 <div><strong>GATE PASS NO:</strong> <span className="fw-bold">{c.challanNo}</span></div>
                 <div><strong>P.O. DATE:</strong>{poDateStr}</div>
                 <div><strong>P.O. NO.:</strong>{c.poNo || c.buyersOrderNo || ''}</div>
@@ -265,10 +293,10 @@ export default function ViewShayonaChallan() {
               </div>
             </div>
           ) : (
-            <div className="border-bottom border-dark border-2">
+            <div className="border-bottom border-dark">
               {/* Row 1: Challan No, Date, Order / Dispatch Through, LR, Vehicle */}
-              <div className="row g-0 border-bottom border-dark border-2">
-                <div className="col-6 border-end border-dark border-2 p-2">
+              <div className="row g-0 border-bottom border-dark">
+                <div className="col-6 border-end border-dark p-2">
                   <div className="mb-1">
                     <strong>DELIVERY CHALLAN NO : </strong>
                     <span className="fw-bold">{c.challanNo}</span>
@@ -302,7 +330,7 @@ export default function ViewShayonaChallan() {
               {/* Row 2: Billed To / Shipped To */}
               <div className="row g-0">
                 {/* BILLED TO */}
-                <div className="col-6 border-end border-dark border-2 p-2">
+                <div className="col-6 border-end border-dark p-2">
                   <div className="text-decoration-underline fw-bold mb-1">
                     BILLED TO :
                   </div>
@@ -389,21 +417,21 @@ export default function ViewShayonaChallan() {
               <tr className="text-center align-middle" style={{ borderColor: '#000' }}>
                 <th
                   rowSpan={2}
-                  className="p-1 border border-dark border-2 text-uppercase"
+                  className="p-1 border border-dark text-uppercase"
                   style={{ width: isShreno ? '60px' : '45px', fontWeight: 'bold' }}
                 >
                   Sr No.
                 </th>
                 <th
                   rowSpan={2}
-                  className="p-1 border border-dark border-2 text-uppercase"
+                  className="p-1 border border-dark text-uppercase"
                   style={{ fontWeight: 'bold' }}
                 >
                   DESCRIPTION
                 </th>
                 <th
                   colSpan={3}
-                  className="p-1 border border-dark border-2 text-uppercase"
+                  className="p-1 border border-dark text-uppercase"
                   style={{ fontWeight: 'bold' }}
                 >
                   QUANTITY
@@ -411,19 +439,19 @@ export default function ViewShayonaChallan() {
               </tr>
               <tr className="text-center" style={{ borderColor: '#000' }}>
                 <th
-                  className="p-1 border border-dark border-2 text-uppercase"
+                  className="p-1 border border-dark text-uppercase"
                   style={{ width: '110px', fontWeight: 'bold' }}
                 >
                   BOX
                 </th>
                 <th
-                  className="p-1 border border-dark border-2 text-uppercase"
+                  className="p-1 border border-dark text-uppercase"
                   style={{ width: isShreno ? '80px' : '70px', fontWeight: 'bold' }}
                 >
                   UNIT
                 </th>
                 <th
-                  className="p-1 border border-dark border-2 text-uppercase"
+                  className="p-1 border border-dark text-uppercase"
                   style={{ width: isShreno ? '120px' : '90px', fontWeight: 'bold' }}
                 >
                   TOTAL
@@ -439,13 +467,13 @@ export default function ViewShayonaChallan() {
                     style={{ borderColor: '#000' }}
                   >
                     <td
-                      className="text-center p-2 border border-dark border-2 fw-bold align-middle"
+                      className="text-center p-2 border border-dark fw-bold align-middle"
                       style={{ verticalAlign: 'middle', width: '60px' }}
                     >
                       {idx + 1}
                     </td>
                     <td
-                      className="p-2 border border-dark border-2 align-middle text-start"
+                      className="p-2 border border-dark align-middle text-start"
                       style={{ verticalAlign: 'middle', lineHeight: 1.5 }}
                     >
                       {item.materialCode && (
@@ -464,13 +492,13 @@ export default function ViewShayonaChallan() {
                         </div>
                       )}
                     </td>
-                    <td className="text-center p-2 border border-dark border-2 fw-bold align-middle">
+                    <td className="text-center p-2 border border-dark fw-bold align-middle">
                       {item.box || item.boxCount || '-'}
                     </td>
-                    <td className="text-center p-2 border border-dark border-2 fw-bold align-middle">
+                    <td className="text-center p-2 border border-dark fw-bold align-middle">
                       {item.unit || '-'}
                     </td>
-                    <td className="text-center p-2 border border-dark border-2 fw-bold align-middle">
+                    <td className="text-center p-2 border border-dark fw-bold align-middle">
                       {item.total ? Number(item.total).toLocaleString('en-IN') : '-'}
                     </td>
                   </tr>
@@ -531,14 +559,14 @@ export default function ViewShayonaChallan() {
                 className="fw-bold"
                 style={{ borderColor: '#000', height: '36px' }}
               >
-                <td colSpan={2} className="text-center p-2 border border-dark border-2 text-uppercase letter-spacing-1">
+                <td colSpan={2} className="text-center p-2 border border-dark text-uppercase letter-spacing-1">
                   TOTAL
                 </td>
-                <td className="text-center p-2 border border-dark border-2 fs-6 fw-bold">
+                <td className="text-center p-2 border border-dark fs-6 fw-bold">
                   {c.totalBoxes || (c.items || []).reduce((acc, it) => acc + (Number(it.boxCount) || Number(it.box) || 0), 0)}
                 </td>
-                <td className="p-2 border border-dark border-2"></td>
-                <td className="text-center p-2 border border-dark border-2 fs-6 fw-bold">
+                <td className="p-2 border border-dark"></td>
+                <td className="text-center p-2 border border-dark fs-6 fw-bold">
                   {(c.totalQuantity !== undefined && c.totalQuantity !== null)
                     ? Number(c.totalQuantity).toLocaleString('en-IN')
                     : (c.items || []).reduce((acc, it) => acc + (Number(it.total) || 0), 0).toLocaleString('en-IN')}
@@ -548,7 +576,10 @@ export default function ViewShayonaChallan() {
           </table>
 
           {/* Signatures Section */}
-          <div className="border-bottom border-dark border-2 p-3 d-flex justify-content-end">
+          <div
+            className="border-bottom border-dark p-3 d-flex justify-content-end align-items-end"
+            style={{ minHeight: '160px' }}
+          >
             <div className="text-center" style={{ minWidth: '220px' }}>
               <div className="fw-bold small text-uppercase mb-4">MATERIAL ISSUED BY</div>
               <div className="fw-bold small text-uppercase">SIGNATURE</div>
@@ -557,7 +588,7 @@ export default function ViewShayonaChallan() {
 
           {/* Security Table Footer */}
           <div className="row g-0">
-            <div className="col-6 border-end border-dark border-2 p-2" style={{ lineHeight: 1.8 }}>
+            <div className="col-6 border-end border-dark p-2" style={{ lineHeight: 1.8 }}>
               <div><strong>Checked :-</strong> {c.checkedBy || ''}</div>
               <div><strong>Date :-</strong> {c.checkedDate ? new Date(c.checkedDate).toLocaleDateString('en-GB').replace(/\//g, '.') : formattedDate}</div>
               <div><strong>Time :-</strong> {c.checkedTime || c.challanTime || ''}</div>
@@ -601,7 +632,7 @@ export default function ViewShayonaChallan() {
           }
           .challan-document {
             max-width: 100% !important;
-            border: 2px solid #000 !important;
+            border: 1px solid #000 !important;
             padding: 12px !important;
             box-shadow: none !important;
           }

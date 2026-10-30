@@ -81,10 +81,15 @@ const lacquerPlanSlice = createSlice({
       })
       .addCase(fetchLacquerPlans.rejected, (state, action) => { state.loading = false; state.error = action.payload; })
       .addCase(fetchLacquerPlanById.pending, (state) => { state.loading = true; state.error = null; })
-      .addCase(fetchLacquerPlanById.fulfilled, (state, action) => { state.loading = false; state.currentPlan = action.payload.data; })
+      .addCase(fetchLacquerPlanById.fulfilled, (state, action) => {
+        state.loading = false;
+        const data = action.payload?.data || {};
+        const groupPlans = action.payload?.groupPlans || data.groupPlans || [data];
+        state.currentPlan = { ...data, groupPlans };
+      })
       .addCase(fetchLacquerPlanById.rejected, (state, action) => { state.loading = false; state.error = action.payload; })
       .addCase(createLacquerPlan.pending, (state) => { state.loading = true; state.error = null; })
-      .addCase(createLacquerPlan.fulfilled, (state, action) => { state.loading = false; })
+      .addCase(createLacquerPlan.fulfilled, (state) => { state.loading = false; })
       .addCase(createLacquerPlan.rejected, (state, action) => { state.loading = false; state.error = action.payload; })
       .addCase(updateLacquerPlan.pending, (state) => { state.loading = true; state.error = null; })
       .addCase(updateLacquerPlan.fulfilled, (state, action) => {
@@ -93,7 +98,7 @@ const lacquerPlanSlice = createSlice({
       })
       .addCase(updateLacquerPlan.rejected, (state, action) => { state.loading = false; state.error = action.payload; })
       .addCase(deleteLacquerPlan.pending, (state) => { state.loading = true; state.error = null; })
-      .addCase(deleteLacquerPlan.fulfilled, (state, action) => {
+      .addCase(deleteLacquerPlan.fulfilled, (state) => {
         state.loading = false;
       })
       .addCase(deleteLacquerPlan.rejected, (state, action) => { state.loading = false; state.error = action.payload; });

@@ -4,7 +4,6 @@ import Select from 'react-select';
 import Swal from 'sweetalert2';
 import api from '../../services/api';
 import { useSummaryLanguage } from '../../hooks/useSummaryLanguage';
-import './Summary.css';
 
 export default function CompanySummary() {
   const { companyId } = useParams();

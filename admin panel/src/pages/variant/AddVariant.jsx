@@ -17,6 +17,7 @@ export default function AddVariant() {
   const [formData, setFormData] = useState({
     variantName: '',
     variantSize: '',
+    materialCode: '',
     coatingShade: '',
     status: 'active',
     bottleSpecId: '',
@@ -144,7 +145,7 @@ export default function AddVariant() {
     const submitData = new FormData();
     for (const key in formData) {
       if (formData[key] !== null && formData[key] !== undefined) {
-        submitData.append(key, formData[key]);
+        submitData.append(key, key === 'materialCode' ? formData[key].trim() : formData[key]);
       }
     }
 
@@ -160,7 +161,9 @@ export default function AddVariant() {
                 // If the variant had a coating shade, bring it back to the coating spec form
                 coatingShade: formData.coatingShade || location.state.savedFormData?.coatingShade || ''
               },
-              newVariantId: res.payload._id || res.payload?.data?._id
+              coatingShade: formData.coatingShade || '',
+              newVariantId: res.payload._id || res.payload?.data?._id,
+              newVariantName: formData.variantName || ''
             }
           });
         } else {
@@ -353,6 +356,20 @@ export default function AddVariant() {
                       <option value="active">Active</option>
                       <option value="inactive">Inactive</option>
                     </select>
+                  </div>
+
+                  <div className="col-md-12">
+                    <label className="form-label fw-600 small text-uppercase text-muted">
+                      Material Code
+                    </label>
+                    <input
+                      type="text"
+                      name="materialCode"
+                      className="form-control custom-input-field"
+                      value={formData.materialCode}
+                      onChange={handleChange}
+                      style={{ borderRadius: 12 }}
+                    />
                   </div>
                 </div>
 

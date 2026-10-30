@@ -326,7 +326,35 @@ export default function ShrenoIncomingList() {
 
                     return (
                       <React.Fragment key={inc._id}>
-                        {inc.items.map((item, itemIdx) => (
+                        {inc.items.map((item, itemIdx) => {
+                          const getRefKey = (value) => String(value?._id || value || '');
+                          const bottleKey = getRefKey(item.plainBottle);
+                          const itemTypeKey = getRefKey(item.itemType);
+                          const previousItem = inc.items[itemIdx - 1];
+                          const isFirstInBottleGroup = itemIdx === 0 || getRefKey(previousItem.plainBottle) !== bottleKey;
+                          const isFirstInItemTypeGroup = isFirstInBottleGroup || getRefKey(previousItem.itemType) !== itemTypeKey;
+
+                          let bottleRowSpan = 1;
+                          if (isFirstInBottleGroup) {
+                            for (let i = itemIdx + 1; i < inc.items.length && getRefKey(inc.items[i].plainBottle) === bottleKey; i += 1) {
+                              bottleRowSpan += 1;
+                            }
+                          }
+
+                          let itemTypeRowSpan = 1;
+                          if (isFirstInItemTypeGroup) {
+                            for (
+                              let i = itemIdx + 1;
+                              i < inc.items.length &&
+                              getRefKey(inc.items[i].plainBottle) === bottleKey &&
+                              getRefKey(inc.items[i].itemType) === itemTypeKey;
+                              i += 1
+                            ) {
+                              itemTypeRowSpan += 1;
+                            }
+                          }
+
+                          return (
                           <tr key={`${inc._id}-${itemIdx}`} className={`align-middle transition-all hover-bg-light ${itemIdx === inc.items.length - 1 ? 'border-bottom' : ''}`}>
                             {itemIdx === 0 && (
                               <>
@@ -342,20 +370,20 @@ export default function ShrenoIncomingList() {
                                 </td>
                               </>
                             )}
-                            <td className="py-3 border-bottom">
+                            {isFirstInBottleGroup && <td rowSpan={bottleRowSpan} className="py-3 border-bottom align-middle">
                               <span className="fw-bold">
                                 {typeof item.plainBottle === 'object' && item.plainBottle
                                   ? (item.plainBottle.plainBottleName || item.plainBottle.bottleName || 'Unknown') 
                                   : 'N/A'}
                               </span>
-                            </td>
-                            <td className="py-3 border-bottom">
+                            </td>}
+                            {isFirstInItemTypeGroup && <td rowSpan={itemTypeRowSpan} className="py-3 border-bottom align-middle">
                               <span className="text-muted">
                                 {typeof item.itemType === 'object' && item.itemType?.name
                                   ? item.itemType.name 
                                   : '-'}
                               </span>
-                            </td>
+                            </td>}
                             <td className="py-3 border-bottom">
                               <span className="text-muted">
                                 {item.configuration || '-'}
@@ -387,7 +415,8 @@ export default function ShrenoIncomingList() {
                               </div>
                             </td>
                           </tr>
-                        ))}
+                          );
+                        })}
                       </React.Fragment>
                     );
                   })}

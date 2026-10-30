@@ -2,7 +2,6 @@ import React, { useState, useEffect } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import api from '../../services/api';
 import { useSummaryLanguage } from '../../hooks/useSummaryLanguage';
-import './Summary.css';
 
 export default function SummaryCompanies() {
   const { labels, language, toggleLanguage } = useSummaryLanguage();

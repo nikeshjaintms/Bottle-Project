@@ -1,6 +1,100 @@
 import { createSlice, createAsyncThunk } from '@reduxjs/toolkit';
 import API from '../../services/api';
 
+const normalizeBottleName = (value) => String(value || '').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
+const getDispatchVariantOptionsKey = (companyId, plainBottleId) => `${companyId}:${plainBottleId}`;
+
+export const fetchDispatchPlainBottleOptions = createAsyncThunk(
+  'dispatch/fetchPlainBottleOptions',
+  async (companyId, { rejectWithValue }) => {
+    try {
+      const response = await API.get('/ready-to-dispatch/options/plain-bottles', {
+        params: { companyId },
+      });
+      const optionsByName = new Map();
+      (response.data?.data || []).forEach((bottle) => {
+        const name = String(bottle.name || '').trim().replace(/\s+/g, ' ');
+        const normalizedName = normalizeBottleName(name);
+        if (!bottle.id || !name || !normalizedName || normalizedName === 'unknown' || optionsByName.has(normalizedName)) return;
+        optionsByName.set(normalizedName, { value: String(bottle.id), label: name });
+      });
+
+      const options = Array.from(optionsByName.values()).sort((a, b) =>
+        a.label.localeCompare(b.label, undefined, { numeric: true, sensitivity: 'base' })
+      );
+      return { companyId: String(companyId), options };
+    } catch (error) {
+      return rejectWithValue(
+        error.response?.data?.message || 'Could not load plain bottles for this company.'
+      );
+    }
+  },
+  {
+    condition: (companyId, { getState }) => {
+      const options = getState().dispatch.plainBottleOptionsByCompany[String(companyId)];
+      return (!options?.loaded || Boolean(options?.error)) && !options?.loading;
+    },
+  }
+);
+
+export const fetchDispatchVariantOptions = createAsyncThunk(
+  'dispatch/fetchVariantOptions',
+  async ({ companyId, plainBottleId }, { rejectWithValue }) => {
+    try {
+      const response = await API.get('/ready-to-dispatch/options/variants', {
+        params: { companyId, plainBottleId },
+      });
+      const optionsById = new Map();
+      (response.data?.data || []).forEach((variant) => {
+        if (!variant.variantId || !variant.variantName) return;
+        const value = String(variant.variantId);
+        if (!optionsById.has(value)) {
+          optionsById.set(value, {
+            value,
+            label: String(variant.variantName).trim(),
+            variantName: String(variant.variantName).trim(),
+            brandName: String(variant.brandName || '').trim(),
+            coatingShade: String(variant.coatingShade || '').trim(),
+            textColor: String(variant.textColor || '').trim(),
+            bottleSpecId: String(variant.bottleSpecId || ''),
+          });
+        }
+      });
+      const options = Array.from(optionsById.values());
+      const nameCounts = new Map();
+      options.forEach((option) => {
+        const normalizedName = normalizeBottleName(option.variantName);
+        nameCounts.set(normalizedName, (nameCounts.get(normalizedName) || 0) + 1);
+      });
+      options.forEach((option) => {
+        if (nameCounts.get(normalizeBottleName(option.variantName)) > 1 && option.brandName) {
+          option.label = `${option.variantName} (${option.brandName})`;
+        }
+      });
+      options.sort((a, b) =>
+        a.label.localeCompare(b.label, undefined, { numeric: true, sensitivity: 'base' })
+      );
+      return {
+        key: getDispatchVariantOptionsKey(companyId, plainBottleId),
+        options,
+      };
+    } catch (error) {
+      return rejectWithValue({
+        key: getDispatchVariantOptionsKey(companyId, plainBottleId),
+        message: error.response?.data?.message || 'Could not load variants for this plain bottle.',
+      });
+    }
+  },
+  {
+    condition: ({ companyId, plainBottleId }, { getState }) => {
+      if (!companyId || !plainBottleId) return false;
+      const key = getDispatchVariantOptionsKey(companyId, plainBottleId);
+      const options = getState().dispatch.variantOptionsByCompanyBottle[key];
+      return (!options?.loaded || Boolean(options?.error)) && !options?.loading;
+    },
+  }
+);
+
 export const fetchDispatch = createAsyncThunk('dispatch/fetchDispatch', async ({ page = 1, limit = 10, search = '', searchPrinting = '', dateFrom = '', dateTo = '', pagination, companyId, plainBottleName = '' }, { rejectWithValue }) => {
   try {
     const params = new URLSearchParams();
@@ -68,6 +162,8 @@ const dispatchSlice = createSlice({
     currentDispatch: null,
     loading: false,
     error: null,
+    plainBottleOptionsByCompany: {},
+    variantOptionsByCompanyBottle: {},
   },
   reducers: {
     clearCurrentDispatch: (state) => { state.currentDispatch = null; }
@@ -86,7 +182,61 @@ const dispatchSlice = createSlice({
       .addCase(fetchDispatch.rejected, (state, action) => { state.loading = false; state.error = action.payload; })
       .addCase(fetchDispatchById.pending, (state) => { state.loading = true; state.error = null; })
       .addCase(fetchDispatchById.fulfilled, (state, action) => { state.loading = false; state.currentDispatch = action.payload; })
-      .addCase(fetchDispatchById.rejected, (state, action) => { state.loading = false; state.error = action.payload; });
+      .addCase(fetchDispatchById.rejected, (state, action) => { state.loading = false; state.error = action.payload; })
+      .addCase(fetchDispatchPlainBottleOptions.pending, (state, action) => {
+        const companyId = String(action.meta.arg);
+        state.plainBottleOptionsByCompany[companyId] = {
+          ...(state.plainBottleOptionsByCompany[companyId] || {}),
+          loading: true,
+          error: '',
+        };
+      })
+      .addCase(fetchDispatchPlainBottleOptions.fulfilled, (state, action) => {
+        const { companyId, options } = action.payload;
+        state.plainBottleOptionsByCompany[companyId] = {
+          options,
+          loading: false,
+          loaded: true,
+          error: '',
+        };
+      })
+      .addCase(fetchDispatchPlainBottleOptions.rejected, (state, action) => {
+        const companyId = String(action.meta.arg);
+        state.plainBottleOptionsByCompany[companyId] = {
+          options: [],
+          loading: false,
+          loaded: false,
+          error: action.payload || 'Could not load plain bottles for this company.',
+        };
+      })
+      .addCase(fetchDispatchVariantOptions.pending, (state, action) => {
+        const { companyId, plainBottleId } = action.meta.arg;
+        const key = getDispatchVariantOptionsKey(companyId, plainBottleId);
+        state.variantOptionsByCompanyBottle[key] = {
+          ...(state.variantOptionsByCompanyBottle[key] || {}),
+          loading: true,
+          error: '',
+        };
+      })
+      .addCase(fetchDispatchVariantOptions.fulfilled, (state, action) => {
+        const { key, options } = action.payload;
+        state.variantOptionsByCompanyBottle[key] = {
+          options,
+          loading: false,
+          loaded: true,
+          error: '',
+        };
+      })
+      .addCase(fetchDispatchVariantOptions.rejected, (state, action) => {
+        const { key, message } = action.payload || {};
+        if (!key) return;
+        state.variantOptionsByCompanyBottle[key] = {
+          options: [],
+          loading: false,
+          loaded: false,
+          error: message || 'Could not load variants for this plain bottle.',
+        };
+      });
   },
 });
 

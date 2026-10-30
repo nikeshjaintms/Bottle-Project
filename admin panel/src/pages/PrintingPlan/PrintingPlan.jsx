@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
-import { Link, useParams, useNavigate } from 'react-router-dom';
+import { Link, useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { fetchPrintingPlans, deletePrintingPlan } from '../../redux/slices/printingPlanSlice';
 import { fetchCompanies } from '../../redux/slices/companySlice';
 import { fetchBrands } from '../../redux/slices/brandSlice';
@@ -13,6 +13,7 @@ import Swal from 'sweetalert2';
 import Select from 'react-select';
 import ImportExcelModal from './ImportExcelModal';
 import { usePrintingPlanLanguage } from '../../hooks/usePrintingPlanLanguage';
+import { usePrintingPlanInfiniteScroll } from '../../hooks/usePrintingPlanInfiniteScroll';
 import { sortPrintingPlans } from '../../utils/printingPlanSort';
 import { buildContiguousGroups, buildMultipleContiguousGroups } from '../../utils/tableGrouping';
 import ZoomControl from '../../components/ZoomControl';
@@ -98,6 +99,8 @@ const DoubleScrollContainer = ({ children }) => {
 export default function PrintingPlan() {
   const dispatch = useDispatch();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const urlDate = searchParams.get('date');
   const ability = useAbility(AbilityContext);
   const { plans, loading } = useSelector((state) => state.printingPlans);
   const { companies } = useSelector((state) => state.companies || { companies: [] });
@@ -107,7 +110,14 @@ export default function PrintingPlan() {
   const { labels, language, toggleLanguage } = usePrintingPlanLanguage();
   
   const today = new Date();
-  const [selectedDate, setSelectedDate] = useState(today.toISOString().split('T')[0]);
+  const [selectedDate, setSelectedDate] = useState(urlDate || today.toISOString().split('T')[0]);
+
+  useEffect(() => {
+    if (urlDate) {
+      setSelectedDate(urlDate);
+    }
+  }, [urlDate]);
+
   const [showImportModal, setShowImportModal] = useState(false);
   
   const [fromDate, setFromDate] = useState('');
@@ -123,19 +133,21 @@ export default function PrintingPlan() {
     return saved ? parseInt(saved, 10) : 100;
   });
 
+  // Initialize infinite scroll hook with current filters
+  const infiniteScroll = usePrintingPlanInfiniteScroll({
+    selectedDate: (!fromDate && !toDate) ? selectedDate : '',
+    fromDate,
+    toDate,
+    search,
+    selectedCompanyId
+  });
+
   useEffect(() => {
     localStorage.setItem('printingPlanZoom', zoom.toString());
   }, [zoom]);
 
   const fetchPlans = () => {
-    dispatch(fetchPrintingPlans({
-      date: (!fromDate && !toDate) ? selectedDate : '',
-      fromDate,
-      toDate,
-      search,
-      companyId: selectedCompanyId,
-      brandId: selectedBrandId
-    }));
+    infiniteScroll.resetAndLoad();
   };
 
   useEffect(() => {
@@ -145,23 +157,50 @@ export default function PrintingPlan() {
     dispatch(fetchBottleSpecs({ pagination: 'false', type: 'all' }));
   }, [dispatch]);
 
+  // Initial load on mount
+  useEffect(() => {
+    infiniteScroll.resetAndLoad();
+  }, []); // Only on mount
+
+  // IntersectionObserver for sentinel
+  useEffect(() => {
+    const observerOptions = {
+      root: null,
+      rootMargin: '600px',
+      threshold: 0.01
+    };
+
+    const observer = new IntersectionObserver((entries) => {
+      if (entries[0].isIntersecting && infiniteScroll.hasMore && infiniteScroll.status !== 'loadingMore' && !infiniteScroll.error) {
+        infiniteScroll.loadNextPage();
+      }
+    }, observerOptions);
+
+    if (infiniteScroll.sentinelRef.current) {
+      observer.observe(infiniteScroll.sentinelRef.current);
+    }
+
+    return () => {
+      observer.disconnect();
+    };
+  }, [infiniteScroll.hasMore, infiniteScroll.status, infiniteScroll.error]);
+
   useEffect(() => {
     const delayDebounceFn = setTimeout(() => {
-      fetchPlans();
+      infiniteScroll.resetAndLoad();
     }, 500);
     return () => clearTimeout(delayDebounceFn);
-  }, [dispatch, selectedDate, fromDate, toDate, search, selectedCompanyId, selectedBrandId]);
+  }, [selectedDate, fromDate, toDate, search, selectedCompanyId]);
 
   // Refetch when user returns to this page (tab/window focus or navigation)
   useEffect(() => {
     const handleFocus = () => {
-      console.log('Printing Plan page focused, refetching...');
-      fetchPlans();
+      infiniteScroll.resetAndLoad();
     };
     
     window.addEventListener('focus', handleFocus);
     return () => window.removeEventListener('focus', handleFocus);
-  }, [dispatch, selectedDate, fromDate, toDate, search, selectedCompanyId, selectedBrandId]);
+  }, [selectedDate, fromDate, toDate, search, selectedCompanyId]);
 
   const handleCompanyChange = (companyId) => {
     setSelectedCompanyId(companyId);
@@ -189,62 +228,6 @@ export default function PrintingPlan() {
     setSelectedBrandId('');
     dispatch(fetchPrintingPlans({ date: todayStr }));
   };
-
-  const filteredPlans = useMemo(() => {
-    let result = plans || [];
-    
-    if (selectedCompanyId) {
-      if (selectedCompanyId === 'UNASSIGNED') {
-         result = result.filter(p => !p.companyId || (p.canonicalCompanyId === 'UNASSIGNED'));
-      } else {
-         result = result.filter(p => {
-            const pCompanyId = (p.companyId?._id || p.companyId)?.toString();
-            return pCompanyId === selectedCompanyId?.toString();
-         });
-      }
-    }
-    
-    if (selectedBrandId) {
-      result = result.filter(p => {
-         const pBrandId = (p.brandId?._id || p.brandId)?.toString();
-         return pBrandId === selectedBrandId?.toString();
-      });
-    }
-    
-    if (search) {
-      const s = search.toLowerCase();
-      result = result.filter(p => 
-        (p.bottleName?.toLowerCase().includes(s)) ||
-        (p.brandId?.name?.toLowerCase().includes(s)) ||
-        (p.brandName?.toLowerCase().includes(s)) ||
-        (p.variantId?.variantName?.toLowerCase().includes(s)) ||
-        (p.variantName?.toLowerCase().includes(s))
-      );
-    }
-    
-    // Auto-fill printingToBeDone and textColor from variants if missing
-    result = result.map(p => {
-       if (!p.printingToBeDone || p.printingToBeDone === '-' || !p.textColor || p.textColor === '-') {
-          const spec = (bottleSpecs || []).find(bs => bs.bottleName?.trim().toUpperCase() === p.bottleName?.trim().toUpperCase());
-          if (spec) {
-             const variant = (variants || []).find(v => 
-                 (v.bottleSpecId?._id || v.bottleSpecId) === spec._id &&
-                 v.coatingShade?.trim().toUpperCase() === p.coatingShade?.trim().toUpperCase()
-             );
-             if (variant) {
-                 return {
-                     ...p,
-                     printingToBeDone: (p.printingToBeDone && p.printingToBeDone !== '-') ? p.printingToBeDone : (variant.variantName || ''),
-                     textColor: (p.textColor && p.textColor !== '-') ? p.textColor : (variant.detectedTextColor || '')
-                 };
-             }
-          }
-       }
-       return p;
-    });
-
-    return result;
-  }, [plans, selectedCompanyId, selectedBrandId, search, variants, bottleSpecs]);
 
   const handleDelete = (id) => {
     Swal.fire({
@@ -428,12 +411,12 @@ export default function PrintingPlan() {
 
   const handleExport = async () => {
     try {
-      if (filteredPlans.length === 0) {
+      if (infiniteScroll.items.length === 0) {
         Swal.fire('No Data', 'There is no data to export for the selected filters.', 'info');
         return;
       }
       await downloadPrintingPlanExcel({
-        plans: filteredPlans,
+        plans: infiniteScroll.items,
         date: (!fromDate && !toDate) ? selectedDate : '',
         fromDate,
         toDate,
@@ -634,9 +617,38 @@ export default function PrintingPlan() {
               
               {renderGroupedTd('_cStock', (
                 (() => {
+                  const isPlain = (plan.coatingShade || '').trim().toUpperCase() === 'PLAIN';
+                  const allocs = Array.isArray(plan.stockAllocation) ? plan.stockAllocation : [];
+                  const suppliers = (companies || []).filter(c => c.isStockSupplier).map(c => c._id.toString());
+                  const hasSupplier = allocs.some(a => suppliers.includes((a.companyId?._id || a.companyId)?.toString()));
+                  const showBadge = isPlain && (allocs.length > 1 || hasSupplier);
+                  const names = allocs.map(a => {
+                    const cId = (a.companyId?._id || a.companyId)?.toString();
+                    return a.companyName || a.companyId?.name || (companies || []).find(c => c._id === cId)?.name || 'Company';
+                  });
+                  const tooltip = allocs.map(a => {
+                    const cId = (a.companyId?._id || a.companyId)?.toString();
+                    const n = a.companyName || a.companyId?.name || (companies || []).find(c => c._id === cId)?.name || 'Company';
+                    return `${n}: ${a.qty || 0}`;
+                  }).join(', ');
+
                   return (
                     <>
-                      {plan.plainBottleStock !== null && plan.plainBottleStock !== undefined && plan.plainBottleStock !== '' ? plan.plainBottleStock : ''}
+                      <div>{plan.plainBottleStock !== null && plan.plainBottleStock !== undefined && plan.plainBottleStock !== '' ? plan.plainBottleStock : ''}</div>
+                      {showBadge && (
+                        <span
+                          className="badge bg-soft-info text-info border border-info border-opacity-25 px-1 py-0 mt-1 d-inline-block"
+                          style={{ fontSize: '10px', cursor: 'help' }}
+                          title={tooltip}
+                        >
+                          {names.join(' + ')}
+                        </span>
+                      )}
+                      {plan.allocationShortfall && (
+                        <div className="badge bg-danger text-white mt-1 d-block" style={{ fontSize: '10px' }} title={`Shortfall: ${plan.shortfallQty || ''}`}>
+                          Shortfall: {plan.shortfallQty}
+                        </div>
+                      )}
                     </>
                   );
                 })()
@@ -652,7 +664,14 @@ export default function PrintingPlan() {
                 {plan.orderQty !== null && plan.orderQty !== undefined ? plan.orderQty : '-'}
               </td>
               
-              <td className="py-3 text-center align-middle">{plan.producedQty !== null && plan.producedQty !== undefined ? plan.producedQty : 0}</td>
+              <td className="py-3 text-center align-middle" title={(plan.coatingShade || '').trim().toUpperCase() === 'PLAIN' && plan.usedFromTooltip ? plan.usedFromTooltip : ''}>
+                <div>{plan.producedQty !== null && plan.producedQty !== undefined ? plan.producedQty : 0}</div>
+                {(plan.coatingShade || '').trim().toUpperCase() === 'PLAIN' && Array.isArray(plan.usedFrom) && plan.usedFrom.length > 0 && (
+                  <div className="small text-muted text-wrap font-monospace mt-1" style={{ fontSize: '11px', lineHeight: '1.2' }} title={plan.usedFromTooltip}>
+                    {plan.usedFrom.map(u => `${u.companyName} ${u.qty}`).join(' · ')}
+                  </div>
+                )}
+              </td>
 
               <td className={`py-3 text-center fw-bold align-middle ${plan.balanceToMake < 0 ? 'text-danger' : 'text-dark'}`}>
                 {plan.balanceToMake !== null && plan.balanceToMake !== undefined ? plan.balanceToMake : '-'}
@@ -730,6 +749,43 @@ export default function PrintingPlan() {
               <td colSpan={showDate ? "20" : "19"} className="text-center py-5 text-muted">No plans found</td>
             </tr>
           )}
+          
+          {/* Loading spinner row */}
+          {infiniteScroll.loading && (
+            <tr>
+              <td colSpan={showDate ? "20" : "19"} className="text-center py-4 text-muted">
+                <div className="spinner-border spinner-border-sm text-primary me-2" role="status" />
+                <span>Loading next page...</span>
+              </td>
+            </tr>
+          )}
+
+          {/* Error retry row */}
+          {infiniteScroll.error && (
+            <tr>
+              <td colSpan={showDate ? "20" : "19"} className="text-center py-4">
+                <div className="alert alert-danger mb-0 d-inline-block">
+                  <strong>Error:</strong> {infiniteScroll.error}
+                  <button 
+                    onClick={() => infiniteScroll.retryLoad()} 
+                    className="btn btn-sm btn-outline-danger ms-2"
+                  >
+                    <i className="bi bi-arrow-clockwise me-1" /> Retry
+                  </button>
+                </div>
+              </td>
+            </tr>
+          )}
+
+          {/* No more records row */}
+          {!infiniteScroll.hasMore && infiniteScroll.items.length > 0 && !infiniteScroll.loading && !infiniteScroll.error && (
+            <tr>
+              <td colSpan={showDate ? "20" : "19"} className="text-center py-4 text-muted">
+                <i className="bi bi-check-circle me-2" />
+                No more records
+              </td>
+            </tr>
+          )}
         </tbody>
       </table>
     );
@@ -787,7 +843,7 @@ export default function PrintingPlan() {
           <button onClick={toggleLanguage} className="btn btn-outline-secondary shadow-sm px-3 py-2 rounded-3 fw-bold">
             {language === 'en' ? 'ગુજરાતી' : 'English'}
           </button>
-          {(!fromDate && !toDate && ((plans && plans.length > 0) || (filteredPlans && filteredPlans.length > 0))) && (
+          {(!fromDate && !toDate && infiniteScroll.items && infiniteScroll.items.length > 0) && (
             <button
               onClick={handleImportPrevious}
               className="btn btn-outline-secondary shadow-sm px-3 py-2 rounded-3 fw-bold"
@@ -914,18 +970,30 @@ export default function PrintingPlan() {
 
         <div className="p-0">
           {/* Data Rendering */}
-          {loading ? (
+          {infiniteScroll.status === 'loadingFirst' ? (
             <div className="text-center py-5">
               <div className="spinner-border text-primary" role="status">
                 <span className="visually-hidden">Loading...</span>
               </div>
             </div>
-          ) : (!filteredPlans || filteredPlans.length === 0) ? (
+          ) : infiniteScroll.status === 'error' ? (
+            <div className="text-center py-5 printing-plan-error-state" style={{ minHeight: '400px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
+              <div className="bg-danger bg-opacity-10 rounded-circle d-flex align-items-center justify-content-center mb-4" style={{ width: '80px', height: '80px' }}>
+                <i className="bi bi-exclamation-triangle text-danger" style={{ fontSize: '2rem' }}></i>
+              </div>
+              <h4 className="text-dark fw-bold mb-2">Error Loading Plans</h4>
+              <p className="text-muted mb-3">{infiniteScroll.error || 'An error occurred while loading the printing plans'}</p>
+              <button onClick={() => infiniteScroll.retryLoad()} className="btn btn-danger py-2 px-4" style={{ borderRadius: '8px' }}>
+                <i className="bi bi-arrow-clockwise me-2"></i> Retry
+              </button>
+            </div>
+          ) : infiniteScroll.items.length === 0 ? (
             <div className="text-center py-5 printing-plan-empty-state" style={{ minHeight: '400px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
               <div className="bg-light rounded-circle d-flex align-items-center justify-content-center mb-4" style={{ width: '80px', height: '80px' }}>
                 <i className="bi bi-calendar-x text-muted" style={{ fontSize: '2rem' }}></i>
               </div>
               <h4 className="text-dark fw-bold mb-2">No Printing Plan Found</h4>
+              <p className="text-muted mb-3">No printing plans found for the selected filters</p>
               
               <div className="d-flex gap-3 align-items-center justify-content-center printing-plan-empty-actions">
                 <div className="printing-plan-empty-action">
@@ -954,9 +1022,25 @@ export default function PrintingPlan() {
           ) : (
              <DoubleScrollContainer>
                 <div className="zoomable-workspace" style={{ '--zoom-scale': zoom / 100 }}>
-                  {renderGroupedTables(filteredPlans, !!(fromDate || toDate))}
+                  {renderGroupedTables(infiniteScroll.items, !!(fromDate || toDate))}
+                  {/* Sentinel for infinite scroll - always rendered once list is loaded */}
+                  <div ref={infiniteScroll.sentinelRef} style={{height: '600px'}} />
                 </div>
              </DoubleScrollContainer>
+          )}
+          {/* Loading more indicator */}
+          {infiniteScroll.status === 'loadingMore' && (
+            <div className="text-center py-4 border-top">
+              <div className="spinner-border spinner-border-sm text-primary" role="status">
+                <span className="visually-hidden">Loading more...</span>
+              </div>
+            </div>
+          )}
+          {/* No more records indicator */}
+          {infiniteScroll.items.length > 0 && !infiniteScroll.hasMore && (
+            <div className="text-center py-4 text-muted border-top">
+              <p className="mb-0"><small>No more records</small></p>
+            </div>
           )}
         </div>
       </div>

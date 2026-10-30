@@ -5,6 +5,11 @@ const Company = require("../models/Company");
 const SgLabel = require("../models/SgLabel");
 const { detectTextColor } = require('../services/textColor');
 
+const withMaterialCode = (variant) => {
+  if (!variant) return variant;
+  const data = typeof variant.toJSON === 'function' ? variant.toJSON() : variant;
+  return { ...data, materialCode: data.materialCode ?? '' };
+};
 
 // ✅ CREATE
 exports.createVariant = async (req, res) => {
@@ -20,6 +25,9 @@ exports.createVariant = async (req, res) => {
     }
     if (body.coatingShade && typeof body.coatingShade === 'string') {
       body.coatingShade = body.coatingShade.trim();
+    }
+    if (typeof body.materialCode === 'string') {
+      body.materialCode = body.materialCode.trim();
     }
 
     // Duplicate check: same bottleSpecId + same variantName (case-insensitive)
@@ -75,7 +83,7 @@ exports.createVariant = async (req, res) => {
         "printingColorId"
       ]
     });
-    res.json(populated);
+    res.json(withMaterialCode(populated));
   } catch (err) {
     res.status(500).json(err.message);
   }
@@ -168,7 +176,7 @@ exports.getVariants = async (req, res) => {
     let variants;
     if (pagination === "false") {
       variants = await Variant.find(query).sort({ createdAt: -1 }).populate(populateOpts).lean();
-      return res.json({ success: true, data: variants, total });
+      return res.json({ success: true, data: variants.map(withMaterialCode), total });
     } else {
       variants = await Variant.find(query)
         .sort({ createdAt: -1 })
@@ -179,7 +187,7 @@ exports.getVariants = async (req, res) => {
 
     res.json({
       success: true,
-      data: variants,
+      data: variants.map(withMaterialCode),
       page: parsedPage,
       totalPages: Math.ceil(total / parsedLimit),
       total,
@@ -206,6 +214,9 @@ exports.updateVariant = async (req, res) => {
     if (body.coatingShade && typeof body.coatingShade === 'string') {
       body.coatingShade = body.coatingShade.trim();
     }
+    if (typeof body.materialCode === 'string') {
+      body.materialCode = body.materialCode.trim();
+    }
 
     if (req.file) {
       body.image = `/uploads/${req.file.filename}`;
@@ -224,8 +235,6 @@ exports.updateVariant = async (req, res) => {
       }
     }
 
-    console.log("UPDATE BODY (converted):", body);
-
     const variant = await Variant.findByIdAndUpdate(
       req.params.id,
       body,
@@ -239,7 +248,7 @@ exports.updateVariant = async (req, res) => {
       ]
     });
 
-    res.json(variant);
+    res.json(withMaterialCode(variant));
 
   } catch (err) {
     console.log("UPDATE VARIANT ERROR:", err);
