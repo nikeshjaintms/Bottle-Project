@@ -5,6 +5,9 @@ import { addUser } from '../../redux/slices/userSlice';
 import { fetchRoles } from '../../redux/slices/roleSlice';
 import Swal from 'sweetalert2';
 
+const ALLOWED_FORMATS = ['image/jpeg', 'image/png', 'image/webp'];
+const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB
+
 export default function AddUser() {
   const navigate = useNavigate();
   const dispatch = useDispatch();
@@ -18,6 +21,10 @@ export default function AddUser() {
     role: '',
     status: 'active'
   });
+
+  const [selectedImage, setSelectedImage] = useState(null);
+  const [imagePreview, setImagePreview] = useState(null);
+  const [imageError, setImageError] = useState('');
 
   const [errors, setErrors] = useState({
     name: '',
@@ -50,6 +57,44 @@ export default function AddUser() {
     return error;
   };
 
+  const validateImage = (file) => {
+    setImageError('');
+    
+    if (!file) return;
+
+    if (!ALLOWED_FORMATS.includes(file.type)) {
+      setImageError('Invalid file type. Only JPG, PNG, and WEBP are allowed.');
+      setSelectedImage(null);
+      setImagePreview(null);
+      return;
+    }
+
+    if (file.size > MAX_FILE_SIZE) {
+      setImageError('File size exceeds 5MB limit');
+      setSelectedImage(null);
+      setImagePreview(null);
+      return;
+    }
+
+    setSelectedImage(file);
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      setImagePreview(e.target.result);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleImageChange = (e) => {
+    const file = e.target.files?.[0];
+    validateImage(file);
+  };
+
+  const removeImage = () => {
+    setSelectedImage(null);
+    setImagePreview(null);
+    setImageError('');
+  };
+
   const handleBlur = (e) => {
     const { name, value } = e.target;
     if (!value.trim()) return;
@@ -72,7 +117,6 @@ export default function AddUser() {
     const cleanValue = name === 'name' ? value : value.replace(/\s/g, '');
     setFormData(prev => ({ ...prev, [name]: cleanValue }));
     
-    // Clear error while typing if it becomes valid
     if (errors[name]) {
       setErrors(prev => ({ ...prev, [name]: '' }));
     }
@@ -91,7 +135,6 @@ export default function AddUser() {
   const handleSubmit = (e) => {
     e.preventDefault();
     
-    // Validate all fields before submission
     const nameError = validateField('name', formData.name);
     const emailError = validateField('email', formData.email);
     const passwordError = validateField('password', formData.password);
@@ -99,10 +142,17 @@ export default function AddUser() {
     if (nameError) return Swal.fire('Validation Error', nameError, 'error');
     if (emailError) return Swal.fire('Validation Error', emailError, 'error');
     if (passwordError) return Swal.fire('Validation Error', passwordError, 'error');
+    if (imageError) return Swal.fire('Validation Error', imageError, 'error');
 
     if (!formData.role) return Swal.fire('Error', 'Please select a role', 'error');
 
-    dispatch(addUser(formData)).then((res) => {
+    const submitData = { ...formData };
+    if (selectedImage) {
+      // If we need to send image separately via upload endpoint, handle it after user creation
+      // For now, we'll pass the file in formData
+    }
+
+    dispatch(addUser(submitData)).then((res) => {
       if (!res.error) {
         Swal.fire('Success!', 'User created successfully.', 'success');
         navigate('/users');
@@ -256,10 +306,82 @@ export default function AddUser() {
                       <option value="inactive">Inactive</option>
                     </select>
                   </div>
+
+                  <div className="col-md-12">
+                    <label className="form-label fw-600 small text-uppercase text-muted mb-3">Profile Image</label>
+                    <div style={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      gap: '16px',
+                      padding: '24px',
+                      borderRadius: '12px',
+                      border: '2px dashed var(--card-border)',
+                      backgroundColor: 'var(--bg-subtle)'
+                    }}>
+                      <div style={{
+                        width: '100px',
+                        height: '100px',
+                        borderRadius: '50%',
+                        backgroundColor: imagePreview ? 'transparent' : 'linear-gradient(135deg, #6366f1, #8b5cf6)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        overflow: 'hidden',
+                        flexShrink: 0
+                      }}>
+                        {imagePreview ? (
+                          <img src={imagePreview} alt="Preview" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                        ) : (
+                          <i className="bi bi-image" style={{ fontSize: 32, color: 'rgba(255,255,255,0.5)' }} />
+                        )}
+                      </div>
+
+                      <input
+                        type="file"
+                        id="profile-image"
+                        accept="image/jpeg,image/png,image/webp"
+                        onChange={handleImageChange}
+                        style={{ display: 'none' }}
+                      />
+
+                      <button
+                        type="button"
+                        onClick={() => document.getElementById('profile-image').click()}
+                        className="btn btn-accent btn-sm px-4"
+                        style={{ borderRadius: 8 }}
+                      >
+                        <i className="bi bi-cloud-upload me-2" />
+                        Upload Image
+                      </button>
+
+                      {imagePreview && (
+                        <button
+                          type="button"
+                          onClick={removeImage}
+                          className="btn btn-outline-danger btn-sm px-4"
+                          style={{ borderRadius: 8 }}
+                        >
+                          <i className="bi bi-trash me-2" />
+                          Remove Image
+                        </button>
+                      )}
+
+                      {imageError && (
+                        <div style={{ color: 'var(--danger)', fontSize: '12px', textAlign: 'center' }}>
+                          {imageError}
+                        </div>
+                      )}
+
+                      <div style={{ fontSize: '11px', color: 'var(--text-muted)', textAlign: 'center' }}>
+                        JPG, PNG or WEBP • Max 5MB
+                      </div>
+                    </div>
+                  </div>
                 </div>
 
                 <div className="d-flex gap-2 mt-5 user-form-actions">
-                  <button type="submit" className="btn-accent px-5 py-3 flex-grow-1" disabled={loading}>
+                  <button type="submit" className="btn-accent px-5 py-3 flex-grow-1" disabled={loading || imageError}>
                     {loading ? (
                       <>
                         <span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>

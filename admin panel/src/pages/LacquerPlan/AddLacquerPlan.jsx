@@ -14,7 +14,7 @@ import CreatableSelect from 'react-select/creatable';
 import API from '../../services/api';
 import Swal from 'sweetalert2';
 import { useLacquerPlanLanguage } from '../../hooks/useLacquerPlanLanguage';
-import { isPlanRowCompleted, checkRowStockWarning } from '../../utils/lacquerPlanUtils';
+import { isPlanRowCompleted, checkRowStockWarning, checkRowStockWarningInPool, getCoatedQty } from '../../utils/lacquerPlanUtils';
 
 // Pool key: (company, plain bottle id / canonical name), strictly NO brand and NO section in the key.
 const getPoolKey = (companyId, bottleName, bottlePerBoxes = []) => {
@@ -144,12 +144,14 @@ export default function AddLacquerPlan() {
           shownStock: base,
           totalCoated: 0,
           totalOrder: 0,
-          plainBottleName: getCanonicalPlainBottleName(r.bottleName || r.plainBottle, bottlePerBoxes)
+          plainBottleName: getCanonicalPlainBottleName(r.bottleName || r.plainBottle, bottlePerBoxes),
+          rows: []  // Track rows in this pool for pool-aware warning
         };
       }
       const rowCoated = parseFloat(r.coatedQty !== undefined && r.coatedQty !== '' ? r.coatedQty : r.coatingCompletedQty) || 0;
       stats[pk].totalCoated += rowCoated;
       stats[pk].totalOrder += (parseFloat(r.orderQty) || 0);
+      stats[pk].rows.push(r);  // Add row to pool tracking
     });
 
     Object.keys(stats).forEach(pk => {
@@ -414,19 +416,17 @@ export default function AddLacquerPlan() {
         sectionId: groupId || 'section_0',
         companyId: secRow?.companyId || '',
         brandId: secRow?.brandId || '',
-        bottleName: secRow?.bottleName || '',
-        plainBottle: secRow?.plainBottle || secRow?.bottleName || '',
-        plainBottleId: secRow?.plainBottleId || '',
-        printingTypeId: secRow?.printingTypeId || '',
-        printingColorId: secRow?.printingColorId || '',
+        bottleName: '',  // ✅ Empty - user must select
+        plainBottle: '',  // ✅ Empty
+        plainBottleId: '',  // ✅ Empty
         variantId: [],
         colour: '',
         coatingShade: '',
         textColor: '',
         process: 'C',
-        plainStock: secRow?.plainStock || 0,
-        plainBottleStock: secRow?.plainStock || 0,
-        boxQty: secRow?.boxQty || '',
+        plainStock: 0,
+        plainBottleStock: 0,
+        boxQty: '',
         orderQty: '',
         coatedQty: '',
         producedQty: 0,
@@ -1618,6 +1618,42 @@ export default function AddLacquerPlan() {
 
 
                 {(() => {
+                  // Helper: Get canonical bottle key for grouping (normalized)
+                  const getBottleKey = (row) => {
+                    if (!row.plainBottle && !row.bottleName) return null;
+                    return (row.plainBottle || row.bottleName || '').trim().toUpperCase();
+                  };
+
+                  // Helper: Reorder rows within group so same bottles are contiguous
+                  const reorderByBottle = (items) => {
+                    if (items.length <= 1) return items;
+                    const reordered = [];
+                    const processed = new Set();
+
+                    items.forEach((row, idx) => {
+                      if (processed.has(idx)) return;
+                      const bottleKey = getBottleKey(row);
+
+                      if (bottleKey) {
+                        // Collect all rows with this bottle (in order of appearance)
+                        const group = items
+                          .map((r, i) => ({ row: r, idx: i }))
+                          .filter(({ idx: i, row: r }) => !processed.has(i) && getBottleKey(r) === bottleKey)
+                          .map(({ idx: i, row: r }) => {
+                            processed.add(i);
+                            return r;
+                          });
+                        reordered.push(...group);
+                      } else {
+                        // Empty bottle: keep as is, each its own group
+                        reordered.push(row);
+                        processed.add(idx);
+                      }
+                    });
+
+                    return reordered;
+                  };
+
                   const groupedSections = [];
                   rows.forEach((row, idx) => {
                     const secId = row.sectionId || row.sharedGroupId || 'section_0';
@@ -1627,6 +1663,11 @@ export default function AddLacquerPlan() {
                       groupedSections.push(group);
                     }
                     group.items.push({ ...row, originalIndex: idx });
+                  });
+
+                  // Reorder items within each section by bottle
+                  groupedSections.forEach(group => {
+                    group.items = reorderByBottle(group.items);
                   });
 
                   return groupedSections.map((group, groupIndex) => {
@@ -1780,11 +1821,13 @@ export default function AddLacquerPlan() {
                                   const prevRow = localIndex > 0 ? group.items[localIndex - 1] : null;
                                   const prevBottle = (prevRow?.plainBottle || prevRow?.bottleName || '').trim().toUpperCase();
 
+                                  // Calculate rowSpan for merged cells (now rows are reordered by bottle, so groups are contiguous)
                                   const isContinuation = !!currentBottle && !!prevRow && prevBottle === currentBottle;
-                                  const renderGroupCell = !isContinuation;
+                                  const renderGroupCell = !isContinuation;  // Only render if first row of group
 
                                   let rowSpan = 1;
                                   if (renderGroupCell && currentBottle) {
+                                    // Count contiguous rows with same bottle
                                     let count = 1;
                                     for (let i = localIndex + 1; i < group.items.length; i++) {
                                       const nextBottle = (group.items[i]?.plainBottle || group.items[i]?.bottleName || '').trim().toUpperCase();
@@ -1803,7 +1846,10 @@ export default function AddLacquerPlan() {
                                   const currentShownStock = poolInfo !== undefined && poolInfo !== null
                                     ? poolInfo.shownStock
                                     : (row.plainStock || 0);
-                                  const rowIsExceeding = poolInfo ? checkRowStockWarning(row.orderQty, poolInfo.openingStock) : false;
+                                  
+                                  // Use pool-aware warning: check this row against earlier rows in same pool
+                                  const poolRows = poolInfo ? poolInfo.rows || [] : [];
+                                  const rowIsExceeding = checkRowStockWarningInPool(row, poolRows, poolInfo?.openingStock || 0);
 
                                   const renderShadeGroupCell = true;
                                   const renderProcessCell = true;

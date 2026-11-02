@@ -335,16 +335,11 @@ const handleSendToReadyToDispatch = async (plan) => {
       return;
     }
 
-    const orderQty = Number(plan.orderQty || 0);
-    const coated = Number(plan.coatingCompletedQty ?? plan.coatedQty ?? 0);
-    const alreadySent = Number(plan.sentToReadyQty || 0);
-    const sendable = Math.max(0, coated - alreadySent);
-
-    if (sendable <= 0) {
+    if (plan.isClosed || plan.productionStatus === 'CLOSED') {
       Swal.fire({
         icon: 'info',
-        title: 'Nothing to Send',
-        text: 'No sendable quantity remaining for this row.',
+        title: 'Order Closed',
+        text: 'This production row is already closed.',
         toast: true,
         position: 'top-end',
         timer: 3000,
@@ -353,98 +348,152 @@ const handleSendToReadyToDispatch = async (plan) => {
       return;
     }
 
-    const isCompleted = orderQty > 0 && coated >= orderQty;
+    const orderQty = Number(plan.orderQty || 0);
+    const coated = Number(plan.coatingCompletedQty ?? plan.coatedQty ?? 0);
+    const alreadySent = Number(plan.sentToReadyQty || 0);
+    const sendable = Math.max(0, coated - alreadySent);
+    const balanceToMake = coated - orderQty;
+
+    if (coated <= 0) {
+      Swal.fire({
+        icon: 'info',
+        title: 'Dispatch Unavailable',
+        text: 'No coated quantity has been recorded for this row yet.',
+        toast: true,
+        position: 'top-end',
+        timer: 3000,
+        showConfirmButton: false
+      });
+      return;
+    }
+
+    if (sendable <= 0) {
+      Swal.fire({
+        icon: 'info',
+        title: 'Nothing to Send',
+        text: 'All coated quantity for this row has already been sent to Ready To Dispatch.',
+        toast: true,
+        position: 'top-end',
+        timer: 3000,
+        showConfirmButton: false
+      });
+      return;
+    }
+
+    const remainingUncoated = Math.max(0, orderQty - coated);
+
+    let selectedOption = 'CLOSE_ENTIRE_ORDER';
     let selectedQty = sendable;
 
-    if (isCompleted) {
-      // Normal confirmation for completed row
-      const result = await Swal.fire({
-        title: 'Send to Ready To Dispatch',
+    if (remainingUncoated > 0) {
+      // Partial production: order > coated. Present both production options!
+      const dialogResult = await Swal.fire({
+        title: 'Production Actions & Dispatch',
+        width: 650,
         html: `
-            <div class="text-start py-2">
-              <p class="mb-2">Send all <strong>${sendable}</strong> units of <strong>${plan.bottleName}</strong> to Ready To Dispatch?</p>
-              <div class="d-flex justify-content-between p-2 rounded bg-light border" style="font-size: 13px;">
-                <span>Order: <strong>${orderQty}</strong></span>
-                <span>Coated: <strong>${coated}</strong></span>
-                <span>Already Sent: <strong>${alreadySent}</strong></span>
-                <span class="text-success">Sendable: <strong>${sendable}</strong></span>
+          <div class="text-start py-1">
+            <div class="p-3 mb-3 rounded-3" style="background: rgba(0, 174, 239, 0.08); border: 1px solid rgba(0, 174, 239, 0.25);">
+              <div class="fw-bold mb-2 text-dark" style="font-size: 15px;">
+                ${plan.bottleName} ${plan.variantId?.variantName || plan.variantName ? ' - ' + (plan.variantId?.variantName || plan.variantName) : ''}
+              </div>
+              <div class="row g-2 text-center" style="font-size: 12px;">
+                <div class="col-4">
+                  <div class="text-muted text-uppercase" style="font-size: 10px; font-weight: 600;">Order Qty</div>
+                  <div class="fw-bold text-dark fs-6">${orderQty}</div>
+                </div>
+                <div class="col-4">
+                  <div class="text-muted text-uppercase" style="font-size: 10px; font-weight: 600;">Coated Qty</div>
+                  <div class="fw-bold text-primary fs-6">${coated}</div>
+                </div>
+                <div class="col-4">
+                  <div class="text-muted text-uppercase" style="font-size: 10px; font-weight: 600;">Balance To Make</div>
+                  <div class="fw-bold ${balanceToMake >= 0 ? 'text-success' : 'text-danger'} fs-6">${balanceToMake}</div>
+                </div>
+                <div class="col-6 mt-2">
+                  <div class="text-muted text-uppercase" style="font-size: 10px; font-weight: 600;">Already Dispatched</div>
+                  <div class="fw-bold text-secondary">${alreadySent}</div>
+                </div>
+                <div class="col-6 mt-2">
+                  <div class="text-muted text-uppercase" style="font-size: 10px; font-weight: 600;">Available To Dispatch</div>
+                  <div class="fw-bold text-success">${sendable}</div>
+                </div>
               </div>
             </div>
-          `,
-        icon: 'question',
-        showCancelButton: true,
-        confirmButtonText: 'Yes, Send',
-        cancelButtonText: 'Cancel',
-        customClass: {
-          confirmButton: 'btn btn-primary px-4 py-2 me-2',
-          cancelButton: 'btn btn-light px-4 py-2'
-        },
-        buttonsStyling: false
-      });
 
-      if (!result.isConfirmed) return;
-      selectedQty = sendable;
-    } else {
-      // Swal with Whole or Partial quantity choice when balance remains
-      const result = await Swal.fire({
-        title: 'Send to Ready To Dispatch',
-        html: `
-            <div class="text-start py-1">
-              <div class="p-3 mb-3 rounded-3" style="background: rgba(0, 174, 239, 0.08); border: 1px solid rgba(0, 174, 239, 0.25);">
-                <div class="fw-bold mb-2 text-dark" style="font-size: 14px;">
-                  ${plan.bottleName} ${plan.variantId?.variantName || plan.variantName ? ' - ' + (plan.variantId?.variantName || plan.variantName) : ''}
-                </div>
-                <div class="row g-2 text-center" style="font-size: 12px;">
-                  <div class="col-3">
-                    <div class="text-muted text-uppercase" style="font-size: 10px; font-weight: 600;">Order</div>
-                    <div class="fw-bold text-dark fs-6">${orderQty}</div>
-                  </div>
-                  <div class="col-3">
-                    <div class="text-muted text-uppercase" style="font-size: 10px; font-weight: 600;">Coated</div>
-                    <div class="fw-bold text-primary fs-6">${coated}</div>
-                  </div>
-                  <div class="col-3">
-                    <div class="text-muted text-uppercase" style="font-size: 10px; font-weight: 600;">Already Sent</div>
-                    <div class="fw-bold text-secondary fs-6">${alreadySent}</div>
-                  </div>
-                  <div class="col-3">
-                    <div class="text-muted text-uppercase" style="font-size: 10px; font-weight: 600;">Sendable</div>
-                    <div class="fw-bold text-success fs-6">${sendable}</div>
-                  </div>
-                </div>
-              </div>
-
-              <div class="mb-3">
-                <label class="form-label fw-bold small text-muted text-uppercase mb-2" style="font-size: 11px;">Select Quantity Option</label>
-                <div class="d-flex flex-column gap-2">
-                  <label class="d-flex align-items-center p-2 rounded border cursor-pointer" style="background: #f8fafc; cursor: pointer;">
-                    <input type="radio" name="swal-send-choice" id="choice-whole" value="whole" checked class="form-check-input me-2 mt-0">
-                    <div>
-                      <strong>Whole quantity</strong> <span class="text-muted">(${sendable} units)</span>
+            <div class="mb-3">
+              <label class="form-label fw-bold small text-muted text-uppercase mb-2" style="font-size: 11px;">Select Production Decision</label>
+              <div class="d-flex flex-column gap-2">
+                <label class="d-flex align-items-start p-3 rounded-3 border cursor-pointer" id="card-option-1" style="background: rgba(0, 174, 239, 0.05); border-color: #00aeef; cursor: pointer;">
+                  <input type="radio" name="swal-prod-option" id="choice-close-order" value="CLOSE_ENTIRE_ORDER" checked class="form-check-input me-3 mt-1">
+                  <div>
+                    <div class="fw-bold text-dark" style="font-size: 13px;">Option 1: Close Entire Order & Dispatch Completed Quantity</div>
+                    <div class="text-muted small mt-1" style="font-size: 11.5px; line-height: 1.4;">
+                      Sends coated quantity (<strong class="text-success">${sendable}</strong>) to Ready To Dispatch and marks the remaining uncoated quantity (<strong class="text-danger">${remainingUncoated}</strong>) as cancelled. The original row will be <strong>closed from active production</strong>.
                     </div>
-                  </label>
-                  <label class="d-flex align-items-center p-2 rounded border cursor-pointer" style="background: #f8fafc; cursor: pointer;">
-                    <input type="radio" name="swal-send-choice" id="choice-partial" value="partial" class="form-check-input me-2 mt-0">
-                    <div>
-                      <strong>Partial quantity</strong>
-                    </div>
-                  </label>
-                </div>
-              </div>
+                  </div>
+                </label>
 
-              <div id="swal-partial-container" class="mb-2" style="display: none;">
-                <label class="form-label small fw-bold text-muted mb-1" for="swal-partial-qty">Quantity to Send (1 - ${sendable})</label>
-                <input type="number" id="swal-partial-qty" class="form-control shadow-none" placeholder="Enter quantity" min="1" max="${sendable}">
-                <div id="swal-partial-error" class="text-danger small mt-1" style="display: none;"></div>
+                <label class="d-flex align-items-start p-3 rounded-3 border cursor-pointer" id="card-option-2" style="background: #fff; border-color: #dee2e6; cursor: pointer;">
+                  <input type="radio" name="swal-prod-option" id="choice-split-order" value="SPLIT_REMAINING_ORDER" class="form-check-input me-3 mt-1">
+                  <div>
+                    <div class="fw-bold text-dark" style="font-size: 13px;">Option 2: Split Order & Carry Forward Remaining Quantity</div>
+                    <div class="text-muted small mt-1" style="font-size: 11.5px; line-height: 1.4;">
+                      Sends coated quantity (<strong class="text-success">${sendable}</strong>) to Ready To Dispatch and <strong>retains remaining ${remainingUncoated} units</strong> in active Lacquer Plan with coated qty reset to 0 for future coating.
+                    </div>
+                  </div>
+                </label>
               </div>
             </div>
-          `,
+
+            <div class="mb-3">
+              <label class="form-label fw-bold small text-muted text-uppercase mb-2" style="font-size: 11px;">Dispatch Quantity</label>
+              <div class="d-flex gap-3">
+                <label class="d-flex align-items-center p-2 px-3 rounded border cursor-pointer" style="background: #f8fafc; cursor: pointer;">
+                  <input type="radio" name="swal-qty-choice" id="choice-qty-whole" value="whole" checked class="form-check-input me-2 mt-0">
+                  <span class="small">All available (<strong>${sendable}</strong> units)</span>
+                </label>
+                <label class="d-flex align-items-center p-2 px-3 rounded border cursor-pointer" style="background: #f8fafc; cursor: pointer;">
+                  <input type="radio" name="swal-qty-choice" id="choice-qty-partial" value="partial" class="form-check-input me-2 mt-0">
+                  <span class="small">Custom Partial Quantity</span>
+                </label>
+              </div>
+            </div>
+
+            <div id="swal-partial-container" class="mb-2" style="display: none;">
+              <label class="form-label small fw-bold text-muted mb-1" for="swal-partial-qty">Quantity to Dispatch (1 - ${sendable})</label>
+              <input type="number" id="swal-partial-qty" class="form-control shadow-none" placeholder="Enter quantity" min="1" max="${sendable}" value="${sendable}">
+              <div id="swal-partial-error" class="text-danger small mt-1" style="display: none;"></div>
+            </div>
+          </div>
+        `,
         didOpen: () => {
-          const wholeRadio = document.getElementById('choice-whole');
-          const partialRadio = document.getElementById('choice-partial');
+          const wholeRadio = document.getElementById('choice-qty-whole');
+          const partialRadio = document.getElementById('choice-qty-partial');
           const partialContainer = document.getElementById('swal-partial-container');
           const partialInput = document.getElementById('swal-partial-qty');
           const errorDiv = document.getElementById('swal-partial-error');
+
+          const opt1Radio = document.getElementById('choice-close-order');
+          const opt2Radio = document.getElementById('choice-split-order');
+          const card1 = document.getElementById('card-option-1');
+          const card2 = document.getElementById('card-option-2');
+
+          const updateCardStyles = () => {
+            if (opt1Radio.checked) {
+              card1.style.borderColor = '#00aeef';
+              card1.style.background = 'rgba(0, 174, 239, 0.05)';
+              card2.style.borderColor = '#dee2e6';
+              card2.style.background = '#fff';
+            } else {
+              card2.style.borderColor = '#00aeef';
+              card2.style.background = 'rgba(0, 174, 239, 0.05)';
+              card1.style.borderColor = '#dee2e6';
+              card1.style.background = '#fff';
+            }
+          };
+          updateCardStyles();
+          opt1Radio.addEventListener('change', updateCardStyles);
+          opt2Radio.addEventListener('change', updateCardStyles);
 
           const togglePartial = () => {
             if (partialRadio.checked) {
@@ -469,7 +518,8 @@ const handleSendToReadyToDispatch = async (plan) => {
           });
         },
         preConfirm: () => {
-          const partialRadio = document.getElementById('choice-partial');
+          const optRadio = document.querySelector('input[name="swal-prod-option"]:checked');
+          const partialRadio = document.getElementById('choice-qty-partial');
           const partialInput = document.getElementById('swal-partial-qty');
           const errorDiv = document.getElementById('swal-partial-error');
 
@@ -481,36 +531,24 @@ const handleSendToReadyToDispatch = async (plan) => {
             return false;
           };
 
-          if (!partialRadio || !partialRadio.checked) {
-            return { qty: sendable };
+          const option = optRadio ? optRadio.value : 'CLOSE_ENTIRE_ORDER';
+          let qty = sendable;
+
+          if (partialRadio && partialRadio.checked) {
+            const rawVal = partialInput ? partialInput.value.trim() : '';
+            if (!rawVal) return showError('Please enter a quantity.');
+            if (rawVal.includes('.')) return showError('Decimals are not allowed.');
+            const num = Number(rawVal);
+            if (isNaN(num) || !Number.isInteger(num)) return showError('Please enter a valid whole number.');
+            if (num <= 0) return showError('Quantity must be greater than zero.');
+            if (num > sendable) return showError(`Quantity cannot exceed available sendable quantity (${sendable}).`);
+            qty = num;
           }
 
-          const rawVal = partialInput ? partialInput.value.trim() : '';
-          if (!rawVal) {
-            return showError('Please enter a quantity.');
-          }
-
-          if (rawVal.includes('.')) {
-            return showError('Decimals are not allowed.');
-          }
-
-          const num = Number(rawVal);
-          if (isNaN(num) || !Number.isInteger(num)) {
-            return showError('Please enter a valid whole number.');
-          }
-
-          if (num <= 0) {
-            return showError('Quantity must be greater than zero.');
-          }
-
-          if (num > sendable) {
-            return showError(`Quantity cannot exceed sendable quantity (${sendable}).`);
-          }
-
-          return { qty: num };
+          return { option, qty };
         },
         showCancelButton: true,
-        confirmButtonText: 'Send to Ready To Dispatch',
+        confirmButtonText: 'Next <i class="bi bi-arrow-right ms-1"></i>',
         cancelButtonText: 'Cancel',
         customClass: {
           confirmButton: 'btn btn-primary px-4 py-2 me-2',
@@ -519,35 +557,134 @@ const handleSendToReadyToDispatch = async (plan) => {
         buttonsStyling: false
       });
 
-      if (!result.isConfirmed || !result.value) return;
-      selectedQty = result.value.qty;
+      if (!dialogResult.isConfirmed || !dialogResult.value) return;
+      selectedOption = dialogResult.value.option;
+      selectedQty = dialogResult.value.qty;
+
+      // Show confirmation dialog with exact dispatch and cancellation/remaining quantities (Section 4.1.6)
+      const isOption1 = selectedOption === 'CLOSE_ENTIRE_ORDER';
+      const confirmHtml = isOption1
+        ? `
+          <div class="text-start py-2">
+            <p class="mb-3 text-dark">Please confirm closing the order and dispatching:</p>
+            <div class="p-3 rounded border bg-light mb-3" style="font-size: 13px;">
+              <div class="d-flex justify-content-between mb-1">
+                <span>Dispatch to Ready To Dispatch:</span>
+                <strong class="text-success">${selectedQty} units</strong>
+              </div>
+              <div class="d-flex justify-content-between mb-1">
+                <span>Cancel Unfinished Quantity:</span>
+                <strong class="text-danger">${remainingUncoated} units</strong>
+              </div>
+              <div class="d-flex justify-content-between">
+                <span>Original Order:</span>
+                <strong>${orderQty} units</strong>
+              </div>
+            </div>
+            <div class="alert alert-warning py-2 px-3 small mb-0">
+              <i class="bi bi-exclamation-triangle-fill me-1"></i>
+              This row will be <strong>closed</strong> from active production.
+            </div>
+          </div>
+        `
+        : `
+          <div class="text-start py-2">
+            <p class="mb-3 text-dark">Please confirm splitting the order and dispatching:</p>
+            <div class="p-3 rounded border bg-light mb-3" style="font-size: 13px;">
+              <div class="d-flex justify-content-between mb-1">
+                <span>Dispatch to Ready To Dispatch:</span>
+                <strong class="text-success">${selectedQty} units</strong>
+              </div>
+              <div class="d-flex justify-content-between mb-1">
+                <span>Carry Forward Remaining Order:</span>
+                <strong class="text-primary">${remainingUncoated} units</strong>
+              </div>
+              <div class="d-flex justify-content-between">
+                <span>New Active Balance To Make:</span>
+                <strong class="text-danger">-${remainingUncoated} units</strong>
+              </div>
+            </div>
+            <div class="alert alert-info py-2 px-3 small mb-0">
+              <i class="bi bi-info-circle-fill me-1"></i>
+              The remaining <strong>${remainingUncoated}</strong> units will remain active in Lacquer Plan with coated qty reset to 0.
+            </div>
+          </div>
+        `;
+
+      const confirmResult = await Swal.fire({
+        title: isOption1 ? 'Confirm Close Entire Order' : 'Confirm Split Order',
+        html: confirmHtml,
+        icon: 'question',
+        showCancelButton: true,
+        confirmButtonText: isOption1 ? 'Yes, Close & Dispatch' : 'Yes, Split & Dispatch',
+        cancelButtonText: 'Back',
+        customClass: {
+          confirmButton: isOption1 ? 'btn btn-danger px-4 py-2 me-2' : 'btn btn-primary px-4 py-2 me-2',
+          cancelButton: 'btn btn-light px-4 py-2'
+        },
+        buttonsStyling: false
+      });
+
+      if (!confirmResult.isConfirmed) return;
+    } else {
+      // Row is already completed (coated >= order)
+      const confirmResult = await Swal.fire({
+        title: 'Send to Ready To Dispatch',
+        html: `
+          <div class="text-start py-2">
+            <p class="mb-2">Send <strong>${sendable}</strong> units of <strong>${plan.bottleName}</strong> to Ready To Dispatch?</p>
+            <div class="d-flex justify-content-between p-2 rounded bg-light border" style="font-size: 13px;">
+              <span>Order: <strong>${orderQty}</strong></span>
+              <span>Coated: <strong>${coated}</strong></span>
+              <span>Already Sent: <strong>${alreadySent}</strong></span>
+              <span class="text-success">Sending: <strong>${sendable}</strong></span>
+            </div>
+          </div>
+        `,
+        icon: 'question',
+        showCancelButton: true,
+        confirmButtonText: 'Yes, Send',
+        cancelButtonText: 'Cancel',
+        customClass: {
+          confirmButton: 'btn btn-primary px-4 py-2 me-2',
+          cancelButton: 'btn btn-light px-4 py-2'
+        },
+        buttonsStyling: false
+      });
+
+      if (!confirmResult.isConfirmed) return;
+      selectedOption = 'CLOSE_ENTIRE_ORDER';
+      selectedQty = sendable;
     }
 
-    // Send to API (idempotent endpoint with optional qty)
+    // Send to API with selected option and qty
     const response = await API.post('/ready-to-dispatch/from-plan', {
       source: 'lacquer',
       planId: plan._id,
-      qty: selectedQty
+      qty: selectedQty,
+      action: selectedOption
     });
 
     if (response.data.success) {
       const { sheetId, lineId, isExisting, warnings = [] } = response.data.data;
 
-      // In-place update of sent quantity without losing scroll position
-      infiniteScroll.updateItem(plan._id, {
-        sentToReadyQty: (plan.sentToReadyQty || 0) + selectedQty
-      });
+      // Refetch plans so active/closed changes reflect immediately
+      fetchPlans();
 
       Swal.fire({
         icon: 'success',
-        title: isExisting ? 'Added to Ready To Dispatch' : 'Sent to Ready To Dispatch',
+        title: selectedOption === 'SPLIT_REMAINING_ORDER' ? 'Order Split & Dispatched' : (isExisting ? 'Added to Ready To Dispatch' : 'Sent to Ready To Dispatch'),
+        text: selectedOption === 'SPLIT_REMAINING_ORDER'
+          ? `Dispatched ${selectedQty} units. Remaining ${remainingUncoated} units retained in active plan.`
+          : (selectedOption === 'CLOSE_ENTIRE_ORDER' && remainingUncoated > 0
+            ? `Dispatched ${selectedQty} units. Remaining ${remainingUncoated} units cancelled and row closed.`
+            : 'Sent to Ready To Dispatch successfully.'),
         toast: true,
         position: 'top-end',
-        timer: 3000,
+        timer: 4000,
         showConfirmButton: false
       });
 
-      // Show warning toasts if any
       if (warnings && warnings.length > 0) {
         setTimeout(() => {
           warnings.forEach((warning, idx) => {
@@ -566,9 +703,10 @@ const handleSendToReadyToDispatch = async (plan) => {
         }, 800);
       }
 
-      // Navigate to the sheet's View page with focus
-      const focusQuery = lineId ? `?focus=${lineId}${!isExisting ? '&new=true' : ''}` : '';
-      navigate(`/ready-to-dispatch/view/${sheetId}${focusQuery}`);
+      if (sheetId) {
+        const focusQuery = lineId ? `?focus=${lineId}${!isExisting ? '&new=true' : ''}` : '';
+        navigate(`/ready-to-dispatch/view/${sheetId}${focusQuery}`);
+      }
     }
   } catch (error) {
     console.error('Error sending to Ready To Dispatch:', error);
@@ -640,9 +778,9 @@ const handleImportPrevious = async () => {
           icon: isExisting ? 'question' : 'warning',
           showCancelButton: true,
           showDenyButton: true,
-          confirmButtonText: isExisting ? 'Import with changes (Update & Add)' : 'Import with changes',
+          confirmButtonText: isExisting ? 'Update imported records & Add new' : 'Import with changes',
           confirmButtonColor: '#3085d6',
-          denyButtonText: isExisting ? 'Import without changes (Add Only)' : 'Import without changes',
+          denyButtonText: isExisting ? 'Add only new records (Keep existing untouched)' : 'Import without changes',
           denyButtonColor: '#10b981',
           cancelButtonText: 'Cancel'
         });
@@ -954,7 +1092,11 @@ const renderDailyTable = (planList, showDate = false, startSrNo = 0) => {
                           </td>
                           <td className={`py-3 text-center fw-bold ${plan.balanceToMake >= 0 ? 'text-success' : 'text-danger'}`}>
                             {plan.balanceToMake !== null && plan.balanceToMake !== undefined ? plan.balanceToMake : '-'}
-                            {isPlanRowCompleted(plan) && <span className="d-block mt-1 badge bg-success" style={{ fontSize: 10 }}>COMPLETED</span>}
+                            {plan.isClosed || plan.productionStatus === 'CLOSED' ? (
+                              <span className="d-block mt-1 badge bg-secondary" style={{ fontSize: 10 }}>CLOSED</span>
+                            ) : isPlanRowCompleted(plan) ? (
+                              <span className="d-block mt-1 badge bg-success" style={{ fontSize: 10 }}>COMPLETED</span>
+                            ) : null}
                           </td>
                           {isFirstInBottleVisualGroup && (
                             <td className="py-3 text-center align-middle" rowSpan={bottleVisualRowSpan}>{plan.boxQty !== null && plan.boxQty !== undefined && plan.boxQty > 0 ? plan.boxQty : '-'}</td>
@@ -986,12 +1128,13 @@ const renderDailyTable = (planList, showDate = false, startSrNo = 0) => {
                               })()}
                               {(() => {
                                 const isProcessC = (plan.process || '').trim().toUpperCase() === 'C';
+                                if (!isProcessC) return null;
+
                                 const coated = Number(plan.coatingCompletedQty ?? plan.coatedQty ?? 0);
                                 const sentQty = Number(plan.sentToReadyQty || 0);
                                 const sendable = Math.max(0, coated - sentQty);
-                                const isFullySent = isProcessC && coated > 0 && sendable === 0;
-
-                                if (!isProcessC) return null;
+                                const isClosed = plan.isClosed || plan.productionStatus === 'CLOSED';
+                                const isFullySent = coated > 0 && sendable === 0;
 
                                 return (
                                   <>
@@ -1004,12 +1147,30 @@ const renderDailyTable = (planList, showDate = false, startSrNo = 0) => {
                                         Sent {sentQty} / {coated}
                                       </span>
                                     )}
-                                    {sendable > 0 ? (
+                                    {isClosed ? (
+                                      <span
+                                        className="badge bg-secondary px-2 py-1 align-self-center"
+                                        style={{ fontSize: 10, whiteSpace: 'nowrap' }}
+                                        title={plan.cancelledQty > 0 ? `Closed (Cancelled: ${plan.cancelledQty})` : 'Order Completed & Closed'}
+                                      >
+                                        CLOSED
+                                      </span>
+                                    ) : sendable > 0 ? (
                                       <button
                                         type="button"
                                         onClick={() => handleSendToReadyToDispatch(plan)}
                                         className="btn btn-sm btn-outline-success border-0 rounded-3 shadow-none p-2"
-                                        title="Send to Ready To Dispatch"
+                                        title="Process C Production Actions"
+                                      >
+                                        <i className="bi bi-send fs-6"></i>
+                                      </button>
+                                    ) : coated === 0 ? (
+                                      <button
+                                        type="button"
+                                        disabled
+                                        className="btn btn-sm btn-outline-secondary border-0 rounded-3 shadow-none p-2 opacity-50"
+                                        style={{ cursor: 'not-allowed' }}
+                                        title="Dispatch unavailable: Coated quantity is 0"
                                       >
                                         <i className="bi bi-send fs-6"></i>
                                       </button>
@@ -1019,7 +1180,7 @@ const renderDailyTable = (planList, showDate = false, startSrNo = 0) => {
                                         disabled
                                         className="btn btn-sm btn-light border-0 rounded-3 shadow-none p-2 text-muted opacity-50"
                                         style={{ cursor: 'not-allowed' }}
-                                        title="Sent"
+                                        title="All coated quantity has been sent"
                                       >
                                         <i className="bi bi-send fs-6"></i>
                                       </button>

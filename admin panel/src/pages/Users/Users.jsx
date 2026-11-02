@@ -13,6 +13,12 @@ const avatarColors = [
   'linear-gradient(135deg,#6366f1,#8b5cf6)',
 ];
 
+const getImageUrl = (imagePath) => {
+  if (!imagePath) return null;
+  if (imagePath.startsWith('http')) return imagePath;
+  return `${import.meta.env.VITE_API_URL || 'https://application.shayonaglass.com/api'}/../${imagePath}`;
+};
+
 export default function Users() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -197,9 +203,31 @@ const { users,
               <div className="d-flex align-items-start gap-3 w-100 min-w-0" style={{ overflow: 'hidden' }}>
                 <div
                   className="companies-mobile-avatar"
-                  style={{ background: avatarColors[i % avatarColors.length], flexShrink: 0 }}
+                  style={{
+                    background: u.image ? 'transparent' : avatarColors[i % avatarColors.length],
+                    flexShrink: 0,
+                    overflow: 'hidden',
+                    borderRadius: '50%'
+                  }}
                 >
-                  {u.name?.charAt(0).toUpperCase() || 'U'}
+                  {u.image ? (
+                    <img
+                      src={getImageUrl(u.image)}
+                      alt={u.name}
+                      style={{
+                        width: '100%',
+                        height: '100%',
+                        objectFit: 'cover'
+                      }}
+                      onError={(e) => {
+                        e.target.style.display = 'none';
+                        e.target.nextElementSibling.style.display = 'flex';
+                      }}
+                    />
+                  ) : null}
+                  <div style={{ display: u.image ? 'none' : 'flex' }}>
+                    {u.name?.charAt(0).toUpperCase() || 'U'}
+                  </div>
                 </div>
                 <div className="flex-grow-1 min-w-0">
                   <div className="fw-semibold text-truncate">{u.name || <span className="text-muted fst-italic">No Name</span>}</div>
@@ -272,11 +300,31 @@ const { users,
                   <td>
                     <div className="d-flex align-items-center gap-3">
                       <div style={{
-                        width: 36, height: 36, borderRadius: 10,
-                        background: avatarColors[i % avatarColors.length],
+                        width: 36, height: 36, borderRadius: '50%',
+                        background: u.image ? 'transparent' : avatarColors[i % avatarColors.length],
                         display: 'flex', alignItems: 'center', justifyContent: 'center',
                         fontWeight: 700, fontSize: 12, flexShrink: 0, color: 'white',
-                      }}>{u.name?.charAt(0).toUpperCase() || 'U'}</div>
+                        overflow: 'hidden'
+                      }}>
+                        {u.image ? (
+                          <img
+                            src={getImageUrl(u.image)}
+                            alt={u.name}
+                            style={{
+                              width: '100%',
+                              height: '100%',
+                              objectFit: 'cover'
+                            }}
+                            onError={(e) => {
+                              e.target.style.display = 'none';
+                              e.target.nextElementSibling.style.display = 'flex';
+                            }}
+                          />
+                        ) : null}
+                        <div style={{ display: u.image ? 'none' : 'flex' }}>
+                          {u.name?.charAt(0).toUpperCase() || 'U'}
+                        </div>
+                      </div>
                       <div>
                         <div style={{ fontWeight: 600, color: 'var(--text-primary)', fontSize: 13.5 }}>{u.name}</div>
                         <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{u.email}</div>

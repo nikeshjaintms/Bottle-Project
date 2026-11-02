@@ -114,12 +114,52 @@ function resolveBottleReference(bottleRef, allBottlePerBoxes, idMap) {
 }
 
 /**
- * GET /api/summary/incoming-paginated?companyId=&limit=&cursor=&fromDate=&toDate=&search=
- * Keyset pagination for Incoming records with filters
+ * Build a matcher function for a target bottle
+ */
+function buildBottleMatcher(bottleId, allBottlePerBoxes, idMap) {
+  if (!bottleId || bottleId === 'all') {
+    return () => true; // Match all bottles
+  }
+
+  let targetBottleDoc = null;
+  let targetBottleName = "";
+  let isUnmatchedTarget = false;
+
+  if (mongoose.Types.ObjectId.isValid(bottleId) && idMap.has(bottleId)) {
+    targetBottleDoc = idMap.get(bottleId);
+    targetBottleName = targetBottleDoc.bottleName;
+  } else if (bottleId.startsWith("unmatched_")) {
+    targetBottleName = decodeURIComponent(bottleId.replace("unmatched_", ""));
+    isUnmatchedTarget = true;
+  } else {
+    const matched = matchBottleNameFromMaster(bottleId, allBottlePerBoxes);
+    if (!matched.unmatched && matched.bottleName !== 'MISSING') {
+      targetBottleDoc = allBottlePerBoxes.find(b => b.bottleName === matched.bottleName);
+      if (targetBottleDoc) {
+        targetBottleName = targetBottleDoc.bottleName;
+      }
+    } else {
+      targetBottleName = bottleId;
+      isUnmatchedTarget = true;
+    }
+  }
+
+  return (bottleRef) => {
+    const resolved = resolveBottleReference(bottleRef, allBottlePerBoxes, idMap);
+    if (targetBottleDoc) {
+      return resolved.bottleId === targetBottleDoc._id.toString();
+    }
+    return resolved.bottleName.toLowerCase() === targetBottleName.toLowerCase();
+  };
+}
+
+/**
+ * GET /api/summary/incoming-paginated?companyId=&bottleId=&limit=&cursor=&fromDate=&toDate=&search=
+ * Keyset pagination for Incoming records with filters, optionally filtered by bottle
  */
 exports.getIncomingPaginated = async (req, res) => {
   try {
-    const { companyId, limit = DEFAULT_LIMIT, cursor, fromDate, toDate, search } = req.query;
+    const { companyId, bottleId, limit = DEFAULT_LIMIT, cursor, fromDate, toDate, search } = req.query;
     if (!companyId) {
       return res.status(400).json({ success: false, message: "companyId parameter is required" });
     }
@@ -128,6 +168,9 @@ exports.getIncomingPaginated = async (req, res) => {
     const company = await Company.findById(companyId).lean();
     const isShreno = isShrenoCompany(companyId, company);
     const { allBottlePerBoxes, idMap } = await getBottleMasterData();
+
+    // Build bottle matcher
+    const matchesTargetBottle = buildBottleMatcher(bottleId, allBottlePerBoxes, idMap);
 
     // Build query
     const query = { billToId: companyId, isDeleted: { $ne: true } };
@@ -152,12 +195,12 @@ exports.getIncomingPaginated = async (req, res) => {
     if (cursorData) {
       query.$or = [
         { createdAt: { $lt: cursorData.createdAt } },
-        { createdAt: cursorData.createdAt, _id: { $lt: mongoose.Types.ObjectId(cursorData._id) } }
+        { createdAt: cursorData.createdAt, _id: { $lt: new mongoose.Types.ObjectId(cursorData._id) } }
       ];
     }
 
-    // Fetch more than limit to account for search filtering
-    const fetchSize = parsedLimit * 3; // Fetch 3x to have buffer for search
+    // Fetch more than limit to account for bottle/search filtering
+    const fetchSize = parsedLimit * 3; // Fetch 3x to have buffer for filtering
     const docs = await Incoming.find(query)
       .sort({ createdAt: -1, _id: -1 })
       .limit(fetchSize + 1)
@@ -165,7 +208,7 @@ exports.getIncomingPaginated = async (req, res) => {
 
     const hasMore = docs.length > fetchSize;
 
-    // Process items (flatten bottle structure for display)
+    // Process items (flatten bottle structure for display), filter by bottle
     const processedItems = [];
     let lastDoc = null;
 
@@ -174,24 +217,36 @@ exports.getIncomingPaginated = async (req, res) => {
       for (const item of inc.items || []) {
         const resolved = resolveBottleReference(item.bottleId, allBottlePerBoxes, idMap);
         
+        // Filter by target bottle
+        if (!matchesTargetBottle(item.bottleId)) {
+          continue;
+        }
+
         // Apply search filter
         if (search && !resolved.bottleName.toLowerCase().includes(search.toLowerCase())) {
           continue;
         }
 
+        const totalQty = Number(item.totalQty) || (Number(item.box || 0) * Number(item.qty || 0)) || 0;
+        const poOrderQty = Number(inc.poOrderQty) || null;
+
         processedItems.push({
           _id: `${inc._id}_${item._id || processedItems.length}`,
           docId: inc._id,
+          // New field names (what page reads)
+          date: inc.documentDate || inc.createdAt,
+          challanNo: inc.deliveryNumber || "-",
+          // Old field names (backward compat)
           documentDate: inc.documentDate || inc.createdAt,
-          createdAt: inc.createdAt,
           deliveryNumber: inc.deliveryNumber || "-",
           poNo: inc.poNo || "-",
           poDate: inc.poDate || null,
+          poOrderQty: poOrderQty,
           bottleId: resolved.bottleId,
           bottleName: resolved.bottleName,
           box: Number(item.box) || 0,
           qty: Number(item.qty) || 0,
-          totalQty: Number(item.totalQty) || 0
+          totalQty: totalQty
         });
 
         // Stop if we have enough items
@@ -223,12 +278,12 @@ exports.getIncomingPaginated = async (req, res) => {
 };
 
 /**
- * GET /api/summary/dispatch-paginated?companyId=&limit=&cursor=&fromDate=&toDate=&search=
- * Keyset pagination for Dispatch records with filters
+ * GET /api/summary/dispatch-paginated?companyId=&bottleId=&limit=&cursor=&fromDate=&toDate=&search=
+ * Keyset pagination for Dispatch records with filters, optionally filtered by bottle
  */
 exports.getDispatchPaginated = async (req, res) => {
   try {
-    const { companyId, limit = DEFAULT_LIMIT, cursor, fromDate, toDate, search } = req.query;
+    const { companyId, bottleId, limit = DEFAULT_LIMIT, cursor, fromDate, toDate, search } = req.query;
     if (!companyId) {
       return res.status(400).json({ success: false, message: "companyId parameter is required" });
     }
@@ -236,6 +291,9 @@ exports.getDispatchPaginated = async (req, res) => {
     const parsedLimit = Math.min(parseInt(limit) || DEFAULT_LIMIT, MAX_LIMIT);
     const company = await Company.findById(companyId).lean();
     const { allBottlePerBoxes, idMap } = await getBottleMasterData();
+
+    // Build bottle matcher
+    const matchesTargetBottle = buildBottleMatcher(bottleId, allBottlePerBoxes, idMap);
 
     // Build query
     const query = { companyId: companyId, isDeleted: { $ne: true } };
@@ -260,11 +318,11 @@ exports.getDispatchPaginated = async (req, res) => {
     if (cursorData) {
       query.$or = [
         { createdAt: { $lt: cursorData.createdAt } },
-        { createdAt: cursorData.createdAt, _id: { $lt: mongoose.Types.ObjectId(cursorData._id) } }
+        { createdAt: cursorData.createdAt, _id: { $lt: new mongoose.Types.ObjectId(cursorData._id) } }
       ];
     }
 
-    // Fetch more than limit to account for search filtering
+    // Fetch more than limit to account for bottle/search filtering
     const fetchSize = parsedLimit * 3;
     const docs = await Dispatch.find(query)
       .sort({ createdAt: -1, _id: -1 })
@@ -283,22 +341,36 @@ exports.getDispatchPaginated = async (req, res) => {
         const ref = item.bottleId || item.productName;
         const resolved = resolveBottleReference(ref, allBottlePerBoxes, idMap);
 
+        // Filter by target bottle
+        if (!matchesTargetBottle(ref)) {
+          continue;
+        }
+
         // Apply search filter
         if (search && !resolved.bottleName.toLowerCase().includes(search.toLowerCase())) {
           continue;
         }
 
+        const totalQty = Number(item.totalQty) || (Number(item.box || 0) * Number(item.qty || 0)) || 0;
+
         processedItems.push({
           _id: `${disp._id}_${item._id || processedItems.length}`,
           docId: disp._id,
-          dispatchDate: disp.dispatchDate || disp.createdAt,
-          createdAt: disp.createdAt,
+          // New field names (what page reads)
+          date: disp.dispatchDate || disp.createdAt,
           gatePassNo: disp.gatePassNo || "-",
+          coating: item.coatingShade || "-",
+          printing: (item.variantId && item.variantId.variantName) || item.printing || "-",
+          detectedTextColor: item.detectedTextColor || (item.printingTypeId && item.printingTypeId.name) || "-",
+          productName: item.productName || (item.variantId && item.variantId.variantName) || resolved.bottleName || "-",
+          remarks: disp.remarks || item.remarks || "-",
+          // Old field names (backward compat)
+          dispatchDate: disp.dispatchDate || disp.createdAt,
           bottleId: resolved.bottleId,
           bottleName: resolved.bottleName,
           box: Number(item.box) || 0,
           qty: Number(item.qty) || 0,
-          totalQty: Number(item.totalQty) || 0
+          totalQty: totalQty
         });
 
         if (processedItems.length >= parsedLimit) {
@@ -429,12 +501,12 @@ exports.getShrenoIncomingPaginated = async (req, res) => {
 };
 
 /**
- * GET /api/summary/incoming-totals?companyId=&fromDate=&toDate=&search=
- * Get aggregated totals for Incoming (for display while paginating)
+ * GET /api/summary/incoming-totals?companyId=&bottleId=&fromDate=&toDate=&search=
+ * Get aggregated totals for Incoming (for display while paginating), optionally filtered by bottle
  */
 exports.getIncomingTotals = async (req, res) => {
   try {
-    const { companyId, fromDate, toDate, search } = req.query;
+    const { companyId, bottleId, fromDate, toDate, search } = req.query;
     if (!companyId) {
       return res.status(400).json({ success: false, message: "companyId parameter is required" });
     }
@@ -458,6 +530,9 @@ exports.getIncomingTotals = async (req, res) => {
 
     const { allBottlePerBoxes, idMap } = await getBottleMasterData();
 
+    // Build bottle matcher
+    const matchesTargetBottle = buildBottleMatcher(bottleId, allBottlePerBoxes, idMap);
+
     // Get all matching documents to aggregate
     const docs = await Incoming.find(query).lean();
 
@@ -470,12 +545,17 @@ exports.getIncomingTotals = async (req, res) => {
       for (const item of inc.items || []) {
         const resolved = resolveBottleReference(item.bottleId, allBottlePerBoxes, idMap);
 
+        // Filter by target bottle
+        if (!matchesTargetBottle(item.bottleId)) {
+          continue;
+        }
+
         // Apply search filter
         if (search && !resolved.bottleName.toLowerCase().includes(search.toLowerCase())) {
           continue;
         }
 
-        const qty = Number(item.totalQty) || 0;
+        const qty = Number(item.totalQty) || (Number(item.box || 0) * Number(item.qty || 0)) || 0;
         const box = Number(item.box) || 0;
 
         totalQty += qty;
@@ -498,6 +578,7 @@ exports.getIncomingTotals = async (req, res) => {
         totalCount: recordCount,
         totalQty,
         totalBoxes,
+        recordCount,
         bottleCount: bottleMap.size,
         bottles: Array.from(bottleMap.entries()).map(([id, data]) => ({
           bottleId: id,
@@ -513,12 +594,12 @@ exports.getIncomingTotals = async (req, res) => {
 };
 
 /**
- * GET /api/summary/dispatch-totals?companyId=&fromDate=&toDate=&search=
- * Get aggregated totals for Dispatch
+ * GET /api/summary/dispatch-totals?companyId=&bottleId=&fromDate=&toDate=&search=
+ * Get aggregated totals for Dispatch, optionally filtered by bottle
  */
 exports.getDispatchTotals = async (req, res) => {
   try {
-    const { companyId, fromDate, toDate, search } = req.query;
+    const { companyId, bottleId, fromDate, toDate, search } = req.query;
     if (!companyId) {
       return res.status(400).json({ success: false, message: "companyId parameter is required" });
     }
@@ -542,6 +623,9 @@ exports.getDispatchTotals = async (req, res) => {
 
     const { allBottlePerBoxes, idMap } = await getBottleMasterData();
 
+    // Build bottle matcher
+    const matchesTargetBottle = buildBottleMatcher(bottleId, allBottlePerBoxes, idMap);
+
     const docs = await Dispatch.find(query).lean();
 
     let totalQty = 0;
@@ -554,11 +638,16 @@ exports.getDispatchTotals = async (req, res) => {
         const ref = item.bottleId || item.productName;
         const resolved = resolveBottleReference(ref, allBottlePerBoxes, idMap);
 
+        // Filter by target bottle
+        if (!matchesTargetBottle(ref)) {
+          continue;
+        }
+
         if (search && !resolved.bottleName.toLowerCase().includes(search.toLowerCase())) {
           continue;
         }
 
-        const qty = Number(item.totalQty) || 0;
+        const qty = Number(item.totalQty) || (Number(item.box || 0) * Number(item.qty || 0)) || 0;
         const box = Number(item.box) || 0;
 
         totalQty += qty;
@@ -580,6 +669,7 @@ exports.getDispatchTotals = async (req, res) => {
         totalCount: recordCount,
         totalQty,
         totalBoxes,
+        recordCount,
         bottleCount: bottleMap.size,
         bottles: Array.from(bottleMap.entries()).map(([id, data]) => ({
           bottleId: id,
@@ -796,12 +886,15 @@ exports.getSummaryBottles = async (req, res) => {
     }
 
     // Convert map to array and sort descending by latestTimestamp (most recent first)
-    const bottles = Array.from(companyBottleMap.values()).sort((a, b) => {
+    let bottles = Array.from(companyBottleMap.values()).sort((a, b) => {
       if (b.latestTimestamp !== a.latestTimestamp) {
         return b.latestTimestamp - a.latestTimestamp;
       }
       return (a.bottleName || "").localeCompare(b.bottleName || "");
     });
+
+    // Filter out unmatched bottles from dropdown (they only appear in overview)
+    bottles = bottles.filter(b => !b.isUnmatched);
 
     const mostRecentBottleId = bottles.length > 0 ? bottles[0]._id : null;
 

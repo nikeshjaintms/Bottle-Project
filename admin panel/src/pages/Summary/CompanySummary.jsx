@@ -156,15 +156,23 @@ export default function CompanySummary() {
 
       if (section !== 'packing') {
         params.companyId = companyId;
+        // Send bottleId if not showing all
+        if (selectedBottleId && selectedBottleId !== 'all') {
+          params.bottleId = selectedBottleId;
+        }
       }
 
       const res = await api.get(url, { params });
       return res.data?.data || null;
     } catch (err) {
+      // Silently handle abort/cancel errors
+      if (err.code === 'ECONNABORTED' || err.name === 'AbortError' || err.message?.includes('canceled')) {
+        return null;
+      }
       console.error(`Failed to fetch ${section} totals:`, err);
-      return null;
+      return null;  // Return null instead of throwing to prevent Promise.all from failing
     }
-  }, [companyId, fromDate, toDate, searchFilter]);
+  }, [companyId, selectedBottleId, fromDate, toDate, searchFilter]);
 
   const fetchPaginatedItems = useCallback(async (section, cursor, requestId) => {
     try {
@@ -188,6 +196,10 @@ export default function CompanySummary() {
 
       if (section !== 'packing') {
         params.companyId = companyId;
+        // Send bottleId if not showing all
+        if (selectedBottleId && selectedBottleId !== 'all') {
+          params.bottleId = selectedBottleId;
+        }
       }
 
       if (cursor) {
@@ -222,13 +234,14 @@ export default function CompanySummary() {
         hasMore: res.data?.data?.hasMore || false
       };
     } catch (err) {
-      if (err.name === 'AbortError') {
+      // Silently handle abort errors (request canceled) - they're expected
+      if (err.code === 'ECONNABORTED' || err.name === 'AbortError' || err.message?.includes('canceled')) {
         return null;
       }
       console.error(`Failed to fetch ${section} items:`, err);
       throw err;
     }
-  }, [companyId, fromDate, toDate, searchFilter]);
+  }, [companyId, selectedBottleId, fromDate, toDate, searchFilter]);
 
   const loadSectionStart = useCallback(async (section) => {
     if (section === 'incoming') {
@@ -260,8 +273,9 @@ export default function CompanySummary() {
           pageData.items.forEach(item => incomingLoadedIdsRef.current.add(item._id));
         }
       } catch (err) {
-        if (requestId === incomingRequestIdRef.current) {
-          setIncomingError(err.message);
+        // Only set error if it's not an abort
+        if (requestId === incomingRequestIdRef.current && err.name !== 'AbortError' && err.code !== 'ECONNABORTED') {
+          setIncomingError(err.message || 'Failed to load incoming items');
         }
       } finally {
         if (requestId === incomingRequestIdRef.current) {
@@ -297,8 +311,9 @@ export default function CompanySummary() {
           pageData.items.forEach(item => dispatchLoadedIdsRef.current.add(item._id));
         }
       } catch (err) {
-        if (requestId === dispatchRequestIdRef.current) {
-          setDispatchError(err.message);
+        // Only set error if it's not an abort
+        if (requestId === dispatchRequestIdRef.current && err.name !== 'AbortError' && err.code !== 'ECONNABORTED') {
+          setDispatchError(err.message || 'Failed to load dispatch items');
         }
       } finally {
         if (requestId === dispatchRequestIdRef.current) {
@@ -334,8 +349,9 @@ export default function CompanySummary() {
           pageData.items.forEach(item => packingLoadedIdsRef.current.add(item._id));
         }
       } catch (err) {
-        if (requestId === packingRequestIdRef.current) {
-          setPackingError(err.message);
+        // Only set error if it's not an abort
+        if (requestId === packingRequestIdRef.current && err.name !== 'AbortError' && err.code !== 'ECONNABORTED') {
+          setPackingError(err.message || 'Failed to load packing items');
         }
       } finally {
         if (requestId === packingRequestIdRef.current) {

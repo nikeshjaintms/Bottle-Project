@@ -6,10 +6,13 @@ const {
   updateUser,
   deleteUser,
   getUserById,
+  uploadProfileImage,
+  deleteProfileImage,
 } = require("../controllers/user.controller");
 
 const { auth } = require("../middleware/auth.middleware");
 const checkAbility = require("../middleware/checkAbility");
+const upload = require("../middleware/upload.middleware");
 
 // 👑 Only admin can manage users
 
@@ -51,6 +54,21 @@ router.delete(
   auth,
   checkAbility("delete", "user"),
   deleteUser
+);
+
+// UPLOAD PROFILE IMAGE
+router.post(
+  "/:id/profile-image",
+  auth,
+  upload.single("image"),
+  uploadProfileImage
+);
+
+// DELETE PROFILE IMAGE
+router.delete(
+  "/:id/profile-image",
+  auth,
+  deleteProfileImage
 );
 
 module.exports = router;

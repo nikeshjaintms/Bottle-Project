@@ -21,7 +21,7 @@ const GUJARATI_HEADERS = [
 ];
 
 const COLUMN_WIDTHS_15 = [
-  7, 58.57, 44.29, 20.71, 13.29, 13.71, 14.86, 13.86, 15, 12.29, 10.14, 10.57, 12.71, 11.29, 9.14
+  7, 58.57, 44.29, 20.71, 13.29, 13.71, 14.86, 13.86, 15, 12.29, 10.14, 10.57, 12.71, 11.29, 9.14, 25
 ];
 
 function getPlanDateStr(plan) {
@@ -130,8 +130,8 @@ export async function buildLacquerPlanWorkbook(plans, options = {}) {
         return b && b.trim() !== '' && b.trim() !== '-' && b.trim().toUpperCase() !== 'N/A';
       });
 
-      const totalCols = hasBrand ? 15 : 14;
-      const lastColLetter = hasBrand ? 'O' : 'N';
+      const totalCols = hasBrand ? 16 : 15;
+      const lastColLetter = hasBrand ? 'P' : 'O';
 
       // --- ROW 1: TITLE ---
       const r1 = currentRow;
@@ -169,16 +169,18 @@ export async function buildLacquerPlanWorkbook(plans, options = {}) {
       const r3 = currentRow + 2;
       ws.getRow(r3).height = 38.25;
 
-      const headerTexts = hasBrand
+      const baseHeaders = hasBrand
         ? GUJARATI_HEADERS
         : GUJARATI_HEADERS.filter((_, i) => i !== 3); // skip BRAND (index 3)
+      const headerTexts = [...baseHeaders, 'Stock Used From'];
 
       for (let c = 1; c <= totalCols; c++) {
         const cell = ws.getCell(r3, c);
         cell.value = headerTexts[c - 1];
+        const isCalibriHeader = (hasBrand && c === 4) || (c === totalCols);
         cell.font = {
-          name: (hasBrand && c === 4) ? 'Calibri' : 'GHANSHYAM',
-          size: 16,
+          name: isCalibriHeader ? 'Calibri' : 'GHANSHYAM',
+          size: isCalibriHeader ? 14 : 16,
           bold: true
         };
         cell.fill = {
@@ -290,6 +292,27 @@ export async function buildLacquerPlanWorkbook(plans, options = {}) {
             ws.getCell(rowNum, 12).value = orderBoxes;
             ws.getCell(rowNum, 13).value = remarks;
           }
+
+          let stockUsedFrom = '';
+          const ownCid = (plan.canonicalCompanyId || plan.companyId?._id || plan.companyId)?.toString();
+          if (Array.isArray(plan.stockAllocation) && plan.stockAllocation.length > 0) {
+            const hasSupplier = plan.stockAllocation.some(a => {
+              const cid = (a.companyId?._id || a.companyId)?.toString();
+              return cid && cid !== ownCid && Number(a.qty) > 0;
+            });
+            if (hasSupplier) {
+              stockUsedFrom = plan.stockAllocation
+                .filter(a => Number(a.qty) > 0)
+                .map(a => {
+                  const cIdStr = (a.companyId?._id || a.companyId)?.toString();
+                  const cMatch = Array.isArray(companies) ? companies.find(c => (c._id || c.id)?.toString() === cIdStr) : null;
+                  const cName = cMatch?.name || a.companyName || a.company?.name || 'Unknown';
+                  return `${cName} ${a.qty}`;
+                })
+                .join('; ');
+            }
+          }
+          ws.getCell(rowNum, totalCols).value = stockUsedFrom;
 
           // Format non-merged cell borders and styles
           const plainStockCol = hasBrand ? 6 : 5;

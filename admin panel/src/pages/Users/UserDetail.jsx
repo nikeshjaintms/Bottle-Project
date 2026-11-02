@@ -4,6 +4,12 @@ import { useDispatch, useSelector } from 'react-redux';
 import { fetchSingleUser, updateUserStatus } from '../../redux/slices/userSlice';
 import Swal from 'sweetalert2';
 
+const getImageUrl = (imagePath) => {
+  if (!imagePath) return null;
+  if (imagePath.startsWith('http')) return imagePath;
+  return `${import.meta.env.VITE_API_URL || 'https://application.shayonaglass.com/api'}/../${imagePath}`;
+};
+
 export default function UserDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -42,6 +48,8 @@ export default function UserDetail() {
   if (loading && !user) return <div className="p-5 text-center"><div className="spinner-border text-primary"></div></div>;
   if (!user) return <div className="p-5 text-center text-muted">User not found</div>;
 
+  const imageUrl = getImageUrl(user.image);
+
   return (
     <div className="page-content">
       <div className="page-header d-flex align-items-center gap-3 user-detail-page-header">
@@ -73,12 +81,29 @@ export default function UserDetail() {
               {/* Avatar + name */}
               <div className="d-flex align-items-center gap-4 mb-4 pb-4" style={{ borderBottom: '1px solid var(--card-border)' }}>
                 <div style={{
-                  width: 64, height: 64, borderRadius: 16, flexShrink: 0,
-                  background: 'linear-gradient(135deg,#6366f1,#8b5cf6)',
+                  width: 100, height: 100, borderRadius: '50%', flexShrink: 0,
+                  background: imageUrl ? 'transparent' : 'linear-gradient(135deg,#6366f1,#8b5cf6)',
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  fontSize: 26, fontWeight: 700, color: '#fff'
+                  fontSize: 32, fontWeight: 700, color: '#fff', overflow: 'hidden'
                 }}>
-                  {user.name?.charAt(0).toUpperCase() || 'U'}
+                  {imageUrl ? (
+                    <img
+                      src={imageUrl}
+                      alt={user.name}
+                      style={{
+                        width: '100%',
+                        height: '100%',
+                        objectFit: 'cover'
+                      }}
+                      onError={(e) => {
+                        e.target.style.display = 'none';
+                        e.target.nextElementSibling.style.display = 'flex';
+                      }}
+                    />
+                  ) : null}
+                  <div style={{ display: imageUrl ? 'none' : 'flex' }}>
+                    {user.name?.charAt(0).toUpperCase() || 'U'}
+                  </div>
                 </div>
                 <div>
                   <div className="fw-bold fs-5">{user.name}</div>

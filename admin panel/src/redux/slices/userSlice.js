@@ -196,6 +196,85 @@ export const updateUser =
 
   );
 
+export const uploadUserImage =
+  createAsyncThunk(
+
+    "users/uploadUserImage",
+
+    async (
+      { id, imageFile },
+      { rejectWithValue }
+    ) => {
+
+      try {
+
+        const formData = new FormData();
+        formData.append("image", imageFile);
+
+        const response =
+          await API.post(
+
+            `/users/${id}/profile-image`,
+
+            formData,
+            {
+              headers: {
+                "Content-Type": "multipart/form-data"
+              }
+            }
+
+          );
+
+        return response.data;
+
+      } catch (error) {
+
+        return rejectWithValue(
+
+          error.response?.data?.message ||
+          "Failed to upload image"
+
+        );
+
+      }
+
+    }
+
+  );
+
+export const deleteUserImage =
+  createAsyncThunk(
+
+    "users/deleteUserImage",
+
+    async (id, { rejectWithValue }) => {
+
+      try {
+
+        const response =
+          await API.delete(
+
+            `/users/${id}/profile-image`
+
+          );
+
+        return response.data;
+
+      } catch (error) {
+
+        return rejectWithValue(
+
+          error.response?.data?.message ||
+          "Failed to delete image"
+
+        );
+
+      }
+
+    }
+
+  );
+
 const userSlice = createSlice({
 
   name: "users",
@@ -394,6 +473,42 @@ const userSlice = createSlice({
 
         }
       )
+
+      // UPLOAD USER IMAGE
+      .addCase(uploadUserImage.pending, (state) => {
+        state.loading = true;
+      })
+
+      .addCase(uploadUserImage.fulfilled, (state, action) => {
+        state.loading = false;
+        state.singleUser = action.payload;
+        state.users = state.users.map((user) =>
+          user._id === action.payload._id ? action.payload : user
+        );
+      })
+
+      .addCase(uploadUserImage.rejected, (state, action) => {
+        state.loading = false;
+        state.error = action.payload;
+      })
+
+      // DELETE USER IMAGE
+      .addCase(deleteUserImage.pending, (state) => {
+        state.loading = true;
+      })
+
+      .addCase(deleteUserImage.fulfilled, (state, action) => {
+        state.loading = false;
+        state.singleUser = action.payload;
+        state.users = state.users.map((user) =>
+          user._id === action.payload._id ? action.payload : user
+        );
+      })
+
+      .addCase(deleteUserImage.rejected, (state, action) => {
+        state.loading = false;
+        state.error = action.payload;
+      })
 
   },
 

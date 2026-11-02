@@ -283,6 +283,7 @@ export default function ImportExcelModal({ show, onClose, onImportComplete }) {
                       <th>Shade</th>
                       <th>Brand</th>
                       <th>Order Qty</th>
+                      <th>Coated Qty</th>
                       <th>Status</th>
                     </tr>
                   </thead>
@@ -309,6 +310,7 @@ export default function ImportExcelModal({ show, onClose, onImportComplete }) {
                           <td>{r.coatingShade || '-'}</td>
                           <td>{r.brandName || '-'}</td>
                           <td className="fw-bold">{r.orderQty !== null && r.orderQty !== undefined ? r.orderQty : '-'}</td>
+                          <td className="fw-bold">{r.coatingCompletedQty !== null && r.coatingCompletedQty !== undefined ? r.coatingCompletedQty : 0}</td>
                           <td><span className="badge bg-success">OK</span></td>
                         </tr>
                       );
@@ -341,6 +343,7 @@ export default function ImportExcelModal({ show, onClose, onImportComplete }) {
                       <th>Shade</th>
                       <th>Brand</th>
                       <th>Order Qty</th>
+                      <th>Coated Qty</th>
                       <th>Available</th>
                       <th className="text-danger">Over By</th>
                       <th className="text-center">Override</th>
@@ -369,6 +372,7 @@ export default function ImportExcelModal({ show, onClose, onImportComplete }) {
                           <td>{r.coatingShade || '-'}</td>
                           <td>{r.brandName || '-'}</td>
                           <td className="fw-bold">{r.orderQty}</td>
+                          <td className="fw-bold">{r.coatingCompletedQty !== null && r.coatingCompletedQty !== undefined ? r.coatingCompletedQty : 0}</td>
                           <td className="fw-bold">{r.stockWarning?.availableStock || '-'}</td>
                           <td className="fw-bold text-danger">{r.stockWarning?.overBy || '-'}</td>
                           <td className="text-center">

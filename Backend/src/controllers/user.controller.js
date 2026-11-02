@@ -1,10 +1,12 @@
 const User = require("../models/user");
 const bcrypt = require("bcryptjs");
+const fs = require("fs");
+const path = require("path");
 
 // ✅ CREATE USER
 exports.createUser = async (req, res) => {
   try {
-    const { email, password, role, name } = req.body;
+    const { email, password, role, name, image } = req.body;
 
     const loweremail = email.toLowerCase();
 
@@ -19,11 +21,12 @@ exports.createUser = async (req, res) => {
       email: loweremail,
       password: hashed,
       role,
-      name
+      name,
+      image: image || ""
     });
 
     await user.populate({ path: "role", populate: { path: "permissions" } });
-    res.json(user);
+    res.json(user.toObject({ versionKey: false }));
 
   } catch (err) {
     if (err.code === 11000) {
@@ -166,7 +169,10 @@ exports.updateUser = async (req, res) => {
       {
         returnDocument: "after",
       }
-    );
+    ).select("-password").populate({
+      path: "role",
+      populate: { path: "permissions" }
+    });
 
     res.json(user);
 
@@ -197,7 +203,7 @@ exports.getUserById = async (req, res) => {
 
     const user = await User.findById(
       req.params.id
-    ).populate({
+    ).select("-password").populate({
       path: "role",
       populate: {
         path: "permissions"
@@ -222,4 +228,117 @@ exports.getUserById = async (req, res) => {
 
   }
 
+};
+
+// ✅ UPLOAD PROFILE IMAGE
+exports.uploadProfileImage = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user._id.toString();
+    const userRole = typeof req.user.role === 'object' ? req.user.role.name : req.user.role;
+
+    // Authorization: user can only upload own image unless admin
+    if (userId !== id && userRole !== "Admin") {
+      if (req.file && fs.existsSync(req.file.path)) {
+        fs.unlinkSync(req.file.path);
+      }
+      return res.status(403).json({ message: "Unauthorized: Cannot upload image for another user" });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({ message: "No file uploaded" });
+    }
+
+    // Validate file type
+    const allowedMimes = ['image/jpeg', 'image/png', 'image/webp'];
+    if (!allowedMimes.includes(req.file.mimetype)) {
+      fs.unlinkSync(req.file.path);
+      return res.status(400).json({ message: "Invalid file type. Only JPG, PNG, and WEBP are allowed." });
+    }
+
+    // Validate file size (5MB max)
+    const maxSize = 5 * 1024 * 1024; // 5MB
+    if (req.file.size > maxSize) {
+      fs.unlinkSync(req.file.path);
+      return res.status(400).json({ message: "File size exceeds 5MB limit" });
+    }
+
+    // Get user to check old image
+    const user = await User.findById(id);
+    if (!user) {
+      fs.unlinkSync(req.file.path);
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    // Delete old image if exists
+    if (user.image) {
+      const oldImagePath = path.join(__dirname, "../../", user.image);
+      if (fs.existsSync(oldImagePath)) {
+        fs.unlinkSync(oldImagePath);
+      }
+    }
+
+    // Generate image path relative to project root
+    const imagePath = `uploads/${req.file.filename}`;
+
+    // Update user with new image
+    const updatedUser = await User.findByIdAndUpdate(
+      id,
+      { image: imagePath },
+      { returnDocument: "after" }
+    ).select("-password").populate({
+      path: "role",
+      populate: { path: "permissions" }
+    });
+
+    res.json(updatedUser);
+
+  } catch (err) {
+    if (req.file && fs.existsSync(req.file.path)) {
+      fs.unlinkSync(req.file.path);
+    }
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// ✅ DELETE PROFILE IMAGE
+exports.deleteProfileImage = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user._id.toString();
+    const userRole = typeof req.user.role === 'object' ? req.user.role.name : req.user.role;
+
+    // Authorization: user can only delete own image unless admin
+    if (userId !== id && userRole !== "Admin") {
+      return res.status(403).json({ message: "Unauthorized: Cannot delete image for another user" });
+    }
+
+    const user = await User.findById(id);
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    // Delete image file if exists
+    if (user.image) {
+      const imagePath = path.join(__dirname, "../../", user.image);
+      if (fs.existsSync(imagePath)) {
+        fs.unlinkSync(imagePath);
+      }
+    }
+
+    // Remove image from user document
+    const updatedUser = await User.findByIdAndUpdate(
+      id,
+      { image: "" },
+      { returnDocument: "after" }
+    ).select("-password").populate({
+      path: "role",
+      populate: { path: "permissions" }
+    });
+
+    res.json(updatedUser);
+
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
 };

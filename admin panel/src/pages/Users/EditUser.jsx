@@ -1,15 +1,26 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useParams, Link } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
-import { fetchSingleUser, updateUser } from '../../redux/slices/userSlice';
+import { fetchSingleUser, updateUser, uploadUserImage, deleteUserImage } from '../../redux/slices/userSlice';
 import { fetchRoles } from '../../redux/slices/roleSlice';
+import { updateUserImage } from '../../redux/slices/loginSlice';
 import Swal from 'sweetalert2';
+
+const ALLOWED_FORMATS = ['image/jpeg', 'image/png', 'image/webp'];
+const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB
+
+const getImageUrl = (imagePath) => {
+  if (!imagePath) return null;
+  if (imagePath.startsWith('http')) return imagePath;
+  return `${import.meta.env.VITE_API_URL || 'https://application.shayonaglass.com/api'}/../${imagePath}`;
+};
 
 export default function EditUser() {
   const { id } = useParams();
   const navigate = useNavigate();
   const dispatch = useDispatch();
   const { singleUser, loading } = useSelector((state) => state.users);
+  const { user: authUser } = useSelector((state) => state.auth);
   const { roles } = useSelector((state) => state.roles);
 
   const [formData, setFormData] = useState({
@@ -19,6 +30,11 @@ export default function EditUser() {
     role: '',
     status: 'active'
   });
+
+  const [selectedImage, setSelectedImage] = useState(null);
+  const [imagePreview, setImagePreview] = useState(null);
+  const [imageError, setImageError] = useState('');
+  const [uploadingImage, setUploadingImage] = useState(false);
 
   const [errors, setErrors] = useState({
     name: '',
@@ -53,33 +69,92 @@ export default function EditUser() {
     return error;
   };
 
-  const handleBlur = (e) => {
-    const { name, value } = e.target;
-    if (name === 'password' && !value.trim()) return;
-    if (!value.trim()) return;
-    const error = validateField(name, value);
-    if (error) {
-      Swal.fire({
-        icon: 'warning',
-        title: 'Validation Warning',
-        text: error,
-        toast: true,
-        position: 'top-end',
-        showConfirmButton: false,
-        timer: 3000
-      });
+  const validateImage = (file) => {
+    setImageError('');
+    
+    if (!file) return;
+
+    if (!ALLOWED_FORMATS.includes(file.type)) {
+      setImageError('Invalid file type. Only JPG, PNG, and WEBP are allowed.');
+      setSelectedImage(null);
+      setImagePreview(null);
+      return;
+    }
+
+    if (file.size > MAX_FILE_SIZE) {
+      setImageError('File size exceeds 5MB limit');
+      setSelectedImage(null);
+      setImagePreview(null);
+      return;
+    }
+
+    setSelectedImage(file);
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      setImagePreview(e.target.result);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleImageChange = (e) => {
+    const file = e.target.files?.[0];
+    validateImage(file);
+  };
+
+  const removeImage = () => {
+    setSelectedImage(null);
+    setImagePreview(null);
+    setImageError('');
+  };
+
+  const uploadImage = async () => {
+    if (!selectedImage) return;
+    
+    setUploadingImage(true);
+    const result = await dispatch(uploadUserImage({ id, imageFile: selectedImage }));
+    setUploadingImage(false);
+
+    if (!result.error) {
+      Swal.fire('Success!', 'Profile image updated successfully.', 'success');
+      removeImage();
+      
+      // Update auth user's image in Redux if uploading own image
+      if (authUser?.id === id) {
+        dispatch(updateUserImage(result.payload.image));
+      }
+    } else {
+      Swal.fire('Error!', result.payload || 'Failed to upload image.', 'error');
     }
   };
 
-  const handleChange = (e) => {
-    const { name, value } = e.target;
-    const cleanValue = name === 'name' ? value : value.replace(/\s/g, '');
-    setFormData(prev => ({ ...prev, [name]: cleanValue }));
-    
-    // Clear error while typing if it becomes valid
-    if (errors[name]) {
-      setErrors(prev => ({ ...prev, [name]: '' }));
-    }
+  const deleteImage = async () => {
+    if (!singleUser?.image) return;
+
+    Swal.fire({
+      title: 'Delete Profile Image?',
+      text: 'This will remove the profile image.',
+      icon: 'warning',
+      showCancelButton: true,
+      confirmButtonColor: '#e91e63',
+      cancelButtonColor: '#64748b',
+      confirmButtonText: 'Yes, delete it'
+    }).then(async (result) => {
+      if (result.isConfirmed) {
+        setUploadingImage(true);
+        const delResult = await dispatch(deleteUserImage(id));
+        setUploadingImage(false);
+
+        if (!delResult.error) {
+          Swal.fire('Deleted!', 'Profile image removed.', 'success');
+          
+          if (authUser?.id === id) {
+            dispatch(updateUserImage(''));
+          }
+        } else {
+          Swal.fire('Error!', delResult.payload || 'Failed to delete image.', 'error');
+        }
+      }
+    });
   };
 
   useEffect(() => {
@@ -267,6 +342,111 @@ export default function EditUser() {
                       <option value="active">Active</option>
                       <option value="inactive">Inactive</option>
                     </select>
+                  </div>
+
+                  <div className="col-md-12">
+                    <label className="form-label fw-600 small text-uppercase text-muted mb-3">Profile Image</label>
+                    <div style={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      gap: '16px',
+                      padding: '24px',
+                      borderRadius: '12px',
+                      border: '2px dashed var(--card-border)',
+                      backgroundColor: 'var(--bg-subtle)'
+                    }}>
+                      <div style={{
+                        width: '100px',
+                        height: '100px',
+                        borderRadius: '50%',
+                        backgroundColor: (imagePreview || singleUser?.image) ? 'transparent' : 'linear-gradient(135deg, #6366f1, #8b5cf6)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        overflow: 'hidden',
+                        flexShrink: 0
+                      }}>
+                        {imagePreview ? (
+                          <img src={imagePreview} alt="Preview" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                        ) : singleUser?.image ? (
+                          <img src={getImageUrl(singleUser.image)} alt="Current" style={{ width: '100%', height: '100%', objectFit: 'cover' }} onError={(e) => { e.target.style.display = 'none'; e.target.parentElement.style.background = 'linear-gradient(135deg, #6366f1, #8b5cf6)'; }} />
+                        ) : (
+                          <i className="bi bi-image" style={{ fontSize: 32, color: 'rgba(255,255,255,0.5)' }} />
+                        )}
+                      </div>
+
+                      <input
+                        type="file"
+                        id="profile-image-edit"
+                        accept="image/jpeg,image/png,image/webp"
+                        onChange={handleImageChange}
+                        style={{ display: 'none' }}
+                      />
+
+                      <button
+                        type="button"
+                        onClick={() => document.getElementById('profile-image-edit').click()}
+                        className="btn btn-accent btn-sm px-4"
+                        style={{ borderRadius: 8 }}
+                        disabled={uploadingImage}
+                      >
+                        <i className="bi bi-cloud-upload me-2" />
+                        Upload New Image
+                      </button>
+
+                      {selectedImage && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={uploadImage}
+                            className="btn btn-success btn-sm px-4"
+                            style={{ borderRadius: 8 }}
+                            disabled={uploadingImage}
+                          >
+                            {uploadingImage ? 'Uploading...' : (
+                              <>
+                                <i className="bi bi-check-circle me-2" />
+                                Save New Image
+                              </>
+                            )}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={removeImage}
+                            className="btn btn-outline-secondary btn-sm px-4"
+                            style={{ borderRadius: 8 }}
+                            disabled={uploadingImage}
+                          >
+                            <i className="bi bi-x-circle me-2" />
+                            Cancel
+                          </button>
+                        </>
+                      )}
+
+                      {singleUser?.image && !selectedImage && (
+                        <button
+                          type="button"
+                          onClick={deleteImage}
+                          className="btn btn-outline-danger btn-sm px-4"
+                          style={{ borderRadius: 8 }}
+                          disabled={uploadingImage}
+                        >
+                          <i className="bi bi-trash me-2" />
+                          Remove Current Image
+                        </button>
+                      )}
+
+                      {imageError && (
+                        <div style={{ color: 'var(--danger)', fontSize: '12px', textAlign: 'center' }}>
+                          {imageError}
+                        </div>
+                      )}
+
+                      <div style={{ fontSize: '11px', color: 'var(--text-muted)', textAlign: 'center' }}>
+                        JPG, PNG or WEBP • Max 5MB
+                      </div>
+                    </div>
                   </div>
                 </div>
 

@@ -28,6 +28,7 @@ export const getCoatedQty = (item) => {
  */
 export const isPlanRowCompleted = (item) => {
   if (!item) return false;
+  if (item.isClosed || item.productionStatus === 'CLOSED') return true;
   const order = Number(item.orderQty) || 0;
   const coated = getCoatedQty(item);
 
@@ -36,7 +37,7 @@ export const isPlanRowCompleted = (item) => {
     return false;
   }
 
-  return coated >= order;
+  return (coated - order) >= 0;
 };
 
 /**
@@ -60,4 +61,53 @@ export const checkRowStockWarning = (orderQty, openingStock) => {
     return false;
   }
   return order > Number(openingStock);
+};
+
+/**
+ * Pool-aware yellow warning: checks if a row is yellow considering earlier rows' orders.
+ * 
+ * Rule: A row in a pool is yellow when:
+ * - It is NOT completed, AND
+ * - Stock left for it (opening stock - sum of earlier non-completed rows' remaining orders) < its own order qty
+ * 
+ * Partly coated rows count only their remaining part (order - coated) against the pool.
+ * Earlier completed rows don't use stock (already accounted for).
+ *
+ * @param {Object} row - The row to check
+ * @param {Array} allPoolRows - All rows in the same pool, in saved order
+ * @param {number} openingStock - Pool's opening stock for that date
+ * @returns {boolean}
+ */
+export const checkRowStockWarningInPool = (row, allPoolRows = [], openingStock = 0) => {
+  const orderQty = parseFloat(row.orderQty) || 0;
+  
+  // Only non-completed rows can be yellow
+  const isCompleted = isPlanRowCompleted(row);
+  if (isCompleted || orderQty <= 0) return false;
+  
+  if (openingStock === undefined || openingStock === null || !Number.isFinite(Number(openingStock))) {
+    return false;
+  }
+  
+  // Find this row's index in the pool
+  const rowIndex = allPoolRows.findIndex(r => r === row);
+  if (rowIndex === -1) return false;
+  
+  // Sum all earlier non-completed rows' remaining orders
+  let usedByEarlierRows = 0;
+  for (let i = 0; i < rowIndex; i++) {
+    const earlierRow = allPoolRows[i];
+    if (!isPlanRowCompleted(earlierRow)) {
+      const earlierOrder = parseFloat(earlierRow.orderQty) || 0;
+      const earlierCoated = getCoatedQty(earlierRow);
+      const earlierRemaining = Math.max(0, earlierOrder - earlierCoated);
+      usedByEarlierRows += earlierRemaining;
+    }
+  }
+  
+  // Stock remaining for this row
+  const stockLeftForThisRow = Math.max(0, openingStock - usedByEarlierRows);
+  
+  // Yellow if order exceeds remaining stock
+  return orderQty > stockLeftForThisRow;
 };

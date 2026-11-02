@@ -64,7 +64,9 @@ const lacquerPlanSchema = new mongoose.Schema({
     date: { type: Date, default: Date.now },
     originalOrder: Number,
     updatedOrder: Number,
-    totalOrder: Number
+    totalOrder: Number,
+    notes: String,
+    reason: String
   }],
   dispatchPendingQty: {
     type: Number,
@@ -225,6 +227,10 @@ const lacquerPlanSchema = new mongoose.Schema({
     type: Number,
     default: null
   },
+  carriedFromCoatedQty: {
+    type: Number,
+    default: 0
+  },
   stockAllocationInitial: [{
     companyId: {
       type: mongoose.Schema.Types.ObjectId,
@@ -253,6 +259,90 @@ const lacquerPlanSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   },
+  // Production closure and status
+  productionStatus: {
+    type: String,
+    enum: ['ACTIVE', 'CLOSED', 'COMPLETED'],
+    default: 'ACTIVE'
+  },
+  isClosed: {
+    type: Boolean,
+    default: false
+  },
+  closedAt: {
+    type: Date,
+    default: null
+  },
+  closedBy: {
+    type: String,
+    default: null
+  },
+  cancelledQty: {
+    type: Number,
+    default: 0
+  },
+  // Soft removal flag: removed from active list, totals, paging
+  isSoftRemoved: {
+    type: Boolean,
+    default: false
+  },
+  softRemovedAt: {
+    type: Date,
+    default: null
+  },
+  softRemovedBy: {
+    type: String,
+    default: null
+  },
+  // Split order archival flag: true for completed/dispatched portion of a split order
+  isArchived: {
+    type: Boolean,
+    default: false
+  },
+  isSibling: {
+    type: Boolean,
+    default: false
+  },
+  siblingOf: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'LacquerPlan',
+    default: null
+  },
+  // Production audit history for closure and split operations
+  productionAudit: [{
+    action: {
+      type: String,
+      enum: ['CLOSE_ENTIRE_ORDER', 'SPLIT_REMAINING_ORDER']
+    },
+    originalOrderQty: Number,
+    quantityCoated: Number,
+    quantitySentToReady: Number,
+    quantityCancelledOrClosed: Number,
+    quantityRemainingAfterSplit: Number,
+    sourcePlanId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'LacquerPlan'
+    },
+    dispatchedPlanId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'LacquerPlan'
+    },
+    sheetId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'ReadyToDispatch'
+    },
+    lineId: mongoose.Schema.Types.ObjectId,
+    performedAt: {
+      type: Date,
+      default: Date.now
+    },
+    performedBy: String,
+    performedByUserId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User'
+    },
+    notes: String
+  }],
   shortfallQty: {
     type: Number,
     default: 0
@@ -263,5 +353,6 @@ const lacquerPlanSchema = new mongoose.Schema({
 lacquerPlanSchema.index({ companyId: 1, isDeleted: 1, bottleName: 1 });
 lacquerPlanSchema.index({ companyId: 1, planDate: -1, isDeleted: 1 });
 lacquerPlanSchema.index({ coatingShade: 1, isDeleted: 1 });
+lacquerPlanSchema.index({ planDate: 1, isDeleted: 1, isArchived: 1, isSoftRemoved: 1 });
 
 module.exports = mongoose.model("LacquerPlan", lacquerPlanSchema);

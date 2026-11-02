@@ -917,6 +917,8 @@ exports.createPlan = async (req, res) => {
     // Validate stock allocation and source eligibility first
     for (const item of submissionItems) {
       const c = item.coatingCompletedQty !== undefined ? Number(item.coatingCompletedQty) : (Number(item.coatedQty) || 0);
+      item.coatingCompletedQty = c;
+      item.coatedQty = c;
       const allocRes = await validateStockAllocation(
         item.planDate,
         item.bottleName,
@@ -1165,11 +1167,91 @@ function compareVariantsForGrouping(aVariant, bVariant) {
   return String(aVariant).localeCompare(String(bVariant));
 }
 
+
+/**
+ * Computes readyActions for Process C rows.
+ * Frontend only renders what the server returns; no eligibility logic in frontend.
+ */
+function computeReadyActions(plan) {
+  const isProcessC = String(plan.process || '').trim().toUpperCase() === 'C';
+  if (!isProcessC || plan.isSoftRemoved || plan.isArchived || plan.isSibling) {
+    return {
+      visible: false,
+      enabled: false,
+      isProcessC,
+      coatedQty: 0,
+      sentQty: 0,
+      sendableQty: 0,
+      orderQty: 0,
+      remainingQty: 0,
+      options: []
+    };
+  }
+
+  const coated = Number(plan.coatingCompletedQty ?? plan.coatedQty ?? 0);
+  const sentQty = Number(plan.sentToReadyQty || 0);
+  const sendable = Math.max(0, coated - sentQty);
+  const order = Number(plan.orderQty || 0);
+  const remaining = Math.max(0, order - coated);
+  const isClosed = Boolean(plan.isClosed || plan.productionStatus === 'CLOSED' || plan.isSoftRemoved);
+
+  if (isClosed) {
+    return {
+      visible: false,
+      enabled: false,
+      isProcessC: true,
+      isClosed: true,
+      coatedQty: coated,
+      sentQty,
+      sendableQty: 0,
+      orderQty: order,
+      remainingQty: 0,
+      options: []
+    };
+  }
+
+  const options = [];
+  if (sendable > 0) {
+    if (remaining > 0) {
+      options.push({
+        key: 'CLOSE_ENTIRE_ORDER',
+        title: 'Option A: Close Entire Order & Dispatch',
+        description: `Send ${sendable} to Ready To Dispatch and close the order. This row will be removed from the list, and remaining ${remaining} will be cancelled.`
+      });
+      options.push({
+        key: 'SPLIT_REMAINING_ORDER',
+        title: 'Option B: Dispatch Completed & Keep Remaining',
+        description: `Send ${sendable} to Ready To Dispatch. This row stays with Order Qty ${remaining} and Coating Completed 0.`
+      });
+    } else {
+      options.push({
+        key: 'CLOSE_ENTIRE_ORDER',
+        title: 'Dispatch Completed Quantity',
+        description: `Send ${sendable} to Ready To Dispatch and mark order completed.`
+      });
+    }
+  }
+
+  return {
+    visible: true,
+    enabled: true,
+    isProcessC: true,
+    isClosed: false,
+    coatedQty: coated,
+    sentQty,
+    sendableQty: sendable,
+    orderQty: order,
+    remainingQty: remaining,
+    options
+  };
+}
+exports.computeReadyActions = computeReadyActions;
+
 // Get Plans
 exports.getPlans = async (req, res) => {
   try {
     const { date, month, fromDate, toDate, search, companyId, brandId, page, limit, pagination = "false", bottleName } = req.query;
-    let query = { isDeleted: false };
+    let query = { isDeleted: false, isArchived: { $ne: true }, isSoftRemoved: { $ne: true }, isSibling: { $ne: true } };
 
     if (brandId) {
       query.brandId = new mongoose.Types.ObjectId(brandId);
@@ -1585,7 +1667,7 @@ exports.getPlans = async (req, res) => {
     const enablePagination = pagination === "true";
 
     if (!enablePagination) {
-      return res.status(200).json({ success: true, data: filteredPlans, total });
+      return res.status(200).json({ success: true, data: filteredPlans.map(p => ({ ...p, readyActions: computeReadyActions(p) })), total });
     }
 
     const parsedPage = parseInt(page) || 1;
@@ -1614,7 +1696,7 @@ exports.getPlans = async (req, res) => {
 
     res.status(200).json({
       success: true,
-      data: paginatedPlans,
+      data: paginatedPlans.map(p => ({ ...p, readyActions: computeReadyActions(p) })),
       total,
       page: parsedPage,
       totalPages,
@@ -1643,7 +1725,7 @@ exports.getPlansTotals = async (req, res) => {
       return res.status(200).json({ success: true, data: cached.data });
     }
 
-    let query = { isDeleted: false };
+    let query = { isDeleted: false, isArchived: { $ne: true }, isSoftRemoved: { $ne: true }, isSibling: { $ne: true } };
 
     if (brandId && mongoose.Types.ObjectId.isValid(brandId)) {
       query.brandId = new mongoose.Types.ObjectId(brandId);
@@ -1745,7 +1827,7 @@ exports.getPlansPaginated = async (req, res) => {
     const { limit: limitParam, cursor, date, fromDate, toDate, companyId, brandId, search } = req.query;
     const limit = parseLimit(limitParam, 20, 50);
 
-    let query = { isDeleted: false };
+    let query = { isDeleted: false, isArchived: { $ne: true }, isSoftRemoved: { $ne: true }, isSibling: { $ne: true } };
     if (brandId && mongoose.Types.ObjectId.isValid(brandId)) {
       query.brandId = new mongoose.Types.ObjectId(brandId);
     }
@@ -2170,7 +2252,8 @@ exports.getPlansPaginated = async (req, res) => {
           status: isCompleted,
           sentToReadyQty: row.sentToReadyQty || 0,
           usedFrom: rowUsedFrom,
-          usedFromTooltip: rowUsedFromTooltip
+          usedFromTooltip: rowUsedFromTooltip,
+          readyActions: computeReadyActions(row)
         };
         augmentedItems.push(augmentedRow);
       }
@@ -2248,11 +2331,29 @@ exports.validateStockWarning = async (req, res) => {
   }
 };
 
+// Dedicated completion checker for Previous-Day Import
+// Rule: balanceToMake = coatingCompletedQty - orderQty
+// - Negative balance: production is pending.
+// - Zero balance: production is completed.
+// - Positive balance: production is completed, including overproduction.
+// Valid completed row requires orderQty > 0 and coatingCompletedQty > 0.
+const isPreviousDaySourcePlanCompleted = (p) => {
+  if (!p) return false;
+  if (p.isClosed || p.productionStatus === 'CLOSED') return true;
+  const order = Number(p.orderQty) || 0;
+  const coated = Number(p.coatingCompletedQty ?? p.coatedQty ?? 0);
+  if (order <= 0 || coated <= 0) return false;
+  const balanceToMake = coated - order;
+  return balanceToMake >= 0;
+};
+
 // Import Previous Day
 exports.importPreviousDay = async (req, res) => {
   try {
     const { targetDate, sourceDate, importMode } = req.body;
-    if (!targetDate) return res.status(400).json({ success: false, message: "Target date is required" });
+    if (!targetDate) return res.status(400).json({ success: false, message: 'Target date is required' });
+
+    const { syncLacquerPlanReadyToDispatch } = require('./readyToDispatch.controller');
 
     let prev;
     if (sourceDate) {
@@ -2270,11 +2371,14 @@ exports.importPreviousDay = async (req, res) => {
 
     const oldPlans = await LacquerPlan.find({
       isDeleted: false,
+      isArchived: { $ne: true },
+      isSoftRemoved: { $ne: true },
+      isSibling: { $ne: true },
       planDate: { $gte: startOfPrevDay, $lte: endOfPrevDay }
     }).populate('brandId', 'name').populate('variantId', 'variantName').lean();
 
     if (!oldPlans || oldPlans.length === 0) {
-      return res.status(404).json({ success: false, message: "No plans found for previous day" });
+      return res.status(404).json({ success: false, message: 'No plans found for previous day' });
     }
 
     const startOfTargetDay = new Date(targetDate);
@@ -2284,213 +2388,221 @@ exports.importPreviousDay = async (req, res) => {
 
     const existingTargetPlans = await LacquerPlan.find({
       isDeleted: false,
+      isArchived: { $ne: true },
+      isSoftRemoved: { $ne: true },
+      isSibling: { $ne: true },
       planDate: { $gte: startOfTargetDay, $lte: endOfTargetDay }
     }).populate('brandId', 'name').populate('variantId', 'variantName').lean();
 
-    const allBrands = await Brand.find({ isDeleted: { $ne: true } }).lean();
-    const allVariants = await Variant.find({ isDeleted: { $ne: true } }).lean();
-    const resolveBrandKey = buildBrandResolver(allBrands);
-    const resolveVariantKey = buildVariantResolver(allVariants);
-
     // Check if target date already has rows imported from source date
-    const hasExistingImport = existingTargetPlans.some(p => 
-      p.importedFromDate && 
-      (p.importedFromDate.toDateString() === (sourceDate || prev).toDateString())
+    const hasExistingImport = existingTargetPlans.some(p =>
+      (p.importedFromId && oldPlans.some(op => op._id.toString() === p.importedFromId.toString())) ||
+      (p.importedFromDate && (new Date(p.importedFromDate).toISOString().split('T')[0] === new Date(sourceDate || prev).toISOString().split('T')[0]))
     );
 
-    // Helper to detect if a plan row was edited after its initial import
-    const isPlanEdited = (p) => {
-      if (!p) return false;
-      if (p.isEditedAfterImport) return true;
-      if (p.originalImportedValues) {
-        const orig = p.originalImportedValues;
-        for (const k of Object.keys(orig)) {
-          if (orig[k] !== undefined && p[k] !== undefined && String(orig[k]) !== String(p[k])) {
-            return true;
-          }
-        }
-      }
-      if (p.updatedAt && p.createdAt) {
-        const diffMs = new Date(p.updatedAt).getTime() - new Date(p.createdAt).getTime();
-        if (diffMs > 5000) return true;
-      }
-      return false;
-    };
-
-    const editedCount = oldPlans.filter(p => isPlanEdited(p)).length;
-    const hasEditedPlans = editedCount > 0;
-
-    // If this is a second import (target already has imports from source) and user hasn't chosen mode, prompt
+    // If target date already contains an import from source date and user hasn't chosen mode, prompt
     if (hasExistingImport && !importMode) {
       return res.status(200).json({
         success: true,
         requiresConfirmation: true,
         hasExistingImport: true,
-        message: "This date already has imports from that source date. Choose how to proceed."
+        message: 'This date already has imports from that source date. Choose how to proceed.'
       });
     }
 
-    // If source day's plans were edited and user hasn't explicitly chosen importMode yet, prompt for confirmation
-    if (hasEditedPlans && !importMode && !hasExistingImport) {
-      return res.status(200).json({
-        success: true,
-        requiresConfirmation: true,
-        hasEditedPlans: true,
-        editedCount,
-        totalPlans: oldPlans.length,
-        message: `The source plan has ${editedCount} manually edited entry(s). Please choose whether to import with changes or without changes.`
-      });
+    // Separate open candidates (unfinished) and completed candidates
+    const openCandidates = oldPlans.filter(p => !isPreviousDaySourcePlanCompleted(p));
+    const completedCandidates = oldPlans.filter(p => isPreviousDaySourcePlanCompleted(p));
+
+    // Handle completed rows: do NOT carry forward.
+    // For Process C completed rows: auto-send to Ready To Dispatch (idempotent, once only)
+    let completedSentCount = 0;
+    let notCarriedCount = 0;
+
+    for (const cp of completedCandidates) {
+      const isProcessC = String(cp.process || '').trim().toUpperCase() === 'C';
+      const coated = Number(cp.coatingCompletedQty ?? cp.coatedQty ?? 0);
+      const sentQty = Number(cp.sentToReadyQty || 0);
+      const sendable = Math.max(0, coated - sentQty);
+
+      if (isProcessC && sendable > 0) {
+        try {
+          await syncLacquerPlanReadyToDispatch(cp._id);
+          completedSentCount++;
+        } catch (rtdErr) {
+          console.error(`Failed to auto-send completed plan ${cp._id} to Ready To Dispatch:`, rtdErr);
+          notCarriedCount++;
+        }
+      } else {
+        notCarriedCount++;
+      }
     }
 
-    // Determine candidate values for each source plan based on importMode
-    const candidatePlans = oldPlans.map(p => {
+    // Format source date string for history
+    const srcDateObj = new Date(sourceDate || prev);
+    const day = String(srcDateObj.getUTCDate()).padStart(2, '0');
+    const month = String(srcDateObj.getUTCMonth() + 1).padStart(2, '0');
+    const year = srcDateObj.getUTCFullYear();
+    const sourceDateFormatted = `${day}-${month}-${year}`;
+
+    const newPlansData = openCandidates.map(p => {
       const { _id, createdAt, updatedAt, __v, ...rest } = p;
       let values = { ...rest };
 
-      // If user selected 'without_changes', revert to original as-imported values
+      // If user selected without_changes, revert to original as-imported values if present
       if (importMode === 'without_changes' && p.originalImportedValues) {
         const orig = p.originalImportedValues;
         if (orig.orderQty !== undefined) values.orderQty = orig.orderQty;
-        if (orig.coatingCompletedQty !== undefined) {
-          values.coatingCompletedQty = orig.coatingCompletedQty;
-          values.coatedQty = orig.coatingCompletedQty;
-        }
-        if (orig.balanceToMake !== undefined) values.balanceToMake = orig.balanceToMake;
         if (orig.boxQty !== undefined) values.boxQty = orig.boxQty;
         if (orig.noOfBoxes !== undefined) values.noOfBoxes = orig.noOfBoxes;
-        if (orig.dispatchPendingQty !== undefined) {
-          values.dispatchPendingQty = orig.dispatchPendingQty;
-          values.dispatchBalance = orig.dispatchPendingQty;
-        }
-        if (orig.soldQty !== undefined) values.soldQty = orig.soldQty;
-        if (orig.plainStock !== undefined) values.plainStock = orig.plainStock;
         if (orig.remarks !== undefined) values.remarks = orig.remarks;
         if (orig.process !== undefined) values.process = orig.process;
       }
 
-      return {
-        sourcePlan: p,
-        values
-      };
-    });
+      const originalOrder = Number(values.orderQty) || 0;
+      const sourceCoated = Number(p.coatingCompletedQty ?? p.coatedQty ?? 0);
+      const remainingOrder = Math.max(0, originalOrder - sourceCoated);
+      const boxQty = Number(values.boxQty) || 0;
+      const recalculatedNoOfBoxes = (boxQty > 0 && remainingOrder > 0)
+        ? Math.ceil(remainingOrder / boxQty)
+        : (remainingOrder === 0 ? 0 : values.noOfBoxes);
+      const recalculatedBalanceToMake = 0 - remainingOrder;
 
-    const completedSet = await getCompletedCombinationsSet(sourceDate || prev, resolveBrandKey, resolveVariantKey, false);
-    const sentSet = await getSentToDispatchCombinationsSet(sourceDate || prev, resolveBrandKey, resolveVariantKey, false);
-
-    // Also mark any plan in candidatePlans that is already completed or sent on sourceDate
-    candidatePlans.forEach(c => {
-      const order = Number(c.values.orderQty || 0);
-      const coated = Number(c.values.coatingCompletedQty ?? c.values.coatedQty ?? 0);
-      const sent = Number(c.sourcePlan?.sentToReadyQty || c.values.sentToReadyQty || 0);
-      const isCompleted = order > 0 && coated >= order;
-      const isFullySent = (order > 0 && sent >= order) || (coated > 0 && sent >= coated && isCompleted);
-
-      if (isCompleted) {
-        const keys = getPlanCombinationKeys(c.values, resolveBrandKey, resolveVariantKey);
-        keys.forEach(k => completedSet.add(k));
-      }
-      if (isFullySent) {
-        const keys = getPlanCombinationKeys(c.values, resolveBrandKey, resolveVariantKey);
-        keys.forEach(k => sentSet.add(k));
-      }
-    });
-
-    // Skip any combination that is already completed OR fully sent to ready-to-dispatch
-    // Rows that still have balance (coated < order) continue to come as today!
-    const openCandidates = candidatePlans.filter(c => {
-      if (isPlanRowCompleted(c.values)) return false;
-      const order = Number(c.values.orderQty || 0);
-      const coated = Number(c.values.coatingCompletedQty ?? c.values.coatedQty ?? 0);
-      const sent = Number(c.sourcePlan?.sentToReadyQty || c.values.sentToReadyQty || 0);
-      if (order > 0 && sent >= order) return false;
-      if (coated > 0 && sent >= coated && isPlanRowCompleted(c.values)) return false;
-
-      const keys = getPlanCombinationKeys(c.values, resolveBrandKey, resolveVariantKey);
-      if (keys.some(k => completedSet.has(k))) return false;
-      if (keys.some(k => sentSet.has(k))) return false;
-      return true;
-    });
-
-    const newPlansData = openCandidates.map(c => {
-      const finalValues = c.values;
-      const sourcePlanId = c.sourcePlan._id;
-      const orderQty = Number(finalValues.orderQty) || 0;
-      const recalculatedBalanceToMake = 0 - orderQty;
+      const historyNote = `Carried from ${sourceDateFormatted}: order ${originalOrder}, coated ${sourceCoated}`;
 
       const snapshot = {
-        orderQty: finalValues.orderQty,
+        orderQty: remainingOrder,
         coatingCompletedQty: 0,
         coatedQty: 0,
         balanceToMake: recalculatedBalanceToMake,
-        boxQty: finalValues.boxQty,
-        noOfBoxes: finalValues.noOfBoxes,
-        dispatchPendingQty: finalValues.dispatchPendingQty,
-        dispatchBalance: finalValues.dispatchBalance,
-        soldQty: finalValues.soldQty,
-        plainStock: finalValues.plainStock,
-        remarks: finalValues.remarks,
-        process: finalValues.process
+        boxQty: values.boxQty,
+        noOfBoxes: recalculatedNoOfBoxes,
+        dispatchPendingQty: values.dispatchPendingQty,
+        dispatchBalance: values.dispatchBalance,
+        soldQty: values.soldQty,
+        plainStock: values.plainStock,
+        remarks: values.remarks,
+        process: values.process
       };
 
       return {
-        ...finalValues,
+        ...values,
+        orderQty: remainingOrder,
+        orderQtyInitial: remainingOrder,
+        noOfBoxes: recalculatedNoOfBoxes,
         coatingCompletedQty: 0,
         coatedQty: 0,
         balanceToMake: recalculatedBalanceToMake,
         appliedStockDeduction: 0,
+        stockAllocation: [],
+        stockAllocationInitial: [],
+        coatedQtyInitial: 0,
+        qtyEntries: [{
+          type: 'orderQty',
+          subType: 'order',
+          qty: remainingOrder,
+          runningTotal: remainingOrder,
+          note: historyNote,
+          at: new Date(),
+          by: req.user?.username || req.user?.name || req.user?.email || 'System'
+        }],
+        orderHistory: [{
+          date: new Date(),
+          originalOrder: remainingOrder,
+          updatedOrder: remainingOrder,
+          totalOrder: remainingOrder,
+          notes: historyNote
+        }],
+        carriedFromCoatedQty: sourceCoated,
+        stockSources: (p.stockSources && p.stockSources.length > 0)
+          ? p.stockSources
+          : (p.companyId ? [p.companyId] : []),
         planDate: new Date(targetDate),
         isEditedAfterImport: false,
         lastEditedAt: null,
         originalImportedValues: snapshot,
-        importedFromId: sourcePlanId,
-        importedFromDate: sourceDate || prev
+        importedFromId: p._id,
+        importedFromDate: sourceDate || prev,
+        productionStatus: 'ACTIVE',
+        isClosed: false,
+        isSoftRemoved: false,
+        isArchived: false,
+        isSibling: false,
+        cancelledQty: 0,
+        sentToReadyQty: 0,
+        readyToDispatch: null
       };
-    });
+    }).filter(c => c.orderQty > 0);
 
     let newPlans = [];
-    
+    const alreadyImportedSourceIds = new Set(
+      existingTargetPlans
+        .filter(p => p.importedFromId)
+        .map(p => p.importedFromId.toString())
+    );
+
     if (importMode === 'with_changes' && hasExistingImport) {
-      // Update existing imports with source's current values, add new rows
-      const alreadyImportedSourceIds = new Set();
-      
       for (const candidate of newPlansData) {
-        const existingImport = existingTargetPlans.find(p => 
+        const existingImport = existingTargetPlans.find(p =>
           p.importedFromId?.toString() === candidate.importedFromId.toString()
         );
-        
+
         if (existingImport) {
-          // Update existing import with new values (coated qty resets to 0, balanceToMake recalculated)
-          await LacquerPlan.updateOne(
-            { _id: existingImport._id },
-            {
-              $set: {
-                orderQty: candidate.orderQty,
-                coatingCompletedQty: 0,
-                coatedQty: 0,
-                balanceToMake: candidate.balanceToMake,
-                boxQty: candidate.boxQty,
-                noOfBoxes: candidate.noOfBoxes,
-                dispatchPendingQty: candidate.dispatchPendingQty,
-                dispatchBalance: candidate.dispatchBalance,
-                soldQty: candidate.soldQty,
-                plainStock: candidate.plainStock,
-                remarks: candidate.remarks,
-                process: candidate.process,
-                importedFromDate: candidate.importedFromDate,
-                isEditedAfterImport: false,
-                originalImportedValues: candidate.originalImportedValues
+          const hasTargetProgress = Number(existingImport.coatingCompletedQty || existingImport.coatedQty || 0) > 0 ||
+            (Array.isArray(existingImport.qtyEntries) && existingImport.qtyEntries.length > 0) ||
+            Number(existingImport.sentToReadyQty || 0) > 0;
+          const isTargetEdited = existingImport.isEditedAfterImport === true;
+
+          if (hasTargetProgress || isTargetEdited) {
+            // PRESERVE target day's manually entered production progress and manually edited data
+            await LacquerPlan.updateOne(
+              { _id: existingImport._id },
+              {
+                $set: {
+                  importedFromDate: candidate.importedFromDate,
+                  carriedFromCoatedQty: candidate.carriedFromCoatedQty
+                }
               }
+            );
+          } else {
+            // Target has no progress and was not edited: update with source remaining values
+            await LacquerPlan.updateOne(
+              { _id: existingImport._id },
+              {
+                $set: {
+                  orderQty: candidate.orderQty,
+                  orderQtyInitial: candidate.orderQty,
+                  coatingCompletedQty: 0,
+                  coatedQty: 0,
+                  balanceToMake: candidate.balanceToMake,
+                  boxQty: candidate.boxQty,
+                  noOfBoxes: candidate.noOfBoxes,
+                  dispatchPendingQty: candidate.dispatchPendingQty,
+                  dispatchBalance: candidate.dispatchBalance,
+                  soldQty: candidate.soldQty,
+                  plainStock: candidate.plainStock,
+                  remarks: candidate.remarks,
+                  process: candidate.process,
+                  importedFromDate: candidate.importedFromDate,
+                  carriedFromCoatedQty: candidate.carriedFromCoatedQty,
+                  originalImportedValues: candidate.originalImportedValues
+                }
+              }
+            );
+            const updP = await LacquerPlan.findById(existingImport._id);
+            if (updP) {
+              await syncPrintingPlanForLacquerPlan(updP, req.user?._id);
             }
-          );
+          }
           alreadyImportedSourceIds.add(candidate.importedFromId.toString());
         }
       }
-      
+
       // Add only new rows (not already imported)
-      const plansToInsert = newPlansData.filter(newP => 
+      const plansToInsert = newPlansData.filter(newP =>
         !alreadyImportedSourceIds.has(newP.importedFromId.toString())
       );
-      
+
       if (plansToInsert.length > 0) {
         await assignGroupsAndSequences(plansToInsert);
         newPlans = await LacquerPlan.insertMany(plansToInsert);
@@ -2500,17 +2612,11 @@ exports.importPreviousDay = async (req, res) => {
         }
       }
     } else if (importMode === 'without_changes' && hasExistingImport) {
-      // Only add rows that haven't been imported yet
-      const alreadyImportedSourceIds = new Set(
-        existingTargetPlans
-          .filter(p => p.importedFromId)
-          .map(p => p.importedFromId.toString())
-      );
-      
-      const plansToInsert = newPlansData.filter(newP => 
+      // Only add rows that haven't been imported yet; keep existing target records untouched
+      const plansToInsert = newPlansData.filter(newP =>
         !alreadyImportedSourceIds.has(newP.importedFromId.toString())
       );
-      
+
       if (plansToInsert.length > 0) {
         await assignGroupsAndSequences(plansToInsert);
         newPlans = await LacquerPlan.insertMany(plansToInsert);
@@ -2520,15 +2626,13 @@ exports.importPreviousDay = async (req, res) => {
         }
       }
     } else {
-      // First import or no existing imports - normal behavior
-      const plansToInsert = newPlansData.filter(newP => {
-        const newKeys = getPlanCombinationKeys(newP, resolveBrandKey, resolveVariantKey);
-        return !existingTargetPlans.some(existP => {
-          const existKeys = getPlanCombinationKeys(existP, resolveBrandKey, resolveVariantKey);
-          return newKeys.some(nk => existKeys.includes(nk));
-        });
-      });
-      
+      // First import: insert rows that are not already imported by source plan ID
+      const plansToInsert = newPlansData.filter(newP =>
+        !existingTargetPlans.some(existP =>
+          existP.importedFromId && existP.importedFromId.toString() === newP.importedFromId.toString()
+        )
+      );
+
       if (plansToInsert.length > 0) {
         await assignGroupsAndSequences(plansToInsert);
         newPlans = await LacquerPlan.insertMany(plansToInsert);
@@ -2566,15 +2670,23 @@ exports.importPreviousDay = async (req, res) => {
           });
         }
       } catch (err) {
-        console.error(`Stock warning calculation error for import:`, err);
+        console.error('Stock warning calculation error for import:', err);
       }
     }
+
+    const carriedCount = newPlans.length;
+    const summaryMsg = `${carriedCount} rows carried, ${completedSentCount} completed rows sent to Ready To Dispatch, ${notCarriedCount} not carried`;
 
     res.status(200).json({
       success: true,
       data: newPlans,
+      carriedCount,
+      completedSentCount,
+      notCarriedCount,
+      skippedCount: alreadyImportedSourceIds ? alreadyImportedSourceIds.size : 0,
       skippedCompletedCount: oldPlans.length - openCandidates.length,
       importMode: importMode || 'normal',
+      message: summaryMsg,
       stockWarnings,
       hasStockWarnings: stockWarnings.length > 0
     });
@@ -2583,7 +2695,6 @@ exports.importPreviousDay = async (req, res) => {
   }
 };
 
-// Get Plan by ID
 
 /**
  * Computes full chronological history for a Lacquer Plan row.
@@ -2720,7 +2831,16 @@ function computePlanRowHistory(plan, plainStock, companyNameMap = new Map()) {
     stockRemaining: plainStock !== undefined ? plainStock : (plan.plainStock ?? 0),
     balance: initialCoated - finalOrder,
     by: plan.createdBy?.name || plan.createdBy || 'System',
-    note: 'Opening balance',
+    note: (() => {
+      const carriedCoated = Number(plan.carriedFromCoatedQty || 0);
+      if (carriedCoated > 0 && plan.importedFromDate) {
+        const dObj = new Date(plan.importedFromDate);
+        const dd = String(dObj.getUTCDate()).padStart(2, '0');
+        const mm = String(dObj.getUTCMonth() + 1).padStart(2, '0');
+        return `Carried from ${dd}-${mm}: coated ${carriedCoated}`;
+      }
+      return 'Opening balance';
+    })(),
     isDeleted: false,
     usedFrom: openingUsedFrom.usedFrom,
     usedFromText: openingUsedFrom.usedFromText
@@ -3006,6 +3126,8 @@ exports.updatePlan = async (req, res) => {
     if (req.body.coatingCompletedQty !== undefined || req.body.coatedQty !== undefined || req.body.orderQty !== undefined || updateData.balanceToMake !== undefined) {
       const newCoated = updateData.coatingCompletedQty !== undefined ? updateData.coatingCompletedQty : (updateData.coatedQty !== undefined ? updateData.coatedQty : (existingPlan.coatingCompletedQty ?? existingPlan.coatedQty ?? 0));
       const newOrder = updateData.orderQty !== undefined ? updateData.orderQty : (existingPlan.orderQty ?? 0);
+      updateData.coatingCompletedQty = Number(newCoated);
+      updateData.coatedQty = Number(newCoated);
       updateData.balanceToMake = Number(newCoated) - Number(newOrder);
       if (updateData.status === undefined || req.body.status === undefined) {
         updateData.status = (Number(newOrder) > 0 && Number(newCoated) >= Number(newOrder));
@@ -3449,7 +3571,10 @@ function detectHeaderAndMapColumns(row) {
       /ki\[?T[)>]+g\s*Yy\[?l\s*mil/i,
       /ki\[?T[)>]+g/i,
       /કોટીંગ\s*થયેલ\s*માલ|કોટીંગ\s*થયેલ/i,
-      /COATING\s*COMPLETED|COATED\s*QTY|COMPLETED|DONE.?QTY/i
+      /COATING\s*COMPLETED\s*QTY|COATING\s*COMPLETED|COATED\s*QTY|COATED|COMPLETED|DONE.?QTY/i
+    ],
+    stockUsedFrom: [
+      /STOCK\s*USED\s*FROM|USED\s*FROM|STOCK\s*FROM/i
     ],
     balanceToMake: [
       /bnivvin\[?ibik\)\s*mil/i,
@@ -3525,7 +3650,8 @@ function detectHeaderAndMapColumns(row) {
     'boxQty',
     'noOfBoxes',
     'variant',
-    'remarks'
+    'remarks',
+    'stockUsedFrom'
   ];
 
   // Second pass: map all other fields using priority order
@@ -3721,7 +3847,14 @@ function classifyRow(row, foundHeader) {
   if (nonEmptyCells.length === 1) {
     const firstCell = String(nonEmptyCells[0]).trim();
     const upperFirstCell = firstCell.toUpperCase();
-    const headingKeywords = ['PLAN SHEET', 'LACQUER PLANT', 'PLAN', 'SHEET', 'DATE', 'MONTH', 'YEAR', 'TOTAL', 'SUMMARY', 'NOTE', 'REMARK'];
+    const match = firstCell.match(/\((.*?)\)/);
+    if (match) {
+      return { classification: ROW_CLASSIFICATION.COMPANY_HEADER, companyName: match[1].trim() };
+    }
+    const headingKeywords = ['PLAN SHEET', 'LACQUER PLANT', 'PLAN', 'SHEET', 'DATE', 'MONTH', 'YEAR', 'TOTAL', 'SUMMARY', 'NOTE', 'REMARK', 'MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'];
+    if (!isNaN(Date.parse(firstCell))) {
+      return { classification: ROW_CLASSIFICATION.OTHER, companyName: null };
+    }
     if (headingKeywords.some(kw => upperFirstCell.includes(kw))) {
       return { classification: ROW_CLASSIFICATION.OTHER, companyName: null };
     }
@@ -4058,11 +4191,25 @@ exports.previewImportExcel = async (req, res) => {
         const rawOrderQty = parseNumericValue(getMergedValue('orderQty'));
         const rawBottlePerBox = parseNumericValue(getMergedValue('boxQty'));
         const rawOrderBoxes = parseNumericValue(getMergedValue('noOfBoxes'));
-        const rawCoatingCompleted = parseNumericValue(getMergedValue('coatingCompletedQty'));
         const rawBalanceToMake = parseNumericValue(getMergedValue('balanceToMake'));
         const rawDispatchPending = parseNumericValue(getMergedValue('dispatchPendingQty'));
         const rawSoldQty = parseNumericValue(getMergedValue('soldQty'));
         const rawPlainStock = parseNumericValue(getMergedValue('plainStock'));
+
+        // Coating Completed Qty validation: blank means 0, non-numeric is invalid
+        const rawCoatingVal = getMergedValue('coatingCompletedQty');
+        let rawCoatingCompleted = 0;
+        let coatingInvalidError = null;
+        if (rawCoatingVal !== null && rawCoatingVal !== undefined && String(rawCoatingVal).trim() !== '') {
+          const num = Number(rawCoatingVal);
+          if (isNaN(num) || !Number.isFinite(num)) {
+            coatingInvalidError = `Row ${excelRowNumber}: Invalid non-numeric Coating Completed Qty value "${rawCoatingVal}"`;
+          } else if (num < 0) {
+            coatingInvalidError = `Row ${excelRowNumber}: Coating Completed Qty cannot be negative (${num})`;
+          } else {
+            rawCoatingCompleted = Math.round(num);
+          }
+        }
 
         // Skip rows with no meaningful data - must have either bottle name or multiple quantities
         const hasBottle = !!rawBottle;
@@ -4280,6 +4427,84 @@ exports.previewImportExcel = async (req, res) => {
           isGroupStart: isNewGroup
         };
 
+        if (coatingInvalidError) {
+          parsedRow.errors.push(coatingInvalidError);
+          parsedRow.isValid = false;
+        }
+
+        // Parse Stock Used From column
+        const rawStockUsedFrom = getMergedValue('stockUsedFrom');
+        let parsedSplit = [];
+        let stockFromError = null;
+
+        if (rawStockUsedFrom && String(rawStockUsedFrom).trim() !== '') {
+          const splitParts = String(rawStockUsedFrom).split(';').map(p => p.trim()).filter(Boolean);
+          let splitSum = 0;
+          for (const part of splitParts) {
+            const m = part.match(/^(.*?)\s*[:=-]?\s*(\d+)$/);
+            if (!m) {
+              stockFromError = `Row ${excelRowNumber}: Invalid Stock Used From entry "${part}". Expected format: CompanyName Qty (e.g. TPP 500; Shayona 500)`;
+              break;
+            }
+            const compPartName = m[1].trim();
+            const compPartQty = parseInt(m[2], 10);
+            if (isNaN(compPartQty) || compPartQty <= 0) {
+              stockFromError = `Row ${excelRowNumber}: Stock Used From quantity must be a positive integer (${part})`;
+              break;
+            }
+
+            let normPartComp = normalize(compPartName);
+            if (companyAliasMap[normPartComp]) normPartComp = companyAliasMap[normPartComp];
+            const foundComp = companyMap.get(normPartComp);
+            if (!foundComp) {
+              stockFromError = `Row ${excelRowNumber}: Company "${compPartName}" in Stock Used From not found in company master`;
+              break;
+            }
+
+            const ownCompIdStr = parsedRow.companyId ? parsedRow.companyId.toString() : '';
+            const partCompIdStr = foundComp._id.toString();
+            const isOwn = partCompIdStr === ownCompIdStr;
+            const isStockSupplier = foundComp.isStockSupplier === true;
+
+            if (!isOwn && !isStockSupplier) {
+              stockFromError = `Row ${excelRowNumber}: Company "${foundComp.name}" is not a stock supplier and not the plan's company`;
+              break;
+            }
+
+            parsedSplit.push({
+              companyId: foundComp._id,
+              companyName: foundComp.name,
+              qty: compPartQty
+            });
+            splitSum += compPartQty;
+          }
+
+          if (!stockFromError) {
+            if (splitSum !== finalCoatingCompleted) {
+              stockFromError = `Row ${excelRowNumber}: Stock Used From split sum (${splitSum}) must equal Coating Completed Qty (${finalCoatingCompleted})`;
+            }
+          }
+        }
+
+        if (stockFromError) {
+          parsedRow.errors.push(stockFromError);
+          parsedRow.isValid = false;
+          parsedRow.stockAllocation = [];
+          parsedRow.stockSources = parsedRow.companyId ? [parsedRow.companyId] : [];
+        } else if (parsedSplit.length > 0) {
+          parsedRow.stockAllocation = parsedSplit.map(a => ({ companyId: a.companyId, qty: a.qty }));
+          parsedRow.stockSources = Array.from(new Set(parsedSplit.map(a => a.companyId.toString()))).map(id => new mongoose.Types.ObjectId(id));
+        } else {
+          // Without column (old sheets) or empty: own company is used
+          if (finalCoatingCompleted > 0 && parsedRow.companyId) {
+            parsedRow.stockAllocation = [{ companyId: parsedRow.companyId, qty: finalCoatingCompleted }];
+            parsedRow.stockSources = [parsedRow.companyId];
+          } else {
+            parsedRow.stockAllocation = [];
+            parsedRow.stockSources = parsedRow.companyId ? [parsedRow.companyId] : [];
+          }
+        }
+
         // Column shift sanity checks
         if (typeof rawBottlePerBox === 'number' && rawBottlePerBox < 0) {
           parsedRow.errors.push(`COLUMN SHIFT DETECTED: Bottle Per Box cannot be negative (${rawBottlePerBox})`);
@@ -4363,9 +4588,10 @@ exports.previewImportExcel = async (req, res) => {
           });
         }
 
-        parsedRow.coatingCompletedQty = 0;
-        parsedRow.coatedQty = 0;
-        parsedRow.balanceToMake = 0 - (Number(parsedRow.orderQty) || 0);
+        // Preserve Coating Completed Qty & Balance to Make
+        parsedRow.coatingCompletedQty = finalCoatingCompleted;
+        parsedRow.coatedQty = finalCoatingCompleted;
+        parsedRow.balanceToMake = finalBalanceToMake;
 
         dateRows.push(parsedRow);
       }
@@ -4426,6 +4652,75 @@ exports.previewImportExcel = async (req, res) => {
       const end = new Date(d.date); end.setUTCHours(23, 59, 59, 999);
       const existingCount = await require('../models/LacquerPlan').countDocuments({ planDate: { $gte: start, $lte: end }, isDeleted: false });
       d.existingCount = existingCount;
+
+      // Validate sheet coated quantities against available plain stock per source
+      const bottleGroupsMap = new Map();
+      for (const row of d.rows) {
+        if (!row.isValid || !row.bottleName || !row.companyId) continue;
+        const bKey = normalizeBottle(row.bottleName);
+        if (!bottleGroupsMap.has(bKey)) {
+          bottleGroupsMap.set(bKey, []);
+        }
+        bottleGroupsMap.get(bKey).push(row);
+      }
+
+      for (const [bKey, groupRows] of bottleGroupsMap.entries()) {
+        const firstRow = groupRows[0];
+        const allSourcesSet = new Set();
+        groupRows.forEach(r => {
+          (r.stockSources || []).forEach(s => allSourcesSet.add((s._id || s).toString()));
+          if (r.companyId) allSourcesSet.add(r.companyId.toString());
+        });
+        const sourceIds = Array.from(allSourcesSet);
+
+        try {
+          const canonicalBottle = await resolveCanonicalPlainBottle(firstRow.bottleName, firstRow.companyId);
+          const stockRes = await computeLivePlainStock(canonicalBottle, sourceIds, d.date);
+          const availMap = new Map();
+          const nameMap = new Map();
+          (stockRes.sources || []).forEach(s => {
+            const sid = s.companyId ? s.companyId.toString() : '';
+            availMap.set(sid, Number(s.available) || 0);
+            nameMap.set(sid, s.companyName || 'Source');
+          });
+
+          // Check each row's allocation against remaining available
+          for (const row of groupRows) {
+            if (!row.isValid || !Array.isArray(row.stockAllocation) || row.stockAllocation.length === 0) continue;
+            let exceedsSource = null;
+            for (const alloc of row.stockAllocation) {
+              const cid = (alloc.companyId?._id || alloc.companyId)?.toString();
+              const avail = availMap.get(cid) ?? 0;
+              if (alloc.qty > avail) {
+                exceedsSource = {
+                  name: nameMap.get(cid) || 'Source',
+                  avail,
+                  requested: alloc.qty
+                };
+                break;
+              }
+            }
+
+            if (exceedsSource) {
+              row.isValid = false;
+              const errMsg = `Row ${row.excelRowNumber}: Coated quantity (${exceedsSource.requested}) exceeds available plain stock for ${exceedsSource.name} (${exceedsSource.avail} available)`;
+              row.errors.push(errMsg);
+              d.invalidReasons[errMsg] = (d.invalidReasons[errMsg] || 0) + 1;
+              d.validRows--;
+              d.invalidRows++;
+              result.validRows--;
+              result.invalidRows = (result.invalidRows || 0) + 1;
+            } else {
+              for (const alloc of row.stockAllocation) {
+                const cid = (alloc.companyId?._id || alloc.companyId)?.toString();
+                availMap.set(cid, (availMap.get(cid) || 0) - alloc.qty);
+              }
+            }
+          }
+        } catch (poolErr) {
+          console.error('Error validating pool stock for import preview:', poolErr);
+        }
+      }
 
       // Calculate stock warnings for each row
       d.okStockRows = [];
@@ -4559,81 +4854,198 @@ exports.commitImportExcel = async (req, res) => {
         return true;
       });
 
-      const toInsert = toInsertRows.map(r => {
-        const planData = {
-          planDate: new Date(r.planDate),
-          bottleName: r.bottleName,
-          variantId: r.variantId || undefined,
-          variantName: r.variantName,
-          coatingShade: r.coatingShade,
-          colour: r.coatingShade,
-          brandId: r.brandId || undefined,
-          brandName: r.brandName,
-          companyId: r.companyId || undefined,
-          companyName: r.companyName,
-          process: r.process,
-          orderQty: r.orderQty,
-          boxQty: r.boxQty,
-          noOfBoxes: r.noOfBoxes,
-          coatingCompletedQty: 0,
-          coatedQty: 0,
-          balanceToMake: 0 - (Number(r.orderQty) || 0),
-          dispatchPendingQty: r.dispatchPendingQty,
-          dispatchBalance: r.dispatchPendingQty,
-          soldQty: r.soldQty,
-          plainStock: r.plainStock,
-          remarks: r.remarks,
-          status: true,
-          appliedStockDeduction: 0,
-          importGroupId: r.groupId ? `${importBatchId}-${r.groupId}` : null,
-          importGroupIndex: r.groupIndex !== undefined ? r.groupIndex : null,
-          importGroupSize: r.groupSize !== undefined ? r.groupSize : null,
-          originalImportedValues: {
-            orderQty: r.orderQty,
-            coatingCompletedQty: 0,
-            coatedQty: 0,
-            balanceToMake: 0 - (Number(r.orderQty) || 0),
+      // Fetch existing plans on this date to match rows by (company, brand, plain bottle, variant, shade, process)
+      const existingPlansOnDate = !replaceExisting ? await LacquerPlan.find({
+        planDate: { $gte: startOfDay, $lte: endOfDay },
+        isDeleted: false
+      }) : [];
+
+      const normText = (s) => (s ? String(s).trim().toUpperCase() : '');
+      const buildMatchKey = (item) => {
+        const cId = (item.canonicalCompanyId || item.companyId?._id || item.companyId || '').toString();
+        const b = normText(item.bottleName);
+        const v = normText(item.variantName || item.variant);
+        const s = normText(item.coatingShade || item.colour);
+        const br = normText(item.brandName);
+        const pr = normText(item.process);
+        return `${cId}|${br}|${b}|${v}|${s}|${pr}`;
+      };
+
+      const existingPlanMap = new Map();
+      existingPlansOnDate.forEach(p => existingPlanMap.set(buildMatchKey(p), p));
+
+      const affectedPlans = [];
+      const plansToInsert = [];
+
+      for (const r of toInsertRows) {
+        const rowMatchKey = buildMatchKey(r);
+        const existingPlan = !replaceExisting ? existingPlanMap.get(rowMatchKey) : null;
+
+        const orderQty = Number(r.orderQty) || 0;
+        const coatedQty = Number(r.coatingCompletedQty ?? r.coatedQty ?? 0);
+        const balanceToMake = coatedQty - orderQty;
+        const stockAllocation = coatedQty > 0
+          ? (Array.isArray(r.stockAllocation) && r.stockAllocation.length > 0 ? r.stockAllocation : [{ companyId: r.companyId, qty: coatedQty }])
+          : [];
+        const stockSources = (r.stockSources && r.stockSources.length > 0)
+          ? r.stockSources
+          : (r.companyId ? [r.companyId] : []);
+
+        if (existingPlan) {
+          // Re-importing a sheet for a date matches rows: update order & coated quantities with Edit adjustment
+          const oldOrder = Number(existingPlan.orderQty) || 0;
+          const oldCoated = Number(existingPlan.coatingCompletedQty ?? existingPlan.coatedQty ?? 0);
+          const diffOrder = orderQty - oldOrder;
+          const diffCoated = coatedQty - oldCoated;
+
+          if (diffOrder !== 0 || diffCoated !== 0) {
+            existingPlan.qtyEntries = Array.isArray(existingPlan.qtyEntries) ? [...existingPlan.qtyEntries] : [];
+            const editUser = req.user?.email || req.user?.name || 'Excel Import';
+
+            if (diffOrder !== 0) {
+              existingPlan.qtyEntries.push({
+                type: 'edit-adjustment',
+                subType: 'order',
+                qty: diffOrder,
+                at: new Date(),
+                by: editUser,
+                note: 'Edit adjustment',
+                runningTotal: orderQty,
+                isDeleted: false
+              });
+            }
+
+            if (diffCoated !== 0) {
+              const oldAllocMap = new Map();
+              (existingPlan.stockAllocation || []).forEach(a => oldAllocMap.set((a.companyId?._id || a.companyId)?.toString(), Number(a.qty) || 0));
+              const newAllocMap = new Map();
+              stockAllocation.forEach(a => newAllocMap.set((a.companyId?._id || a.companyId)?.toString(), Number(a.qty) || 0));
+              const allCids = new Set([...oldAllocMap.keys(), ...newAllocMap.keys()]);
+              const entryAllocDiff = [];
+              for (const cid of allCids) {
+                const qDiff = (newAllocMap.get(cid) || 0) - (oldAllocMap.get(cid) || 0);
+                if (qDiff !== 0) {
+                  entryAllocDiff.push({ companyId: new mongoose.Types.ObjectId(cid), qty: qDiff });
+                }
+              }
+
+              existingPlan.qtyEntries.push({
+                type: 'edit-adjustment',
+                subType: 'coated',
+                qty: diffCoated,
+                at: new Date(),
+                by: editUser,
+                note: 'Edit adjustment',
+                runningTotal: coatedQty,
+                stockAllocation: entryAllocDiff,
+                isDeleted: false
+              });
+            }
+          }
+
+          existingPlan.orderQty = orderQty;
+          existingPlan.coatedQty = coatedQty;
+          existingPlan.coatingCompletedQty = coatedQty;
+          existingPlan.balanceToMake = balanceToMake;
+          existingPlan.stockAllocation = stockAllocation;
+          existingPlan.stockSources = stockSources;
+          existingPlan.status = (orderQty > 0 && coatedQty >= orderQty);
+          if (r.boxQty) existingPlan.boxQty = r.boxQty;
+          if (r.noOfBoxes) existingPlan.noOfBoxes = r.noOfBoxes;
+          if (r.remarks) existingPlan.remarks = r.remarks;
+          if (r.process) existingPlan.process = r.process;
+
+          await existingPlan.save();
+          affectedPlans.push(existingPlan);
+        } else {
+          // New row to insert
+          const planData = {
+            planDate: new Date(r.planDate),
+            bottleName: r.bottleName,
+            variantId: r.variantId || undefined,
+            variantName: r.variantName,
+            coatingShade: r.coatingShade,
+            colour: r.coatingShade,
+            brandId: r.brandId || undefined,
+            brandName: r.brandName,
+            companyId: r.companyId || undefined,
+            companyName: r.companyName,
+            process: r.process,
+            orderQty: orderQty,
             boxQty: r.boxQty,
             noOfBoxes: r.noOfBoxes,
+            coatingCompletedQty: coatedQty,
+            coatedQty: coatedQty,
+            balanceToMake: balanceToMake,
             dispatchPendingQty: r.dispatchPendingQty,
             dispatchBalance: r.dispatchPendingQty,
             soldQty: r.soldQty,
             plainStock: r.plainStock,
             remarks: r.remarks,
-            process: r.process
-          },
-          isEditedAfterImport: false
-        };
-
-        // If this row was marked with stock warning override, set acknowledgment metadata
-        if (stockWarningOverrides && stockWarningOverrides[r.excelRowNumber]) {
-          planData.stockWarningAcknowledged = true;
-          planData.acknowledgedAt = new Date();
-          // stockWarningDetails would have been captured in preview, but we'll set minimal info
-          planData.stockWarningDetails = {
-            orderQty: r.orderQty,
-            availableStock: 0, // Recalculated at commit time if needed
-            overBy: 0
+            status: (orderQty > 0 && coatedQty >= orderQty),
+            appliedStockDeduction: 0,
+            stockAllocation: stockAllocation,
+            stockSources: stockSources,
+            orderQtyInitial: orderQty,
+            coatedQtyInitial: coatedQty,
+            stockAllocationInitial: stockAllocation,
+            qtyEntries: [],
+            importGroupId: r.groupId ? `${importBatchId}-${r.groupId}` : null,
+            importGroupIndex: r.groupIndex !== undefined ? r.groupIndex : null,
+            importGroupSize: r.groupSize !== undefined ? r.groupSize : null,
+            originalImportedValues: {
+              orderQty: orderQty,
+              coatingCompletedQty: coatedQty,
+              coatedQty: coatedQty,
+              balanceToMake: balanceToMake,
+              boxQty: r.boxQty,
+              noOfBoxes: r.noOfBoxes,
+              dispatchPendingQty: r.dispatchPendingQty,
+              dispatchBalance: r.dispatchPendingQty,
+              soldQty: r.soldQty,
+              plainStock: r.plainStock,
+              remarks: r.remarks,
+              process: r.process
+            },
+            isEditedAfterImport: false
           };
-        }
 
-        return planData;
-      });
+          if (stockWarningOverrides && stockWarningOverrides[r.excelRowNumber]) {
+            planData.stockWarningAcknowledged = true;
+            planData.acknowledgedAt = new Date();
+            planData.stockWarningDetails = {
+              orderQty: r.orderQty,
+              availableStock: 0,
+              overBy: 0
+            };
+          }
 
-      if (toInsert.length > 0) {
-        await assignGroupsAndSequences(toInsert);
-        const createdPlans = await LacquerPlan.insertMany(toInsert);
-        for (const plan of createdPlans) {
-          await syncLacquerPlanStockDeduction(plan, plan.coatingCompletedQty ?? plan.coatedQty, req.user?._id);
-          await syncPrintingPlanForLacquerPlan(plan, req.user?._id);
-          const { syncLacquerPlanReadyToDispatch } = require('./readyToDispatch.controller');
-          await syncLacquerPlanReadyToDispatch(plan);
+          plansToInsert.push(planData);
         }
-        totalImported += createdPlans.length;
-        importedResults.push({ date, imported: createdPlans.length, skippedCompleted: validRows.length - toInsertRows.length });
-      } else {
-        importedResults.push({ date, imported: 0, skippedCompleted: validRows.length - toInsertRows.length });
       }
+
+      if (plansToInsert.length > 0) {
+        await assignGroupsAndSequences(plansToInsert);
+        const createdPlans = await LacquerPlan.insertMany(plansToInsert);
+        affectedPlans.push(...createdPlans);
+      }
+
+      // Recompute everything for all affected plans: balance, stock deduction, replay, printing sync, ready to dispatch
+      for (const plan of affectedPlans) {
+        await syncLacquerPlanStockDeduction(plan, plan.coatingCompletedQty ?? plan.coatedQty, req.user?._id);
+        await replayStockAllocations(
+          plan.bottleName,
+          plan.planDate,
+          [plan.companyId, ...(plan.stockSources || [])],
+          req.user?._id
+        );
+        await syncPrintingPlanForLacquerPlan(plan, req.user?._id);
+        const { syncLacquerPlanReadyToDispatch } = require('./readyToDispatch.controller');
+        await syncLacquerPlanReadyToDispatch(plan);
+      }
+
+      totalImported += affectedPlans.length;
+      importedResults.push({ date, imported: affectedPlans.length, skippedCompleted: validRows.length - toInsertRows.length });
     }
 
     res.status(200).json({ success: true, data: { importedResults, totalImported } });

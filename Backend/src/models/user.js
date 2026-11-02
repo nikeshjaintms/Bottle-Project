@@ -23,6 +23,10 @@ const userSchema = new mongoose.Schema({
     enum: ["active", "inactive"],
     default: "active",
   },
+  image: {
+    type: String,
+    default: ""
+  },
   isDeleted: {
     type: Boolean,
     default: false
