@@ -459,7 +459,18 @@ export default function DispatchList() {
                               <td className="fw-500 small" rowSpan={displayItems.length}>
                                 {new Date(dispatchItem.dispatchDate).toLocaleDateString('en-GB')}
                               </td>
-                              <td className="fw-bold text-primary small" rowSpan={displayItems.length}>{dispatchItem.gatePassNo}</td>
+                              <td className="fw-bold text-primary small" rowSpan={displayItems.length}>
+                                {dispatchItem.gatePassNo}
+                                {dispatchItem.deliveryChallanId && (
+                                  <span
+                                    className="badge bg-primary-subtle text-primary border border-primary-subtle ms-2 px-1 py-0"
+                                    style={{ fontSize: '10px' }}
+                                    title="Created from Delivery Challan"
+                                  >
+                                    Challan
+                                  </span>
+                                )}
+                              </td>
                               {!companyId && (
                                 <td className="fw-500 small" rowSpan={displayItems.length}>
                                   {dispatchItem.companyId?.name || '-'}
@@ -512,7 +523,18 @@ export default function DispatchList() {
                         <tr key={dispatchItem._id} className="align-middle border-bottom transition-all hover-bg-light">
                           <td className="ps-4 fw-500 text-muted small">{startingIndex + idx + 1}</td>
                           <td className="fw-500 small">{new Date(dispatchItem.dispatchDate).toLocaleDateString('en-GB')}</td>
-                          <td className="fw-bold text-primary small">{dispatchItem.gatePassNo}</td>
+                          <td className="fw-bold text-primary small">
+                            {dispatchItem.gatePassNo}
+                            {dispatchItem.deliveryChallanId && (
+                              <span
+                                className="badge bg-primary-subtle text-primary border border-primary-subtle ms-2 px-1 py-0"
+                                style={{ fontSize: '10px' }}
+                                title="Created from Delivery Challan"
+                              >
+                                Challan
+                              </span>
+                            )}
+                          </td>
                           {!companyId && <td className="fw-500 small">{dispatchItem.companyId?.name || '-'}</td>}
                           <td colSpan={7} className="text-center text-muted small py-3">No items</td>
                           <td className="pe-4 text-end">

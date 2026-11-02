@@ -17,6 +17,16 @@ const dispatchSchema = new mongoose.Schema(
       ref: "Company",
       required: true,
     },
+    deliveryChallanId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "DeliveryChallan",
+      default: null,
+      index: true,
+    },
+    challanType: {
+      type: String,
+      default: null,
+    },
     remarks: {
       type: String,
     },

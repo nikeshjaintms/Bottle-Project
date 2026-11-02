@@ -5,6 +5,7 @@ const { generateChallanHtml } = require("../templates/deliveryChallanHtml");
 const { generateMcnoreChallanHtml } = require("../templates/mcnoreChallanHtml");
 const { generateShrenoChallanHtml } = require("../templates/shrenoChallanHtml");
 const { getSharedBrowser } = require("../services/sharedPuppeteer");
+const { syncChallanToDispatch, deleteChallanDispatch } = require("../services/deliveryChallanDispatchSync.service");
 
 // Helper to calculate total boxes from an expression or string
 function parseBoxCount(boxStr) {
@@ -211,6 +212,7 @@ exports.createChallan = async (req, res) => {
     });
 
     const populated = await challan.populate("companyId", "name");
+    await syncChallanToDispatch(challan);
 
     res.status(201).json({
       success: true,
@@ -440,6 +442,8 @@ exports.updateChallan = async (req, res) => {
       return res.status(404).json({ success: false, message: "Delivery Challan not found" });
     }
 
+    await syncChallanToDispatch(updated);
+
     res.json({
       success: true,
       message: "Delivery Challan updated successfully",
@@ -554,6 +558,8 @@ exports.deleteChallan = async (req, res) => {
     if (!deleted) {
       return res.status(404).json({ success: false, message: "Delivery Challan not found" });
     }
+
+    await deleteChallanDispatch(req.params.id);
 
     res.json({ success: true, message: "Delivery Challan deleted successfully" });
   } catch (err) {
