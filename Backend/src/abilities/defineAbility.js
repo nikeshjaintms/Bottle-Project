@@ -11,6 +11,9 @@ const defineAbilityFor = (user) => {
 
       if (action && subject) {
         can(action, subject);
+        if (subject === "dispatch") {
+          can(action, "ready-to-dispatch");
+        }
       }
     });
   }

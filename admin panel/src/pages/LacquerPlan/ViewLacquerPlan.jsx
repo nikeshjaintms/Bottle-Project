@@ -25,12 +25,22 @@ function formatDateTime(dateStr) {
   if (!dateStr) return '-';
   const d = new Date(dateStr);
   if (isNaN(d.getTime())) return '-';
-  const day = String(d.getDate()).padStart(2, '0');
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const year = d.getFullYear();
-  const hours = String(d.getHours()).padStart(2, '0');
-  const minutes = String(d.getMinutes()).padStart(2, '0');
-  return `${day}-${month}-${year} ${hours}:${minutes}`;
+  const date = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Kolkata',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric'
+  }).format(d);
+  if (d.getUTCHours() === 0 && d.getUTCMinutes() === 0 && d.getUTCSeconds() === 0 && d.getUTCMilliseconds() === 0) {
+    return `${date} (time not recorded)`;
+  }
+  const time = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Kolkata',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23'
+  }).format(d);
+  return `${date} ${time} IST`;
 }
 
 export default function ViewLacquerPlan() {
@@ -76,6 +86,7 @@ export default function ViewLacquerPlan() {
   const getTypeLabel = (type) => {
     if (!type) return '-';
     const lower = type.toLowerCase();
+    if (lower.includes('carried')) return type;
     if (lower.includes('opening')) return labels.openingBalance || 'Opening balance';
     if (lower.includes('removed')) return labels.removed || 'Removed';
     if (lower.includes('edit')) return labels.editAdjustment || 'Edit adjustment';
@@ -146,33 +157,54 @@ export default function ViewLacquerPlan() {
                         <th className="small text-muted text-center align-middle" style={{ width: '9%' }}>{labels.balanceToMake}</th>
                         <th className="small text-muted text-center align-middle" style={{ width: '6%' }}>{labels.bottlePerBox}</th>
                         <th className="small text-muted text-center align-middle" style={{ width: '6%' }}>{labels.noOfOrderBoxes}</th>
+                        <th className="small text-muted text-center align-middle" style={{ width: '6%' }}>{labels.readyBoxes || 'Ready Boxes'}</th>
                         <th className="small text-muted text-center align-middle" style={{ width: '9%' }}>{labels.dispatchPendingQty}</th>
                         <th className="small text-muted text-center align-middle" style={{ width: '5%' }}>{labels.soldQty}</th>
                         <th className="small text-muted text-center align-middle" style={{ width: '15%', minWidth: '250px' }}>{labels.remarks}</th>
                       </tr>
                     </thead>
                     <tbody className="border-top-0">
-                      {planEntries.map((row, idx) => (
-                        <tr key={row._id || idx}>
-                          <td className="text-center">{idx + 1}</td>
-                          <td><input type="text" className="form-control form-control-sm shadow-none bg-light text-center" disabled value={row.plainBottle || row.bottleName || '-'} /></td>
-                          <td><input type="text" className="form-control form-control-sm shadow-none bg-light text-center" disabled value={getVariantName(row)} /></td>
-                          <td><input type="text" className="form-control form-control-sm shadow-none bg-light text-center" disabled value={row.coatingShade || row.colour || '-'} /></td>
-                          <td><input type="text" className="form-control form-control-sm shadow-none bg-light text-center" disabled value={row.process || '-'} /></td>
-                          <td><input type="text" className="form-control form-control-sm shadow-none bg-light text-center" disabled value={row.plainStock ?? '0'} /></td>
-                          <td><input type="text" className="form-control form-control-sm shadow-none bg-light text-center fw-bold" disabled value={row.orderQty ?? '0'} /></td>
-                          <td>
-                            <input type="text" className="form-control form-control-sm shadow-none bg-light text-center" disabled value={row.coatingCompletedQty ?? row.coatedQty ?? '0'} />
-                            {renderUsedFrom(row.stockAllocation)}
-                          </td>
-                          <td><input type="text" className={`form-control form-control-sm shadow-none bg-light text-center fw-bold ${(row.balanceToMake ?? 0) >= 0 ? 'text-success' : 'text-danger'}`} disabled value={row.balanceToMake ?? '0'} /></td>
-                          <td><input type="text" className="form-control form-control-sm shadow-none bg-light text-center" disabled value={row.boxQty ?? '0'} /></td>
-                          <td><input type="text" className="form-control form-control-sm shadow-none bg-light text-center" disabled value={row.noOfBoxes ?? '0'} /></td>
-                          <td><input type="text" className="form-control form-control-sm shadow-none bg-light text-center" disabled value={row.dispatchPendingQty ?? row.dispatchBalance ?? '0'} /></td>
-                          <td><input type="text" className="form-control form-control-sm shadow-none bg-light text-center" disabled value={row.soldQty ?? '0'} /></td>
-                          <td><input type="text" className="form-control form-control-sm shadow-none bg-light" disabled value={row.remarks || '-'} /></td>
-                        </tr>
-                      ))}
+                      {planEntries.map((row, idx) => {
+                        const isRowWarning = Boolean(row.stockWarning);
+                        const rowTooltip = row.warningMessage || row.stockWarningTooltip || '';
+                        const isGroupWarning = Boolean(row.stockWarning);
+                        const groupTooltip = row.warningMessage || row.groupStockWarningTooltip || '';
+
+                        return (
+                          <tr key={row._id || idx}>
+                            <td className="text-center">{idx + 1}</td>
+                            <td><input type="text" className="form-control form-control-sm shadow-none bg-light text-center" disabled value={row.plainBottle || row.bottleName || '-'} /></td>
+                            <td><input type="text" className="form-control form-control-sm shadow-none bg-light text-center" disabled value={getVariantName(row)} /></td>
+                            <td><input type="text" className="form-control form-control-sm shadow-none bg-light text-center" disabled value={row.coatingShade || row.colour || '-'} /></td>
+                            <td><input type="text" className="form-control form-control-sm shadow-none bg-light text-center" disabled value={row.process || '-'} /></td>
+                            <td className={isGroupWarning ? 'bg-warning text-dark' : ''} title={groupTooltip}>
+                              <input type="text" className={`form-control form-control-sm shadow-none text-center ${isGroupWarning ? 'bg-warning text-dark fw-bold' : 'bg-light'}`} disabled value={row.plainStock ?? '0'} title={groupTooltip} />
+                            </td>
+                            <td className={isRowWarning ? 'bg-warning text-dark' : ''} title={rowTooltip}>
+                              <input type="text" className={`form-control form-control-sm shadow-none text-center fw-bold ${isRowWarning ? 'bg-warning text-dark' : 'bg-light'}`} disabled value={row.orderQty ?? '0'} title={rowTooltip} />
+                            </td>
+                            <td>
+                              <input type="text" className="form-control form-control-sm shadow-none bg-light text-center" disabled value={row.coatingCompletedQty ?? row.coatedQty ?? '0'} />
+                              {Number(row.coatingRejectedQty) > 0 && (
+                                <div className="small text-danger mt-1">Rejected: {row.coatingRejectedQty}</div>
+                              )}
+                              {renderUsedFrom(row.stockAllocation)}
+                            </td>
+                            <td><input type="text" className={`form-control form-control-sm shadow-none bg-light text-center fw-bold ${(row.balanceToMake ?? 0) >= 0 ? 'text-success' : 'text-danger'}`} disabled value={row.balanceToMake ?? '0'} /></td>
+                            <td><input type="text" className="form-control form-control-sm shadow-none bg-light text-center" disabled value={row.boxQty ?? '0'} /></td>
+                            <td><input type="text" className="form-control form-control-sm shadow-none bg-light text-center" disabled value={row.noOfBoxes ?? '0'} /></td>
+                            <td className="text-center">
+                              {row.readyBoxes !== null && row.readyBoxes !== undefined ? row.readyBoxes : '—'}
+                              {row.showLooseQty && row.looseQty !== null && row.looseQty !== undefined && (
+                                <div className="small text-muted">Loose: {row.looseQty}</div>
+                              )}
+                            </td>
+                            <td><input type="text" className="form-control form-control-sm shadow-none bg-light text-center" disabled value={row.dispatchPendingQty ?? row.dispatchBalance ?? '0'} /></td>
+                            <td><input type="text" className="form-control form-control-sm shadow-none bg-light text-center" disabled value={row.soldQty ?? '0'} /></td>
+                            <td><input type="text" className="form-control form-control-sm shadow-none bg-light" disabled value={row.remarks || '-'} /></td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
@@ -260,6 +292,7 @@ export default function ViewLacquerPlan() {
                                     <div>{labels.opening}: <strong className="fs-6">{coatingSummary.opening ?? 0}</strong></div>
                                     <div>{labels.totalAdded}: <strong className="fs-6 text-primary">{coatingSummary.totalAdded >= 0 ? `+${coatingSummary.totalAdded}` : coatingSummary.totalAdded}</strong></div>
                                     <div>{labels.current}: <strong className="fs-6 text-success">{coatingSummary.current ?? 0}</strong></div>
+                                    <div>Rejected: <strong className="fs-6 text-danger">{coatingSummary.rejectionQty ?? 0}</strong></div>
                                   </div>
                                 </div>
                               </div>
@@ -356,6 +389,7 @@ export default function ViewLacquerPlan() {
                                           <th style={{ width: '22%' }}>{labels.dateTime || 'Date & Time'}</th>
                                           <th style={{ width: '18%' }}>{labels.type || 'Type'}</th>
                                           <th style={{ width: '18%' }}>{labels.coatingCompletedQty || 'Coating Completed Qty'}</th>
+                                          <th style={{ width: '12%' }}>Rejected Qty</th>
                                           <th style={{ width: '18%' }}>{labels.usedFrom || 'Used from'}</th>
                                           <th style={{ width: '16%' }}>{labels.balanceToMake || 'Balance to Make'}</th>
                                         </tr>
@@ -379,6 +413,9 @@ export default function ViewLacquerPlan() {
                                               <td className={`fw-bold ${isDel ? 'text-decoration-line-through text-muted' : entry.displayQty?.startsWith('-') ? 'text-danger' : 'text-success'}`}>
                                                 {entry.displayQty || entry.qtyChange}
                                               </td>
+                                              <td className={isDel ? 'text-decoration-line-through text-muted' : 'text-danger'}>
+                                                {entry.rejectionBoxes || 0} boxes + {entry.rejectionLooseQty ?? entry.rejectionQty ?? 0}
+                                              </td>
                                               <td className={`small ${isDel ? 'text-decoration-line-through text-muted' : ''}`}>
                                                 {entry.usedFromText || '-'}
                                               </td>
@@ -394,6 +431,7 @@ export default function ViewLacquerPlan() {
                                             {labels.currentTotal || 'Current Total'}:
                                           </td>
                                           <td className="text-success">{row.coatingCompletedQty ?? row.coatedQty ?? coatingSummary.current ?? 0}</td>
+                                          <td className="text-danger">{row.coatingRejectedQty ?? coatingSummary.rejectionQty ?? 0}</td>
                                           <td className="small text-muted">{coatingSummary.totalUsedFromText || '-'}</td>
                                           <td className={(row.balanceToMake ?? 0) >= 0 ? 'text-success' : 'text-danger'}>
                                             {row.balanceToMake ?? 0}

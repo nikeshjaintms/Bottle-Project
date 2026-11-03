@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
-import { addUser } from '../../redux/slices/userSlice';
+import { addUser, uploadUserImage } from '../../redux/slices/userSlice';
 import { fetchRoles } from '../../redux/slices/roleSlice';
 import Swal from 'sweetalert2';
 
@@ -25,6 +25,7 @@ export default function AddUser() {
   const [selectedImage, setSelectedImage] = useState(null);
   const [imagePreview, setImagePreview] = useState(null);
   const [imageError, setImageError] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const [errors, setErrors] = useState({
     name: '',
@@ -60,33 +61,31 @@ export default function AddUser() {
   const validateImage = (file) => {
     setImageError('');
     
-    if (!file) return;
+    if (!file) return true;
 
     if (!ALLOWED_FORMATS.includes(file.type)) {
       setImageError('Invalid file type. Only JPG, PNG, and WEBP are allowed.');
-      setSelectedImage(null);
-      setImagePreview(null);
-      return;
+      return false;
     }
 
     if (file.size > MAX_FILE_SIZE) {
       setImageError('File size exceeds 5MB limit');
-      setSelectedImage(null);
-      setImagePreview(null);
-      return;
+      return false;
     }
 
-    setSelectedImage(file);
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      setImagePreview(e.target.result);
-    };
-    reader.readAsDataURL(file);
+    return true;
   };
 
   const handleImageChange = (e) => {
     const file = e.target.files?.[0];
-    validateImage(file);
+    if (file && validateImage(file)) {
+      setSelectedImage(file);
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        setImagePreview(event.target.result);
+      };
+      reader.readAsDataURL(file);
+    }
   };
 
   const removeImage = () => {
@@ -132,9 +131,10 @@ export default function AddUser() {
     }
   }, [roles, formData.role]);
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     
+    // Validate all fields before submission
     const nameError = validateField('name', formData.name);
     const emailError = validateField('email', formData.email);
     const passwordError = validateField('password', formData.password);
@@ -142,24 +142,47 @@ export default function AddUser() {
     if (nameError) return Swal.fire('Validation Error', nameError, 'error');
     if (emailError) return Swal.fire('Validation Error', emailError, 'error');
     if (passwordError) return Swal.fire('Validation Error', passwordError, 'error');
-    if (imageError) return Swal.fire('Validation Error', imageError, 'error');
 
     if (!formData.role) return Swal.fire('Error', 'Please select a role', 'error');
 
-    const submitData = { ...formData };
-    if (selectedImage) {
-      // If we need to send image separately via upload endpoint, handle it after user creation
-      // For now, we'll pass the file in formData
-    }
+    setIsSubmitting(true);
 
-    dispatch(addUser(submitData)).then((res) => {
-      if (!res.error) {
-        Swal.fire('Success!', 'User created successfully.', 'success');
-        navigate('/users');
-      } else {
-        Swal.fire('Error!', res.payload || 'Failed to create user.', 'error');
+    try {
+      const submitData = { ...formData };
+
+      // Step 1: Create user
+      const createResult = await dispatch(addUser(submitData));
+      
+      if (createResult.error) {
+        setIsSubmitting(false);
+        return Swal.fire('Error!', createResult.payload || 'Failed to create user.', 'error');
       }
-    });
+
+      // Step 2: Upload image if selected
+      if (selectedImage && createResult.payload?._id) {
+        const uploadResult = await dispatch(uploadUserImage({
+          id: createResult.payload._id,
+          imageFile: selectedImage
+        }));
+
+        if (!uploadResult.error) {
+          removeImage();
+          setIsSubmitting(false);
+          Swal.fire('Success!', 'User created with profile image.', 'success');
+        } else {
+          setIsSubmitting(false);
+          Swal.fire('Success!', 'User created, but image upload failed.', 'warning');
+        }
+      } else {
+        setIsSubmitting(false);
+        Swal.fire('Success!', 'User created successfully.', 'success');
+      }
+
+      navigate('/users');
+    } catch (err) {
+      setIsSubmitting(false);
+      Swal.fire('Error!', err.message || 'Failed to create user.', 'error');
+    }
   };
 
   return (
@@ -307,8 +330,9 @@ export default function AddUser() {
                     </select>
                   </div>
 
+                  {/* Profile Image Section */}
                   <div className="col-md-12">
-                    <label className="form-label fw-600 small text-uppercase text-muted mb-3">Profile Image</label>
+                    <label className="form-label fw-600 small text-uppercase text-muted mb-3">Profile Image (Optional)</label>
                     <div style={{
                       display: 'flex',
                       flexDirection: 'column',
@@ -319,24 +343,47 @@ export default function AddUser() {
                       border: '2px dashed var(--card-border)',
                       backgroundColor: 'var(--bg-subtle)'
                     }}>
+                      {/* Image Preview */}
                       <div style={{
-                        width: '100px',
-                        height: '100px',
+                        width: '120px',
+                        height: '120px',
                         borderRadius: '50%',
-                        backgroundColor: imagePreview ? 'transparent' : 'linear-gradient(135deg, #6366f1, #8b5cf6)',
+                        backgroundColor: imagePreview ? 'transparent' : 'linear-gradient(135deg, #00aeef, #008ecc)',
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'center',
                         overflow: 'hidden',
-                        flexShrink: 0
+                        flexShrink: 0,
+                        border: '3px solid rgba(0, 174, 239, 0.2)',
+                        boxShadow: '0 4px 12px rgba(0, 0, 0, 0.1)'
                       }}>
                         {imagePreview ? (
-                          <img src={imagePreview} alt="Preview" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                          <img 
+                            src={imagePreview} 
+                            alt="Preview" 
+                            style={{ 
+                              width: '100%', 
+                              height: '100%', 
+                              objectFit: 'cover' 
+                            }} 
+                          />
                         ) : (
-                          <i className="bi bi-image" style={{ fontSize: 32, color: 'rgba(255,255,255,0.5)' }} />
+                          <i className="bi bi-image" style={{ fontSize: 48, color: 'white' }} />
                         )}
                       </div>
 
+                      {/* Status Text */}
+                      {imagePreview ? (
+                        <div style={{ fontSize: '13px', color: 'var(--text-secondary)', fontWeight: 500 }}>
+                          ✓ Image selected
+                        </div>
+                      ) : (
+                        <div style={{ fontSize: '13px', color: 'var(--text-muted)' }}>
+                          No image selected
+                        </div>
+                      )}
+
+                      {/* File Input */}
                       <input
                         type="file"
                         id="profile-image"
@@ -345,44 +392,94 @@ export default function AddUser() {
                         style={{ display: 'none' }}
                       />
 
-                      <button
-                        type="button"
-                        onClick={() => document.getElementById('profile-image').click()}
-                        className="btn btn-accent btn-sm px-4"
-                        style={{ borderRadius: 8 }}
-                      >
-                        <i className="bi bi-cloud-upload me-2" />
-                        Upload Image
-                      </button>
+                      {/* Action Buttons */}
+                      <div style={{
+                        display: 'flex',
+                        gap: '12px',
+                        flexWrap: 'wrap',
+                        justifyContent: 'center',
+                        width: '100%'
+                      }}>
+                        <button
+                          type="button"
+                          onClick={() => document.getElementById('profile-image').click()}
+                          className="btn btn-accent btn-sm"
+                          style={{ 
+                            borderRadius: '8px', 
+                            padding: '8px 16px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '8px',
+                            fontSize: '13px'
+                          }}
+                          disabled={isSubmitting}
+                        >
+                          <i className="bi bi-cloud-upload" />
+                          Upload File
+                        </button>
+                      </div>
 
+                      {/* Remove Button */}
                       {imagePreview && (
                         <button
                           type="button"
                           onClick={removeImage}
-                          className="btn btn-outline-danger btn-sm px-4"
-                          style={{ borderRadius: 8 }}
+                          className="btn btn-outline-danger btn-sm"
+                          style={{ 
+                            borderRadius: '8px', 
+                            padding: '8px 16px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '8px',
+                            fontSize: '13px'
+                          }}
+                          disabled={isSubmitting}
                         >
-                          <i className="bi bi-trash me-2" />
+                          <i className="bi bi-trash" />
                           Remove Image
                         </button>
                       )}
 
+                      {/* Error Message */}
                       {imageError && (
-                        <div style={{ color: 'var(--danger)', fontSize: '12px', textAlign: 'center' }}>
+                        <div style={{ 
+                          color: '#dc3545', 
+                          fontSize: '12px', 
+                          textAlign: 'center',
+                          backgroundColor: 'rgba(220, 53, 69, 0.1)',
+                          padding: '8px 12px',
+                          borderRadius: '6px',
+                          width: '100%'
+                        }}>
+                          <i className="bi bi-exclamation-circle me-2" />
                           {imageError}
                         </div>
                       )}
 
-                      <div style={{ fontSize: '11px', color: 'var(--text-muted)', textAlign: 'center' }}>
-                        JPG, PNG or WEBP • Max 5MB
+                      {/* Help Text */}
+                      <div style={{ 
+                        fontSize: '11px', 
+                        color: 'var(--text-muted)', 
+                        textAlign: 'center',
+                        marginTop: '8px'
+                      }}>
+                        <div>JPG, PNG or WEBP • Max 5MB</div>
+                        <div style={{ marginTop: '4px', fontSize: '10px' }}>
+                          Upload a file to add a profile picture (optional)
+                        </div>
                       </div>
                     </div>
                   </div>
                 </div>
 
+                {/* Single Create User Button - Handles Everything */}
                 <div className="d-flex gap-2 mt-5 user-form-actions">
-                  <button type="submit" className="btn-accent px-5 py-3 flex-grow-1" disabled={loading || imageError}>
-                    {loading ? (
+                  <button 
+                    type="submit" 
+                    className="btn-accent px-5 py-3 flex-grow-1" 
+                    disabled={isSubmitting}
+                  >
+                    {isSubmitting ? (
                       <>
                         <span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
                         Creating...
@@ -393,7 +490,12 @@ export default function AddUser() {
                       </>
                     )}
                   </button>
-                  <button type="button" onClick={() => navigate('/users')} className="btn-ghost px-5 py-3">
+                  <button 
+                    type="button" 
+                    onClick={() => navigate('/users')} 
+                    className="btn-ghost px-5 py-3"
+                    disabled={isSubmitting}
+                  >
                     Cancel
                   </button>
                 </div>

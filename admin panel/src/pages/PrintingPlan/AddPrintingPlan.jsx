@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { createPrintingPlan } from '../../redux/slices/printingPlanSlice';
@@ -15,7 +15,7 @@ import CreatableSelect from 'react-select/creatable';
 import API from '../../services/api';
 import Swal from 'sweetalert2';
 import { usePrintingPlanLanguage } from '../../hooks/usePrintingPlanLanguage';
-import { calculateBalanceAndStock, recalculateBalanceForBlock, calculateBalance } from '../../utils/printingPlanCalcs';
+import { fetchPrintingPlanCalculations } from '../../utils/printingPlanCalcs';
 
 export const sortTypesList = (types = []) => {
   const getRank = (name) => {
@@ -147,38 +147,9 @@ export default function AddPrintingPlan() {
     }
   ]);
 
-  // Compute stock summary per (companyId, bottleName) for PLAIN shade rows across all blocks
-  const blockStockSummary = useMemo(() => {
-    const summary = new Map();
-    if (blocks && blocks.length > 0) {
-      blocks.forEach(block => {
-        const compId = (block.companyId || '').toString();
-        if (block.items && block.items.length > 0) {
-          block.items.forEach(item => {
-            const shade = (item.coatingShade || '').trim().toUpperCase();
-            if (shade === 'PLAIN') {
-              const bottle = (item.plainBottle || item.bottleName || '').trim().toUpperCase();
-              const key = `${compId}::${bottle}`;
-
-              if (!summary.has(key)) {
-                summary.set(key, {
-                  plainBottleStock: parseFloat(item.plainBottleStock || item.coatedStockAvailable) || 0,
-                  totalOrderQty: 0,
-                  rows: []
-                });
-              }
-              const poolData = summary.get(key);
-              poolData.totalOrderQty += parseFloat(item.orderQty) || 0;
-              poolData.rows.push(item);
-            }
-          });
-        }
-      });
-    }
-    return summary;
-  }, [blocks]);
-
   const [companyPlainBottles, setCompanyPlainBottles] = useState({});
+  const [openDropdownId, setOpenDropdownId] = useState(null);
+  const calculationRequests = useRef(new Map());
 
   useEffect(() => {
     const companyIds = Array.from(new Set(blocks.map(b => b.companyId?._id || b.companyId).filter(Boolean)));
@@ -308,10 +279,6 @@ export default function AddPrintingPlan() {
                   if (targetIt) {
                     targetIt.coatedStockAvailable = sVal;
                     targetIt.plainBottleStock = sVal;
-                    const p = parseFloat(targetIt.producedQty) || 0;
-                    const o = parseFloat(targetIt.orderQty) || 0;
-                    // RULE: Balance = orderQty - producedQty for ALL shades (never uses stock)
-                    targetIt.balanceToMake = Math.max(0, o - p);
                   }
                   return bArray;
                 });
@@ -409,33 +376,7 @@ export default function AddPrintingPlan() {
   const removeItemRow = (blockIndex, itemIndex) => {
     const newBlocks = [...blocks];
     if (newBlocks[blockIndex].items.length > 1) {
-      const removedRow = newBlocks[blockIndex].items[itemIndex];
       newBlocks[blockIndex].items = newBlocks[blockIndex].items.filter((_, i) => i !== itemIndex);
-
-      const rProd = parseFloat(removedRow.producedQty) || 0;
-      const rShade = (removedRow.coatingShade || '').trim().toUpperCase();
-      const rBottle = (removedRow.plainBottle || removedRow.bottleName || '').trim().toUpperCase();
-      const rComp = (newBlocks[blockIndex].companyId?._id || newBlocks[blockIndex].companyId || '').toString();
-
-      if (rProd > 0 && rBottle && rShade === 'PLAIN') {
-        newBlocks.forEach(b => {
-          const bComp = (b.companyId?._id || b.companyId || '').toString();
-          if (bComp === rComp) {
-            b.items.forEach(it => {
-              const itBottle = (it.plainBottle || it.bottleName || '').trim().toUpperCase();
-              const itShade = (it.coatingShade || '').trim().toUpperCase();
-              if (itBottle === rBottle && itShade === 'PLAIN') {
-                const s = (parseFloat(it.plainBottleStock || it.coatedStockAvailable) || 0) + rProd;
-                it.plainBottleStock = s;
-                it.coatedStockAvailable = s;
-                const p = parseFloat(it.producedQty) || 0;
-                const o = parseFloat(it.orderQty) || 0;
-                it.balanceToMake = Math.max(0, o - p);
-              }
-            });
-          }
-        });
-      }
       setBlocks(newBlocks);
     }
   };
@@ -443,10 +384,7 @@ export default function AddPrintingPlan() {
   const handleItemChange = async (blockIndex, itemIndex, field, value) => {
     const newBlocks = [...blocks];
     const currentRow = newBlocks[blockIndex].items[itemIndex];
-    const prevProducedQty = parseFloat(blocks[blockIndex]?.items[itemIndex]?.producedQty) || 0;
-    if (field !== 'producedQty') {
-      currentRow[field] = value;
-    }
+    currentRow[field] = value;
 
 
 
@@ -658,19 +596,10 @@ export default function AddPrintingPlan() {
                   const bArray = [...currentBlocks];
                   const targetItem = bArray[blockIndex].items.find(i => i.printingToBeDone === varName && i.bottleName === clonedRow.bottleName);
                   if (targetItem) {
-                    const isPlain = (targetItem.coatingShade || clonedRow.coatingShade || '').trim().toUpperCase() === 'PLAIN';
                     const stockVal = res.data.data.coatedStockAvailable;
                     targetItem.coatedStockAvailable = stockVal;
                     targetItem.plainBottleStock = stockVal;
                     targetItem.producedQty = res.data.data.producedQty || 0;
-                    const p = parseFloat(targetItem.producedQty) || 0;
-                    if (isPlain) {
-                      const o = parseFloat(targetItem.orderQty) || 0;
-                      targetItem.balanceToMake = Math.max(0, o - p);
-                    } else {
-                      const o = parseFloat(targetItem.orderQty) || 0;
-                      targetItem.balanceToMake = Math.max(0, o - p);
-                    }
                   }
                   return bArray;
                 });
@@ -724,14 +653,6 @@ export default function AddPrintingPlan() {
       );
       if (selectedBottle && selectedBottle.bottlePerBox) {
         currentRow.boxQty = selectedBottle.bottlePerBox;
-        const bQty = parseFloat(currentRow.boxQty);
-        if (!isNaN(bQty) && bQty > 0) {
-          if (currentRow.orderQty !== '' && currentRow.orderQty !== null && currentRow.orderQty !== undefined) {
-            currentRow.noOfBoxes = Math.ceil((parseFloat(currentRow.orderQty) || 0) / bQty);
-          } else if (currentRow.noOfBoxes !== '' && currentRow.noOfBoxes !== null && currentRow.noOfBoxes !== undefined) {
-            currentRow.orderQty = Math.round((parseFloat(currentRow.noOfBoxes) || 0) * bQty);
-          }
-        }
       }
 
       let variantStillValid = false;
@@ -772,312 +693,44 @@ export default function AddPrintingPlan() {
       }
     }
 
-    if (field === 'boxQty') {
-      const boxQty = parseFloat(value);
-      if (!isNaN(boxQty) && boxQty > 0) {
-        if (currentRow.orderQty !== '' && currentRow.orderQty !== null && currentRow.orderQty !== undefined) {
-          const orderQty = parseFloat(currentRow.orderQty) || 0;
-          currentRow.noOfBoxes = Math.ceil(orderQty / boxQty);
-        } else if (currentRow.noOfBoxes !== '' && currentRow.noOfBoxes !== null && currentRow.noOfBoxes !== undefined) {
-          const noOfBoxes = parseFloat(currentRow.noOfBoxes) || 0;
-          currentRow.orderQty = Math.round(noOfBoxes * boxQty);
-        }
-      }
-    }
-
-    if (field === 'noOfBoxes') {
-      const valStr = String(value ?? '').trim();
-      if (valStr === '') {
-        currentRow.noOfBoxes = '';
-        currentRow.orderQty = '';
-      } else {
-        const noOfBoxes = parseFloat(valStr) || 0;
-        const boxQty = parseFloat(currentRow.boxQty);
-        if (!isNaN(noOfBoxes) && !isNaN(boxQty) && boxQty > 0) {
-          currentRow.orderQty = Math.round(noOfBoxes * boxQty);
-        }
-      }
-    }
-
-    if (field === 'orderQty') {
-      const valStr = String(value ?? '').trim();
-      if (valStr === '') {
-        currentRow.orderQty = '';
-        currentRow.noOfBoxes = '';
-      } else {
-        let orderQty = parseFloat(valStr) || 0;
-        const boxQty = parseFloat(currentRow.boxQty);
-        if (!isNaN(orderQty) && !isNaN(boxQty) && boxQty > 0) {
-          currentRow.noOfBoxes = Math.ceil(orderQty / boxQty);
-        }
-      }
-    }
-
-    if (currentRow.sharedGroupId && (field === 'boxQty' || field === 'bottleName' || field === 'plainBottle' || field === 'plainBottleStock')) {
-      newBlocks[blockIndex].items.forEach((r) => {
-        if (r.sharedGroupId === currentRow.sharedGroupId && r !== currentRow) {
-          if (field === 'boxQty') r.boxQty = currentRow.boxQty;
-          if (field === 'plainBottleStock') {
-            const curShade = (currentRow.coatingShade || '').trim().toUpperCase();
-            if ((r.coatingShade || '').trim().toUpperCase() === curShade) {
-              r.plainBottleStock = currentRow.plainBottleStock;
-              const rProd = parseFloat(r.producedQty) || 0;
-              if (curShade === 'PLAIN') {
-                const rOrder = parseFloat(r.orderQty) || 0;
-                r.balanceToMake = Math.max(0, rOrder - rProd);
-              } else {
-                const rOrder = parseFloat(r.orderQty) || 0;
-                r.balanceToMake = Math.max(0, rOrder - rProd);
-              }
-            }
-          }
-          if (field === 'bottleName' || field === 'plainBottle') {
-            r.plainBottle = currentRow.plainBottle;
-            r.bottleName = currentRow.bottleName;
-            r.boxQty = currentRow.boxQty;
-          }
-          const bQty = parseFloat(r.boxQty);
-          if (!isNaN(bQty) && bQty > 0) {
-            if (r.orderQty !== '' && r.orderQty !== null && r.orderQty !== undefined) {
-              r.noOfBoxes = Math.ceil((parseFloat(r.orderQty) || 0) / bQty);
-            } else if (r.noOfBoxes !== '' && r.noOfBoxes !== null && r.noOfBoxes !== undefined) {
-              r.orderQty = Math.round((parseFloat(r.noOfBoxes) || 0) * bQty);
-            }
-          }
-        }
-      });
-    }
-
-    if (field === 'producedQty') {
-      const newProduced = value === '' ? 0 : (parseFloat(value) || 0);
-      currentRow.producedQty = value === '' ? '' : newProduced;
-      const delta = newProduced - prevProducedQty;
-
-      const curShade = (currentRow.coatingShade || '').trim().toUpperCase();
-      const curBottle = (currentRow.plainBottle || currentRow.bottleName || '').trim().toUpperCase();
-      const curComp = (newBlocks[blockIndex].companyId?._id || newBlocks[blockIndex].companyId || '').toString();
-
-      if (curShade === 'PLAIN') {
-        const currentStock = parseFloat(currentRow.plainBottleStock || currentRow.coatedStockAvailable) || 0;
-        const newStock = Math.max(0, currentStock - delta);
-
-        let totalReadyInGroup = 0;
-        const poolItems = [];
-        newBlocks.forEach(b => {
-          const bComp = (b.companyId?._id || b.companyId || '').toString();
-          if (bComp === curComp) {
-            b.items.forEach(r => {
-              const rBottle = (r.plainBottle || r.bottleName || '').trim().toUpperCase();
-              const rShade = (r.coatingShade || '').trim().toUpperCase();
-              if (rBottle === curBottle && rShade === 'PLAIN') {
-                poolItems.push(r);
-                const rProd = parseFloat(r === currentRow ? newProduced : r.producedQty) || 0;
-                totalReadyInGroup += rProd;
-              }
-            });
-          }
-        });
-
-        const basePoolStock = currentStock + (poolItems.reduce((sum, it) => sum + (parseFloat(it === currentRow ? prevProducedQty : it.producedQty) || 0), 0));
-        const isExceeding = basePoolStock > 0 && totalReadyInGroup > basePoolStock;
-
-        if (isExceeding && newProduced > prevProducedQty) {
-          Swal.fire({
-            toast: true,
-            position: 'top-end',
-            icon: 'warning',
-            title: 'Total Ready (Printed) Qty exceeds Plain Stock',
-            showConfirmButton: false,
-            timer: 3000
-          });
-        }
-
-        poolItems.forEach(r => {
-          r.plainBottleStock = newStock;
-          r.coatedStockAvailable = newStock;
-          r.isExceedingStock = isExceeding;
-          const rProd = parseFloat(r === currentRow ? newProduced : r.producedQty) || 0;
-          const rOrder = parseFloat(r.orderQty) || 0;
-          r.balanceToMake = Math.max(0, rOrder - rProd);
-        });
-      } else if (currentRow.sharedGroupId) {
-        // Coloured shade: rows sharing this sharedGroupId and same shade
-        const currentStock = parseFloat(currentRow.plainBottleStock || currentRow.coatedStockAvailable) || 0;
-        const newStock = Math.max(0, currentStock - delta);
-
-        newBlocks[blockIndex].items.forEach(r => {
-          if (r.sharedGroupId === currentRow.sharedGroupId && (r.coatingShade || '').trim().toUpperCase() === curShade) {
-            r.plainBottleStock = newStock;
-            r.coatedStockAvailable = newStock;
-            const rProd = parseFloat(r === currentRow ? newProduced : r.producedQty) || 0;
-            const rOrder = parseFloat(r.orderQty) || 0;
-            // Balance = orderQty - producedQty (not stock-based)
-            r.balanceToMake = Math.max(0, rOrder - rProd);
-          }
-        });
-      } else {
-        const currentStock = parseFloat(currentRow.plainBottleStock || currentRow.coatedStockAvailable) || 0;
-        const newStock = Math.max(0, currentStock - delta);
-        currentRow.plainBottleStock = newStock;
-        currentRow.coatedStockAvailable = newStock;
-        const curOrder = parseFloat(currentRow.orderQty) || 0;
-        // Balance = orderQty - producedQty (not stock-based)
-        currentRow.balanceToMake = Math.max(0, curOrder - newProduced);
-      }
-    }
-
-    if (field === 'orderQty' || field === 'noOfBoxes' || field === 'coatedStockAvailable' || field === 'plainBottleStock' || field === 'producedQty') {
-      const isPlain = (currentRow.coatingShade || '').trim().toUpperCase() === 'PLAIN';
-      if (isPlain) {
-        const orderQty = parseFloat(currentRow.orderQty) || 0;
-        const producedQty = parseFloat(currentRow.producedQty) || 0;
-        currentRow.balanceToMake = Math.max(0, orderQty - producedQty);
-
-        // Check for plain stock warning on orderQty/noOfBoxes change
-        if (field === 'orderQty' || field === 'noOfBoxes') {
-          const curBottle = (currentRow.plainBottle || currentRow.bottleName || '').trim().toUpperCase();
-          const curComp = (newBlocks[blockIndex].companyId?._id || newBlocks[blockIndex].companyId || '').toString();
-          const key = `${curComp}::${curBottle}`;
-
-          // Recalculate pool totals for current state
-          let plainBottleStock = parseFloat(currentRow.plainBottleStock || currentRow.coatedStockAvailable) || 0;
-          let totalOrderForBottle = 0;
-
-          newBlocks.forEach(b => {
-            const bComp = (b.companyId?._id || b.companyId || '').toString();
-            if (bComp === curComp) {
-              b.items.forEach((r, rIdx) => {
-                const rBottle = (r.plainBottle || r.bottleName || '').trim().toUpperCase();
-                const rShade = (r.coatingShade || '').trim().toUpperCase();
-                if (rBottle === curBottle && rShade === 'PLAIN') {
-                  totalOrderForBottle += (r === currentRow ? orderQty : (parseFloat(r.orderQty) || 0));
-                  // Use first row's stock as the pool stock (they should all be synced for the same PLAIN group)
-                  if (plainBottleStock === 0 || parseFloat(r.plainBottleStock || r.coatedStockAvailable) > 0) {
-                    plainBottleStock = parseFloat(r.plainBottleStock || r.coatedStockAvailable) || 0;
-                  }
-                }
-              });
-            }
-          });
-
-          if (plainBottleStock > 0 && totalOrderForBottle > plainBottleStock) {
-            Swal.fire({
-              toast: true,
-              position: 'top-end',
-              icon: 'warning',
-              title: labels.plainStockExceedWarning,
-              showConfirmButton: false,
-              timer: 3000
-            });
-            currentRow.isExceedingStock = true;
-          } else {
-            currentRow.isExceedingStock = false;
-          }
-        }
-      } else {
-        const stock = parseFloat(currentRow.plainBottleStock || currentRow.coatedStockAvailable);
-        const producedQty = parseFloat(currentRow.producedQty);
-        const orderQty = parseFloat(currentRow.orderQty) || 0;
-        // Balance = orderQty - producedQty (never uses stock)
-        currentRow.balanceToMake = Math.max(0, orderQty - (producedQty || 0));
-        currentRow.isExceedingStock = false;
-      }
-    }
-
     setBlocks(newBlocks);
 
-    // Fetch computed stats
-    if ((field === 'coatingShade' || field === 'printingToBeDone' || field === 'bottleName') && currentRow.bottleName) {
-      const curComp = newBlocks[blockIndex].companyId;
-      const curBrand = newBlocks[blockIndex].brandId;
-      const targetShade = (currentRow.coatingShade || '').trim().toUpperCase();
-      const targetBottle = (currentRow.plainBottle || currentRow.bottleName || '').trim().toUpperCase();
-
-      if (curBrand || (curComp && targetShade === 'PLAIN')) {
-        try {
-          const res = await API.get('/printing-plan/stats/computed', {
-            params: {
-              bottleName: currentRow.bottleName,
-              brandId: curBrand || undefined,
-              coatingShade: currentRow.coatingShade || "",
-              companyId: curComp || undefined
-            }
+    const shouldFetchStats = ['orderQty', 'producedQty', 'boxQty', 'coatingShade', 'printingToBeDone', 'bottleName', 'plainBottle'].includes(field);
+    if (shouldFetchStats && currentRow.bottleName) {
+      try {
+        const requestKey = `${blockIndex}:${itemIndex}`;
+        const requestId = (calculationRequests.current.get(requestKey) || 0) + 1;
+        calculationRequests.current.set(requestKey, requestId);
+        const stats = await fetchPrintingPlanCalculations({
+          row: currentRow,
+          companyId: newBlocks[blockIndex].companyId,
+          brandId: currentRow.brandId || newBlocks[blockIndex].brandId,
+          planDate
+        });
+        if (calculationRequests.current.get(requestKey) !== requestId) return;
+        const computedFields = {
+          balanceToMake: stats.balanceToMake,
+          boxQty: stats.boxQty,
+          noOfBoxes: stats.noOfBoxes,
+          completed: stats.completed,
+          coatedStockAvailable: stats.coatedStockAvailable,
+          plainBottleStock: stats.plainStock ?? currentRow.plainBottleStock,
+          plainStockWarning: stats.plainStockWarning,
+          isExceedingStock: !!stats.plainStockWarning?.hasWarning,
+          sources: stats.sources || [],
+          hasSuppliers: stats.hasSuppliers,
+          eligibleSuppliers: stats.eligibleSuppliers || []
+        };
+        setBlocks(currentBlocks => {
+            const nextBlocks = [...currentBlocks];
+            const nextBlock = { ...nextBlocks[blockIndex], items: [...nextBlocks[blockIndex].items] };
+            nextBlock.items[itemIndex] = { ...nextBlock.items[itemIndex], ...computedFields };
+            nextBlocks[blockIndex] = nextBlock;
+            return nextBlocks;
           });
-          if (res.data?.success) {
-            const updatedBlocks = [...newBlocks];
-            const stockVal = res.data.data.coatedStockAvailable;
-
-            if (targetShade === 'PLAIN') {
-              // Fetch supplier sources info from backend
-              try {
-                const sSources = currentRow.stockSources || (curComp ? [curComp] : []);
-                const lRes = await API.get('/lacquer-plan/stats/computed', {
-                  params: {
-                    bottleName: currentRow.bottleName,
-                    companyId: curComp,
-                    planDate,
-                    stockSources: sSources.join(',')
-                  }
-                });
-                if (lRes.data?.success) {
-                  currentRow.sources = lRes.data.data.sources || [];
-                  currentRow.hasSuppliers = lRes.data.data.hasSuppliers || false;
-                  currentRow.eligibleSuppliers = lRes.data.data.eligibleSuppliers || [];
-                }
-              } catch (e) {}
-
-              // Deduct producedQty of any other rows sharing this (company, bottle, PLAIN) pool
-              let otherProduced = 0;
-              updatedBlocks.forEach(b => {
-                const bComp = (b.companyId?._id || b.companyId || '').toString();
-                if (bComp === (curComp?._id || curComp || '').toString()) {
-                  b.items.forEach(it => {
-                    if (it !== currentRow) {
-                      const itBottle = (it.plainBottle || it.bottleName || '').trim().toUpperCase();
-                      const itShade = (it.coatingShade || '').trim().toUpperCase();
-                      if (itBottle === targetBottle && itShade === 'PLAIN') {
-                        otherProduced += (parseFloat(it.producedQty) || 0);
-                      }
-                    }
-                  });
-                }
-              });
-
-              const remainingStock = Math.max(0, stockVal - otherProduced);
-
-              updatedBlocks.forEach(b => {
-                const bComp = (b.companyId?._id || b.companyId || '').toString();
-                if (bComp === (curComp?._id || curComp || '').toString()) {
-                  b.items.forEach(it => {
-                    const itBottle = (it.plainBottle || it.bottleName || '').trim().toUpperCase();
-                    const itShade = (it.coatingShade || '').trim().toUpperCase();
-                    if (itBottle === targetBottle && itShade === 'PLAIN') {
-                      it.coatedStockAvailable = remainingStock;
-                      it.plainBottleStock = remainingStock;
-                      const itProd = parseFloat(it.producedQty) || 0;
-                      const itOrder = parseFloat(it.orderQty) || 0;
-                      it.balanceToMake = Math.max(0, itOrder - itProd);
-                    }
-                  });
-                }
-              });
-            } else {
-              const targetGroupId = currentRow.sharedGroupId;
-              updatedBlocks[blockIndex].items.forEach((it, idx) => {
-                if (idx === itemIndex || (targetGroupId && it.sharedGroupId === targetGroupId && (it.coatingShade || '').trim().toUpperCase() === targetShade)) {
-                  it.coatedStockAvailable = stockVal;
-                  it.plainBottleStock = stockVal;
-                  const itProd = parseFloat(it.producedQty) || 0;
-                  const itOrder = parseFloat(it.orderQty) || 0;
-                  it.balanceToMake = Math.max(0, itOrder - itProd);
-                }
-              });
-            }
-            setBlocks(updatedBlocks);
-          }
-        } catch (err) {
-          console.error("Failed to fetch computed stats", err);
-        }
+      } catch (statsError) {
+        console.error('Failed to fetch server Printing calculations:', statsError);
+        Swal.fire({ toast: true, position: 'top-end', icon: 'error', title: statsError.response?.data?.message || statsError.message || 'Failed to calculate Printing Plan values.', showConfirmButton: false, timer: 3500 });
       }
     }
   };
@@ -1272,16 +925,19 @@ export default function AddPrintingPlan() {
 
     // Fetch updated combined stock
     try {
-      const res = await API.get('/lacquer-plan/stats/computed', {
+      const res = await API.get('/printing-plan/stats/computed', {
         params: {
           bottleName: curBottle,
           companyId: currentBlock.companyId,
           planDate,
-          stockSources: updatedSources.join(',')
+          stockSources: updatedSources.join(','),
+          orderQty: currentItem.orderQty,
+          readyQty: currentItem.producedQty,
+          boxQty: currentItem.boxQty
         }
       });
       if (res.data?.success) {
-        const plainStock = res.data.data.plainStock !== undefined ? res.data.data.plainStock : res.data.data.openingStock;
+        const plainStock = res.data.data.plainStock;
         const sourcesData = res.data.data.sources || [];
         const availMap = new Map();
         sourcesData.forEach(s => availMap.set(s.companyId, s.available ?? 0));
@@ -1779,7 +1435,7 @@ export default function AddPrintingPlan() {
                                           const bottleSpecIds = new Set(allVariantsWithSameName.map(v => (v.bottleSpecId?._id || v.bottleSpecId)?.toString()).filter(Boolean));
                                           bottleNamesForCurrentVariant = new Set((bottleSpecs || [])
                                             .filter(bs => bottleSpecIds.has(bs._id?.toString()))
-                                            .map(bs => bs.bottleName?.trim().toUpperCase())
+                                            .map(bs => normalizeRollOn(bs.bottleName))
                                             .filter(Boolean)
                                           );
                                         }
@@ -1792,7 +1448,69 @@ export default function AddPrintingPlan() {
                                           <CreatableSelect
                                             options={availablePlainBottleOptions}
                                             value={availablePlainBottleOptions.find(opt => opt.value === currentPlainVal) || (currentPlainVal ? { value: currentPlainVal, label: currentPlainVal } : null)}
-                                            onChange={(selected) => handleItemChange(blockIndex, itemIndex, 'plainBottle', selected?.value || '')}
+                                            onChange={(selected) => {
+                                              if (!selected) {
+                                                handleItemChange(blockIndex, itemIndex, 'plainBottle', '');
+                                              } else {
+                                                // Get the bottle name from the selected option
+                                                const selectedBottleName = selected.label;
+                                                
+                                                // Look up the actual BottlePerBox data
+                                                const bottlePerBoxData = (bottlePerBoxes || []).find(b =>
+                                                  normalizeRollOn(b.plainBottleName || b.bottleName || '') === normalizeRollOn(selectedBottleName || '')
+                                                );
+                                                
+                                                // Check if selected bottle exists for current brand via BottleSpec
+                                                const brandId = block.brandId?._id || block.brandId;
+                                                const bottleExistsForBrand = (bottleSpecs || []).some(bs => 
+                                                  (bs.brandId?._id || bs.brandId)?.toString() === brandId?.toString() &&
+                                                  normalizeRollOn(bs.bottleName || '') === normalizeRollOn(selectedBottleName || '')
+                                                );
+
+                                                if (!bottleExistsForBrand && brandId) {
+                                                  // Bottle doesn't exist for this brand - show modal to create it
+                                                  const compObj = companies.find(c => c._id === (block.companyId?._id || block.companyId));
+                                                  const brandObj = brands.find(b => b._id === brandId);
+                                                  setMissingPlainBottleData({
+                                                    bottleName: selectedBottleName,
+                                                    companyId: compObj?._id || block.companyId || '',
+                                                    brandId: brandId || '',
+                                                    companyName: compObj?.name || '',
+                                                    brandName: brandObj?.name || '',
+                                                    bottlePerBox: bottlePerBoxData?.bottlePerBox || '',
+                                                    printingTypeId: '',
+                                                    printingColorId: '',
+                                                    blockIndex: blockIndex,
+                                                    itemIndex: itemIndex,
+                                                    status: true
+                                                  });
+                                                  setShowMissingPlainBottleModal(true);
+                                                } else {
+                                                  // Bottle exists for brand or no brand selected - proceed normally
+                                                  handleItemChange(blockIndex, itemIndex, 'plainBottle', selected?.value || '');
+                                                  
+                                                  // Auto-populate bottlePerBox if available
+                                                  if (bottlePerBoxData && bottlePerBoxData.bottlePerBox) {
+                                                    // Update the item's bottlePerBox value
+                                                    const updatedBlocks = blocks.map((b, bIdx) => {
+                                                      if (bIdx === blockIndex) {
+                                                        return {
+                                                          ...b,
+                                                          items: b.items.map((it, itIdx) => {
+                                                            if (itIdx === itemIndex) {
+                                                              return { ...it, bottlePerBox: bottlePerBoxData.bottlePerBox };
+                                                            }
+                                                            return it;
+                                                          })
+                                                        };
+                                                      }
+                                                      return b;
+                                                    });
+                                                    setBlocks(updatedBlocks);
+                                                  }
+                                                }
+                                              }
+                                            }}
                                             onCreateOption={(inputValue) => {
                                               const compObj = companies.find(c => c._id === (block.companyId?._id || block.companyId));
                                               const brandObj = brands.find(b => b._id === (block.brandId?._id || block.brandId));
@@ -1832,7 +1550,10 @@ export default function AddPrintingPlan() {
                                             filterOption={(option, rawInput) => {
                                               if (!rawInput) {
                                                 // No search input - show ONLY brand-specific bottles
-                                                return blockPlainBottleOptions.some(opt => opt.value === option.value);
+                                                const optionName = normalizeRollOn(option.value || option.label);
+                                                return blockPlainBottleOptions.some(opt =>
+                                                  normalizeRollOn(opt.value || opt.label) === optionName
+                                                );
                                               }
                                               const searchUpper = rawInput.trim().toUpperCase();
                                               const optionUpper = (option.label || '').toUpperCase();
@@ -1840,7 +1561,23 @@ export default function AddPrintingPlan() {
                                                 return false;
                                               }
                                               if (bottleNamesForCurrentVariant && bottleNamesForCurrentVariant.size > 0) {
-                                                return bottleNamesForCurrentVariant.has(optionUpper);
+                                                const optionName = normalizeRollOn(option.value || option.label);
+                                                const matchedBottle = option.data?.bottlePerBoxData ||
+                                                  (bottlePerBoxes || []).find(b => [
+                                                    b.plainBottleName,
+                                                    b.bottleName,
+                                                    ...(b.bottleNames || [])
+                                                  ].some(name => normalizeRollOn(name) === optionName));
+                                                const optionAliases = [
+                                                  option.value,
+                                                  option.label,
+                                                  matchedBottle?.plainBottleName,
+                                                  matchedBottle?.bottleName,
+                                                  ...(matchedBottle?.bottleNames || [])
+                                                ];
+                                                return optionAliases.some(name =>
+                                                  bottleNamesForCurrentVariant.has(normalizeRollOn(name))
+                                                );
                                               }
                                               return true;
                                             }}
@@ -1939,28 +1676,7 @@ export default function AddPrintingPlan() {
 
                                   {renderStockGroupCell && (
                                     <td rowSpan={stockRowSpan} className="align-middle" style={{ backgroundColor: stockRowSpan > 1 ? '#f8f9fa' : 'inherit' }}>
-                                      <input type="number" className="form-control form-control-sm shadow-none text-center" value={item.plainBottleStock} onChange={(e) => {
-                                        const val = e.target.value;
-                                        const parsed = parseFloat(val) || 0;
-                                        if (stockRowSpan > 1) {
-                                          const updatedBlocks = [...blocks];
-                                          for (let i = itemIndex; i < itemIndex + stockRowSpan; i++) {
-                                            updatedBlocks[blockIndex].items[i].plainBottleStock = val;
-                                            const prod = parseFloat(updatedBlocks[blockIndex].items[i].producedQty) || 0;
-                                            const isP = (updatedBlocks[blockIndex].items[i].coatingShade || '').trim().toUpperCase() === 'PLAIN';
-                                            if (isP) {
-                                              const o = parseFloat(updatedBlocks[blockIndex].items[i].orderQty) || 0;
-                                              updatedBlocks[blockIndex].items[i].balanceToMake = Math.max(0, o - prod);
-                                            } else {
-                                              const o = parseFloat(updatedBlocks[blockIndex].items[i].orderQty) || 0;
-                                              updatedBlocks[blockIndex].items[i].balanceToMake = Math.max(0, o - prod);
-                                            }
-                                          }
-                                          setBlocks(updatedBlocks);
-                                        } else {
-                                          handleItemChange(blockIndex, itemIndex, 'plainBottleStock', val);
-                                        }
-                                      }} min="0" />
+                                      <input type="number" className="form-control form-control-sm shadow-none text-center" value={item.plainBottleStock} readOnly />
                                       {(item.coatingShade || '').trim().toUpperCase() === 'PLAIN' && (() => {
                                         const hasBottle = Boolean(item.bottleName);
                                         if (!hasBottle) return null;
@@ -2116,15 +1832,15 @@ export default function AddPrintingPlan() {
                                     )}
                                   </td>
                                   <td>
-                                    <input type="number" className="form-control form-control-sm shadow-none text-center" value={item.balanceToMake} onChange={(e) => handleItemChange(blockIndex, itemIndex, 'balanceToMake', e.target.value)} />
+                                    <input type="number" className="form-control form-control-sm shadow-none text-center" value={item.balanceToMake} readOnly />
                                   </td>
                                   {renderGroupCell && (
                                     <td rowSpan={rowSpan} className="align-middle" style={{ backgroundColor: isGrouped ? '#f8f9fa' : 'inherit' }}>
-                                      <input type="number" className="form-control form-control-sm shadow-none text-center" value={item.boxQty} onChange={(e) => handleItemChange(blockIndex, itemIndex, 'boxQty', e.target.value)} min="1" />
+                                      <input type="number" className="form-control form-control-sm shadow-none text-center" value={item.boxQty} readOnly min="1" />
                                     </td>
                                   )}
                                   <td>
-                                    <input type="number" className="form-control form-control-sm shadow-none text-center" value={item.noOfBoxes} onChange={(e) => handleItemChange(blockIndex, itemIndex, 'noOfBoxes', e.target.value)} min="0" />
+                                    <input type="number" className="form-control form-control-sm shadow-none text-center" value={item.noOfBoxes} readOnly min="0" />
                                   </td>
                                   <td>
                                     <input type="number" className="form-control form-control-sm shadow-none text-center" value={item.dispatchBalance} onChange={(e) => handleItemChange(blockIndex, itemIndex, 'dispatchBalance', e.target.value)} min="0" />

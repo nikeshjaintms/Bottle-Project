@@ -114,7 +114,7 @@ export default function BottlePerBoxes() {
                 </div>
               </div>
               <div className="companies-mobile-actions brands-mobile-actions">
-                <Can I="update" a="bottleperbox">
+                <Can I="edit" a="bottleperbox">
                   <Link 
                     to={s._id ? `/bottle-per-box/edit/${s._id}` : '/bottle-per-box/add'} 
                     state={s._id ? null : { prefillName: s.bottleName }}
@@ -202,7 +202,7 @@ export default function BottlePerBoxes() {
                     </td>
                     <td className="py-3 text-center">
                       <div className="d-flex gap-2 justify-content-center">
-                        <Can I="update" a="bottleperbox">
+                        <Can I="edit" a="bottleperbox">
                           <Link 
                             to={s._id ? `/bottle-per-box/edit/${s._id}` : '/bottle-per-box/add'} 
                             state={s._id ? null : { prefillName: s.bottleName }}

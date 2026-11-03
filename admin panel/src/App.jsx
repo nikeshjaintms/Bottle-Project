@@ -277,8 +277,8 @@ export default function App() {
               <Route path="/gst/add" element={<AddGst />} />
               <Route path="/gst/edit/:id" element={<EditGst />} /> */}
 
-              <Route path="/summary" element={<SummaryCompanies />} />
-              <Route path="/summary/company/:companyId" element={<CompanySummary />} />
+              <Route path="/summary" element={ability.can('read', 'summary') ? <SummaryCompanies /> : <Navigate to="/" replace />} />
+              <Route path="/summary/company/:companyId" element={ability.can('read', 'summary') ? <CompanySummary /> : <Navigate to="/" replace />} />
 
               <Route path="/bottle-per-box" element={<BottlePerBoxes />} />
               <Route path="/bottle-per-box/add" element={<AddBottlePerBox />} />

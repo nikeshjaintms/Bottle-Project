@@ -18,6 +18,7 @@ import { sortPrintingPlans } from '../../utils/printingPlanSort';
 import { buildContiguousGroups, buildMultipleContiguousGroups } from '../../utils/tableGrouping';
 import ZoomControl from '../../components/ZoomControl';
 import { downloadPrintingPlanExcel } from '../../utils/printingPlanExport';
+import { PrintingOrderQtyModal, PrintingReadyQtyModal } from '../../components/PrintingQuantityModals';
 const DoubleScrollContainer = ({ children }) => {
   const topScrollRef = React.useRef(null);
   const bottomScrollRef = React.useRef(null);
@@ -119,6 +120,7 @@ export default function PrintingPlan() {
   }, [urlDate]);
 
   const [showImportModal, setShowImportModal] = useState(false);
+  const [quantityModal, setQuantityModal] = useState({ type: null, plan: null });
   
   const [fromDate, setFromDate] = useState('');
   const [toDate, setToDate] = useState('');
@@ -149,6 +151,8 @@ export default function PrintingPlan() {
   const fetchPlans = () => {
     infiniteScroll.resetAndLoad();
   };
+
+  const openQuantityModal = (type, plan) => setQuantityModal({ type, plan });
 
   useEffect(() => {
     dispatch(fetchCompanies({ pagination: 'false' }));
@@ -249,41 +253,386 @@ export default function PrintingPlan() {
 
   const handleSendToReadyToDispatch = async (plan) => {
     try {
-      // Send to API (idempotent endpoint)
-      const response = await API.post('/ready-to-dispatch/from-plan', {
+      const orderQty = Number(plan.orderQty || 0);
+      const printed = Number(plan.producedQty ?? 0);
+      const alreadySent = Number(plan.sentToReadyQty || 0);
+      const sendable = Math.max(0, printed - alreadySent);
+      const balanceToMake = printed - orderQty;
+
+      if (printed <= 0) {
+        Swal.fire({
+          icon: 'info',
+          title: 'No Printing Done Yet',
+          text: 'No printing done yet, nothing to send.',
+          confirmButtonText: 'OK'
+        });
+        return;
+      }
+
+      if (sendable <= 0) {
+        Swal.fire({
+          icon: 'info',
+          title: 'Nothing to Send',
+          text: 'All printed quantity for this row has already been sent to Ready To Dispatch.',
+          toast: true,
+          position: 'top-end',
+          timer: 3000,
+          showConfirmButton: false
+        });
+        return;
+      }
+
+      const remainingUnprinted = Math.max(0, orderQty - printed);
+
+      let selectedOption = null;
+      let selectedQty = sendable;
+      let remainingOrderAfterDispatch = remainingUnprinted;
+      let remainingPrintedAfterDispatch = 0;
+      let balanceAfterDispatch = 0 - remainingUnprinted;
+
+      if (remainingUnprinted > 0) {
+        // Partial production: order > printed. Present both production options!
+        const dialogResult = await Swal.fire({
+          title: 'Production Actions & Dispatch',
+          width: 650,
+          html: `
+          <div class="text-start py-1">
+            <div class="p-3 mb-3 rounded-3" style="background: rgba(0, 174, 239, 0.08); border: 1px solid rgba(0, 174, 239, 0.25);">
+              <div class="fw-bold mb-2 text-dark" style="font-size: 15px;">
+                ${plan.bottleName} ${plan.printingToBeDone ? ' - ' + plan.printingToBeDone : ''}
+              </div>
+              <div class="row g-2 text-center" style="font-size: 12px;">
+                <div class="col-4">
+                  <div class="text-muted text-uppercase" style="font-size: 10px; font-weight: 600;">Order Qty</div>
+                  <div class="fw-bold text-dark fs-6">${orderQty}</div>
+                </div>
+                <div class="col-4">
+                  <div class="text-muted text-uppercase" style="font-size: 10px; font-weight: 600;">Printed Qty</div>
+                  <div class="fw-bold text-primary fs-6">${printed}</div>
+                </div>
+                <div class="col-4">
+                  <div class="text-muted text-uppercase" style="font-size: 10px; font-weight: 600;">Balance To Make</div>
+                  <div class="fw-bold ${balanceToMake >= 0 ? 'text-success' : 'text-danger'} fs-6">${balanceToMake}</div>
+                </div>
+                <div class="col-6 mt-2">
+                  <div class="text-muted text-uppercase" style="font-size: 10px; font-weight: 600;">Already Dispatched</div>
+                  <div class="fw-bold text-secondary">${alreadySent}</div>
+                </div>
+                <div class="col-6 mt-2">
+                  <div class="text-muted text-uppercase" style="font-size: 10px; font-weight: 600;">Available To Dispatch</div>
+                  <div class="fw-bold text-success">${sendable}</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="mb-3">
+              <label class="form-label fw-bold small text-muted text-uppercase mb-2" style="font-size: 11px;">Select Production Decision</label>
+              <div class="d-flex flex-column gap-2">
+                <label class="d-flex align-items-start p-3 rounded-3 border cursor-pointer" id="card-option-1" style="background: #fff; border-color: #dee2e6; cursor: pointer;">
+                  <input type="radio" name="swal-prod-option" id="choice-close-order" value="CLOSE_ENTIRE_ORDER" class="form-check-input me-3 mt-1">
+                  <div>
+                    <div class="fw-bold text-dark" style="font-size: 13px;">Option A: Send & Close Entire Order</div>
+                    <div class="text-muted small mt-1" style="font-size: 11.5px; line-height: 1.4;">
+                      Sends the selected quantity to Ready To Dispatch and cancels the unsent remainder of the order. The original row will be closed from active production.
+                    </div>
+                  </div>
+                </label>
+
+                <label class="d-flex align-items-start p-3 rounded-3 border cursor-pointer" id="card-option-2" style="background: #fff; border-color: #dee2e6; cursor: pointer;">
+                  <input type="radio" name="swal-prod-option" id="choice-split-order" value="SPLIT_REMAINING_ORDER" class="form-check-input me-3 mt-1">
+                  <div>
+                    <div class="fw-bold text-dark" style="font-size: 13px;">Option B: Send & Continue Remaining Order</div>
+                    <div class="text-muted small mt-1" style="font-size: 11.5px; line-height: 1.4;">
+                      Sends the selected quantity to Ready To Dispatch and keeps the remaining order and any printed quantity not yet dispatched active in the Printing Plan.
+                    </div>
+                  </div>
+                </label>
+              </div>
+            </div>
+
+            <div class="mb-3">
+              <label class="form-label fw-bold small text-muted text-uppercase mb-2" style="font-size: 11px;">Dispatch Quantity</label>
+              <div class="d-flex gap-3">
+                <label id="choice-qty-whole-label" class="d-flex align-items-center p-2 px-3 rounded border cursor-pointer" style="background: #f8fafc; cursor: pointer;">
+                  <input type="radio" name="swal-qty-choice" id="choice-qty-whole" value="whole" checked class="form-check-input me-2 mt-0">
+                  <span class="small">All available (<strong>${sendable}</strong> units)</span>
+                </label>
+                <label id="choice-qty-partial-label" class="d-flex align-items-center p-2 px-3 rounded border cursor-pointer" style="background: #f8fafc; cursor: pointer;">
+                  <input type="radio" name="swal-qty-choice" id="choice-qty-partial" value="partial" class="form-check-input me-2 mt-0">
+                  <span class="small">Custom Partial Quantity</span>
+                </label>
+              </div>
+            </div>
+
+            <div id="swal-partial-container" class="mb-2" style="display: none;">
+              <label class="form-label small fw-bold text-muted mb-1" for="swal-partial-qty">Quantity to Dispatch (1 - ${sendable})</label>
+              <input type="number" id="swal-partial-qty" class="form-control shadow-none" placeholder="Enter quantity" min="1" max="${sendable}" step="1" inputmode="numeric" value="${sendable}">
+              <div id="swal-partial-error" class="text-danger small mt-1" style="display: none;"></div>
+            </div>
+          </div>
+        `,
+          didOpen: () => {
+            const wholeRadio = document.getElementById('choice-qty-whole');
+            const partialRadio = document.getElementById('choice-qty-partial');
+            const partialContainer = document.getElementById('swal-partial-container');
+            const partialInput = document.getElementById('swal-partial-qty');
+            const errorDiv = document.getElementById('swal-partial-error');
+
+            const opt1Radio = document.getElementById('choice-close-order');
+            const opt2Radio = document.getElementById('choice-split-order');
+            const card1 = document.getElementById('card-option-1');
+            const card2 = document.getElementById('card-option-2');
+
+            const updateCardStyles = () => {
+              [card1, card2].forEach(c => {
+                if (c) {
+                  c.style.borderColor = '#dee2e6';
+                  c.style.background = '#fff';
+                }
+              });
+              if (opt1Radio && opt1Radio.checked && card1) {
+                card1.style.borderColor = '#00aeef';
+                card1.style.background = 'rgba(0, 174, 239, 0.05)';
+              } else if (opt2Radio && opt2Radio.checked && card2) {
+                card2.style.borderColor = '#00aeef';
+                card2.style.background = 'rgba(0, 174, 239, 0.05)';
+              }
+            };
+            updateCardStyles();
+            opt1Radio?.addEventListener('change', updateCardStyles);
+            opt2Radio?.addEventListener('change', updateCardStyles);
+
+            const setQuantityMode = (mode) => {
+              const isPartial = mode === 'partial';
+              partialRadio.checked = isPartial;
+              wholeRadio.checked = !isPartial;
+              partialContainer.hidden = !isPartial;
+              partialContainer.style.display = isPartial ? 'block' : 'none';
+              if (isPartial) {
+                requestAnimationFrame(() => {
+                  partialInput.focus();
+                  partialInput.select();
+                });
+              } else {
+                if (errorDiv) {
+                  errorDiv.style.display = 'none';
+                  errorDiv.innerText = '';
+                }
+              }
+            };
+
+            const togglePartial = () => setQuantityMode(partialRadio.checked ? 'partial' : 'whole');
+            wholeRadio.addEventListener('change', togglePartial);
+            partialRadio.addEventListener('change', togglePartial);
+            document.getElementById('choice-qty-whole-label').addEventListener('click', () => setQuantityMode('whole'));
+            document.getElementById('choice-qty-partial-label').addEventListener('click', () => setQuantityMode('partial'));
+            setQuantityMode('whole');
+
+            const enforceAvailableMaximum = () => {
+              const enteredQty = partialInput.valueAsNumber;
+              if (Number.isFinite(enteredQty) && enteredQty > sendable) {
+                partialInput.value = String(sendable);
+              }
+              if (errorDiv) {
+                errorDiv.style.display = 'none';
+                errorDiv.innerText = '';
+              }
+            };
+            partialInput.addEventListener('input', enforceAvailableMaximum);
+            partialInput.addEventListener('change', enforceAvailableMaximum);
+            partialInput.addEventListener('blur', enforceAvailableMaximum);
+          },
+          preConfirm: () => {
+            const optRadio = document.querySelector('input[name="swal-prod-option"]:checked');
+            const partialRadio = document.getElementById('choice-qty-partial');
+            const partialInput = document.getElementById('swal-partial-qty');
+            const errorDiv = document.getElementById('swal-partial-error');
+
+            if (!optRadio) {
+              Swal.showValidationMessage('Please select a production decision.');
+              return false;
+            }
+
+            const showError = (msg) => {
+              if (errorDiv) {
+                errorDiv.innerText = msg;
+                errorDiv.style.display = 'block';
+              }
+              return false;
+            };
+
+            const option = optRadio.value;
+            let qty = sendable;
+
+            if (partialRadio && partialRadio.checked) {
+              const rawVal = partialInput ? partialInput.value.trim() : '';
+              if (!rawVal) return showError('Please enter a quantity.');
+              if (rawVal.includes('.')) return showError('Decimals are not allowed.');
+              const num = Number(rawVal);
+              if (isNaN(num) || !Number.isInteger(num)) return showError('Please enter a valid whole number.');
+              if (num <= 0) return showError('Quantity must be greater than zero.');
+              if (num > sendable) return showError(`Quantity cannot exceed available sendable quantity (${sendable}).`);
+              qty = num;
+            }
+
+            return { option, qty };
+          },
+          showCancelButton: true,
+          confirmButtonText: 'Next <i class="bi bi-arrow-right ms-1"></i>',
+          cancelButtonText: 'Cancel',
+          customClass: {
+            confirmButton: 'btn btn-primary px-4 py-2 me-2',
+            cancelButton: 'btn btn-light px-4 py-2'
+          },
+          buttonsStyling: false
+        });
+
+        if (!dialogResult.isConfirmed || !dialogResult.value) return;
+        selectedOption = dialogResult.value.option;
+        selectedQty = dialogResult.value.qty;
+        const totalDispatchedAfterAction = alreadySent + selectedQty;
+        remainingOrderAfterDispatch = Math.max(0, orderQty - totalDispatchedAfterAction);
+        remainingPrintedAfterDispatch = Math.max(0, printed - totalDispatchedAfterAction);
+        balanceAfterDispatch = remainingPrintedAfterDispatch - remainingOrderAfterDispatch;
+
+        // Show confirmation dialog with exact dispatch and cancellation/remaining quantities
+        const isOption1 = selectedOption === 'CLOSE_ENTIRE_ORDER';
+
+        let confirmHtml = '';
+        let confirmTitle = '';
+        let confirmBtnText = 'Yes, Proceed';
+        let confirmBtnClass = 'btn btn-primary px-4 py-2 me-2';
+
+        if (isOption1) {
+          confirmTitle = 'Confirm Close Entire Order';
+          confirmBtnText = 'Yes, Close & Dispatch';
+          confirmBtnClass = 'btn btn-danger px-4 py-2 me-2';
+          confirmHtml = `
+          <div class="text-start py-2">
+            <p class="mb-3 text-dark">Please confirm closing the order and dispatching:</p>
+            <div class="p-3 rounded border bg-light mb-3" style="font-size: 13px;">
+              <div class="d-flex justify-content-between mb-1">
+                <span>Dispatch to Ready To Dispatch:</span>
+                <strong class="text-success">${selectedQty} units</strong>
+              </div>
+              <div class="d-flex justify-content-between mb-1">
+                <span>Cancel Remaining Order Quantity:</span>
+                <strong class="text-danger">${remainingOrderAfterDispatch} units</strong>
+              </div>
+              <div class="d-flex justify-content-between">
+                <span>Original Order:</span>
+                <strong>${orderQty} units</strong>
+              </div>
+            </div>
+            <div class="alert alert-warning py-2 px-3 small mb-0">
+              <i class="bi bi-exclamation-triangle-fill me-1"></i>
+              This row will be <strong>closed</strong> from active production.
+            </div>
+          </div>
+        `;
+        } else {
+          confirmTitle = 'Confirm Split Order';
+          confirmBtnText = 'Yes, Split & Dispatch';
+          confirmHtml = `
+          <div class="text-start py-2">
+            <p class="mb-3 text-dark">Please confirm splitting the order and dispatching:</p>
+            <div class="p-3 rounded border bg-light mb-3" style="font-size: 13px;">
+              <div class="d-flex justify-content-between mb-1">
+                <span>Dispatch to Ready To Dispatch:</span>
+                <strong class="text-success">${selectedQty} units</strong>
+              </div>
+              <div class="d-flex justify-content-between mb-1">
+                <span>Carry Forward Remaining Order:</span>
+                <strong class="text-primary">${remainingOrderAfterDispatch} units</strong>
+              </div>
+              <div class="d-flex justify-content-between">
+                <span>New Active Balance To Make:</span>
+                <strong class="${balanceAfterDispatch >= 0 ? 'text-success' : 'text-danger'}">${balanceAfterDispatch} units</strong>
+              </div>
+            </div>
+            <div class="alert alert-info py-2 px-3 small mb-0">
+              <i class="bi bi-info-circle-fill me-1"></i>
+              The remaining order (<strong>${remainingOrderAfterDispatch}</strong> units) and undispatched printed quantity (<strong>${remainingPrintedAfterDispatch}</strong> units) will remain active in Printing Plan.
+            </div>
+          </div>
+        `;
+        }
+
+        const confirmResult = await Swal.fire({
+          title: confirmTitle,
+          html: confirmHtml,
+          icon: 'question',
+          showCancelButton: true,
+          confirmButtonText: confirmBtnText,
+          cancelButtonText: 'Back',
+          customClass: {
+            confirmButton: confirmBtnClass,
+            cancelButton: 'btn btn-light px-4 py-2'
+          },
+          buttonsStyling: false
+        });
+
+        if (!confirmResult.isConfirmed) return;
+      } else {
+        // Row is already completed (printed >= order)
+        const confirmResult = await Swal.fire({
+          title: 'Send to Ready To Dispatch',
+          html: `
+          <div class="text-start py-2">
+            <p class="mb-2">Send <strong>${sendable}</strong> units of <strong>${plan.bottleName}</strong> to Ready To Dispatch?</p>
+            <div class="d-flex justify-content-between p-2 rounded bg-light border" style="font-size: 13px;">
+              <span>Order: <strong>${orderQty}</strong></span>
+              <span>Printed: <strong>${printed}</strong></span>
+              <span>Already Sent: <strong>${alreadySent}</strong></span>
+              <span class="text-success">Sending: <strong>${sendable}</strong></span>
+            </div>
+          </div>
+        `,
+          icon: 'question',
+          showCancelButton: true,
+          confirmButtonText: 'Yes, Send',
+          cancelButtonText: 'Cancel',
+          customClass: {
+            confirmButton: 'btn btn-primary px-4 py-2 me-2',
+            cancelButton: 'btn btn-light px-4 py-2'
+          },
+          buttonsStyling: false
+        });
+
+        if (!confirmResult.isConfirmed) return;
+        selectedOption = null;
+        selectedQty = sendable;
+      }
+
+      // Send to API with selected option and qty
+      const requestData = {
         source: 'printing',
-        planId: plan._id
-      });
+        planId: plan._id,
+        qty: selectedQty
+      };
+      if (selectedOption) requestData.action = selectedOption;
+      const response = await API.post('/ready-to-dispatch/from-plan', requestData);
 
       if (response.data.success) {
         const { sheetId, lineId, isExisting, warnings = [] } = response.data.data;
-        
-        // Refresh the list to get the updated mark
-        fetchPlans();
-        
-        if (isExisting) {
-          // Already sent: show info toast and open View page focused
-          Swal.fire({
-            icon: 'info',
-            title: 'Already sent',
-            toast: true,
-            position: 'top-end',
-            timer: 3000,
-            showConfirmButton: false
-          });
-        } else {
-          // New send: show success toast
-          Swal.fire({
-            icon: 'success',
-            title: 'Added to Ready To Dispatch',
-            toast: true,
-            position: 'top-end',
-            timer: 3000,
-            showConfirmButton: false
-          });
-        }
 
-        // Show warning toasts if any
+        // Refetch plans so active/closed changes reflect immediately
+        fetchPlans();
+
+        Swal.fire({
+          icon: 'success',
+          title: selectedOption === 'SPLIT_REMAINING_ORDER' ? 'Order Split & Dispatched' : (isExisting ? 'Added to Ready To Dispatch' : 'Sent to Ready To Dispatch'),
+          text: selectedOption === 'SPLIT_REMAINING_ORDER'
+            ? `Dispatched ${selectedQty} units. Remaining order ${remainingOrderAfterDispatch}, including ${remainingPrintedAfterDispatch} printed units, retained in active plan.`
+            : (selectedOption === 'CLOSE_ENTIRE_ORDER' && remainingOrderAfterDispatch > 0
+              ? `Dispatched ${selectedQty} units. Remaining ${remainingOrderAfterDispatch} units cancelled and row closed.`
+              : 'Sent to Ready To Dispatch successfully.'),
+          toast: true,
+          position: 'top-end',
+          timer: 4000,
+          showConfirmButton: false
+        });
+
         if (warnings && warnings.length > 0) {
           setTimeout(() => {
             warnings.forEach((warning, idx) => {
@@ -302,9 +651,23 @@ export default function PrintingPlan() {
           }, 800);
         }
 
-        // Navigate to the sheet's View page with focus
-        const focusQuery = lineId ? `?focus=${lineId}${!isExisting ? '&new=true' : ''}` : '';
-        navigate(`/ready-to-dispatch/view/${sheetId}${focusQuery}`);
+        // Stay on Printing Plan page so the user sees updated/removed row, but offer navigation
+        Swal.fire({
+          icon: 'success',
+          title: selectedOption === 'SPLIT_REMAINING_ORDER' ? 'Order Split & Dispatched' : 'Order Dispatched & Closed',
+          text: selectedOption === 'SPLIT_REMAINING_ORDER'
+            ? `Dispatched ${selectedQty} units. Remaining order ${remainingOrderAfterDispatch}, including ${remainingPrintedAfterDispatch} printed units, retained in active plan.`
+            : `Dispatched ${selectedQty} units. Remaining ${remainingOrderAfterDispatch} units cancelled and row closed.`,
+          showConfirmButton: true,
+          confirmButtonText: 'View in Ready To Dispatch',
+          showCancelButton: true,
+          cancelButtonText: 'Stay on Plan'
+        }).then((result) => {
+          if (result.isConfirmed && sheetId) {
+            const focusQuery = lineId ? `?focus=${lineId}${!isExisting ? '&new=true' : ''}` : '';
+            navigate(`/ready-to-dispatch/view/${sheetId}${focusQuery}`);
+          }
+        });
       }
     } catch (error) {
       console.error('Error sending to Ready To Dispatch:', error);
@@ -654,18 +1017,26 @@ export default function PrintingPlan() {
                 })()
               ))}
               
-              <td className={`py-3 text-center fw-bold align-middle ${
-                (plan.coatingShade || '').trim().toUpperCase() === 'PLAIN' && 
-                plan.plainBottleStock > 0 && 
-                plan.orderQty > plan.plainBottleStock 
-                  ? 'bg-warning' 
-                  : ''
-              }`}>
+              <td
+                className={`py-3 text-center fw-bold align-middle ${plan.plainStockWarning?.hasWarning ? 'bg-warning' : ''}`}
+                style={{ cursor: 'pointer' }}
+                onClick={() => openQuantityModal('order', plan)}
+                title={plan.plainStockWarning ? plan.plainStockWarning.tooltip : 'Click to add Order Qty'}
+              >
                 {plan.orderQty !== null && plan.orderQty !== undefined ? plan.orderQty : '-'}
               </td>
               
-              <td className="py-3 text-center align-middle" title={(plan.coatingShade || '').trim().toUpperCase() === 'PLAIN' && plan.usedFromTooltip ? plan.usedFromTooltip : ''}>
+              <td
+                className="py-3 text-center align-middle"
+                style={{ cursor: 'pointer' }}
+                onClick={() => openQuantityModal('ready', plan)}
+                title={(plan.coatingShade || '').trim().toUpperCase() === 'PLAIN' && plan.usedFromTooltip ? plan.usedFromTooltip : 'Click to add Ready (Printed) Qty'}
+              >
                 <div>{plan.producedQty !== null && plan.producedQty !== undefined ? plan.producedQty : 0}</div>
+                {Number(plan.readyRejectionQty) > 0 && (
+                  <div className="small text-muted">Rejected: {plan.readyRejectionQty}</div>
+                )}
+                {plan.completed && <span className="badge bg-success mt-1">Completed</span>}
                 {(plan.coatingShade || '').trim().toUpperCase() === 'PLAIN' && Array.isArray(plan.usedFrom) && plan.usedFrom.length > 0 && (
                   <div className="small text-muted text-wrap font-monospace mt-1" style={{ fontSize: '11px', lineHeight: '1.2' }} title={plan.usedFromTooltip}>
                     {plan.usedFrom.map(u => `${u.companyName} ${u.qty}`).join(' · ')}
@@ -1050,6 +1421,22 @@ export default function PrintingPlan() {
         onClose={() => setShowImportModal(false)} 
         onImportComplete={() => fetchPlans()} 
       />
+      {quantityModal.type === 'order' && (
+        <PrintingOrderQtyModal
+          show
+          plan={quantityModal.plan}
+          onClose={() => setQuantityModal({ type: null, plan: null })}
+          onSave={fetchPlans}
+        />
+      )}
+      {quantityModal.type === 'ready' && (
+        <PrintingReadyQtyModal
+          show
+          plan={quantityModal.plan}
+          onClose={() => setQuantityModal({ type: null, plan: null })}
+          onSave={fetchPlans}
+        />
+      )}
     </div>
   );
 }

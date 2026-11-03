@@ -66,7 +66,7 @@ const navItems = [
         subject: 'incoming',
         subLinks: [
           { to: '/incoming', label: 'Incoming', icon: 'bi-list-ul', action: 'read', subject: 'incoming' },
-          { to: `/shreno-incoming`, label: 'Shreno Incoming', icon: 'bi-building-fill-down', action: 'read', subject: 'incoming' }
+          { to: `/shreno-incoming`, label: 'Shreno Incoming', icon: 'bi-building-fill-down', action: 'read', subject: 'shreno-incoming' }
         ]
       },
       { to: '/lacquer-plan', icon: 'bi-calendar-check-fill', label: 'Lacquer Plan', action: 'sidebar', subject: 'lacquerplan' },
@@ -84,7 +84,7 @@ const navItems = [
           { to: '/delivery-challan/shayoona', label: 'Shayoona', icon: 'bi-file-earmark-text', action: 'read', subject: 'delivery-challan' }
         ]
       },
-      { to: '/summary', icon: 'bi-file-earmark-diff', label: 'Summary', action: 'sidebar', subject: 'dispatch' },
+      { to: '/summary', icon: 'bi-file-earmark-diff', label: 'Summary', action: 'sidebar', subject: 'summary' },
     ],
   },
   {

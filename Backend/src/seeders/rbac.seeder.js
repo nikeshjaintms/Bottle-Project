@@ -7,6 +7,7 @@ const seedRBAC = async () => {
     const permissionsData = [
       "create-user", "edit-user", "delete-user", "show-user", "sidebar-user", "read-user",
       "sidebar-dashboard", "read-dashboard",
+      "sidebar-summary", "read-summary",
       "create-brand", "edit-brand", "delete-brand", "sidebar-brand", "read-brand",
       "create-bottlespec", "edit-bottlespec", "delete-bottlespec", "sidebar-bottlespec", "read-bottlespec", "read-bottlespecdetail",
       "create-variant", "edit-variant", "delete-variant", "sidebar-variant", "read-variant",
@@ -21,6 +22,7 @@ const seedRBAC = async () => {
       "create-raw-material", "edit-raw-material", "delete-raw-material", "sidebar-raw-material", "read-raw-material",
       "create-company", "edit-company", "delete-company", "sidebar-company", "read-company",
       "create-company-address", "edit-company-address", "delete-company-address", "sidebar-company-address", "read-company-address",
+      "create-bottleperbox", "edit-bottleperbox", "delete-bottleperbox", "sidebar-bottleperbox", "read-bottleperbox",
       "create-operator", "edit-operator", "delete-operator", "sidebar-operator", "read-operator",
       "create-shift", "edit-shift", "delete-shift", "sidebar-shift", "read-shift",
       "create-unit", "edit-unit", "delete-unit", "sidebar-unit", "read-unit",
@@ -29,8 +31,9 @@ const seedRBAC = async () => {
       "create-formula", "edit-formula", "delete-formula", "sidebar-formula", "read-formula",
       "create-stock_entry", "edit-stock_entry", "delete-stock_entry", "sidebar-stock_entry", "read-stock_entry", "rate-stock_entry", "ledger-stock_entry", "stockout-stock_entry",
       "create-incoming", "edit-incoming", "delete-incoming", "sidebar-incoming", "read-incoming",
+      "create-shreno-incoming", "edit-shreno-incoming", "delete-shreno-incoming", "sidebar-shreno-incoming", "read-shreno-incoming",
+      "create-dispatch", "edit-dispatch", "delete-dispatch", "sidebar-dispatch", "read-dispatch",
       "create-itemType", "edit-itemType", "delete-itemType", "sidebar-itemType", "read-itemType",
-      "create-gst", "edit-gst", "delete-gst", "sidebar-gst", "read-gst",
       "create-delivery-challan", "edit-delivery-challan", "delete-delivery-challan", "sidebar-delivery-challan", "read-delivery-challan",
       "sidebar-delivery-challan-mcnore", "read-delivery-challan-mcnore",
       "sidebar-delivery-challan-sherno", "read-delivery-challan-sherno",
@@ -66,10 +69,12 @@ const seedRBAC = async () => {
         name: "Manager",
         permissionNames: [
           "sidebar-dashboard", "read-dashboard",
+          "sidebar-summary", "read-summary",
           "show-user", "sidebar-user", "read-user",
           "sidebar-unit", "read-unit",
           "create-brand", "edit-brand", "sidebar-brand", "read-brand", "read-company",
           "create-company-address", "edit-company-address", "sidebar-company-address", "read-company-address",
+          "create-bottleperbox", "edit-bottleperbox", "sidebar-bottleperbox", "read-bottleperbox",
           "create-bottlespec", "edit-bottlespec", "sidebar-bottlespec", "read-bottlespec", "read-bottlespecdetail",
           "read-printing-type", "read-printing-color", "read-coating-type",
           "create-variant", "edit-variant", "sidebar-variant", "read-variant",
@@ -78,8 +83,9 @@ const seedRBAC = async () => {
           "create-coatingproduction", "edit-coatingproduction", "sidebar-coatingproduction", "read-coatingproduction", "read-coatingproductiondetail",
           "create-coatingspec", "edit-coatingspec", "sidebar-coatingspec", "read-coatingspec",
           "create-incoming", "edit-incoming", "sidebar-incoming", "read-incoming",
+          "create-shreno-incoming", "edit-shreno-incoming", "sidebar-shreno-incoming", "read-shreno-incoming",
+          "create-dispatch", "edit-dispatch", "sidebar-dispatch", "read-dispatch",
           "create-itemType", "edit-itemType", "sidebar-itemType", "read-itemType",
-          "create-gst", "edit-gst", "sidebar-gst", "read-gst",
           "create-sg-label", "edit-sg-label", "delete-sg-label", "sidebar-sg-label", "read-sg-label",
           "create-sg-label-2", "edit-sg-label-2", "delete-sg-label-2", "sidebar-sg-label-2", "read-sg-label-2",
           "create-stock_entry", "edit-stock_entry", "delete-stock_entry", "sidebar-stock_entry", "read-stock_entry", "rate-stock_entry", "ledger-stock_entry", "stockout-stock_entry",
@@ -93,6 +99,7 @@ const seedRBAC = async () => {
         name: "Operator",
         permissionNames: [
           "sidebar-dashboard", "read-dashboard",
+          "sidebar-summary", "read-summary",
           "sidebar-unit", "read-unit",
           "sidebar-brand", "read-brand", "read-company",
           "sidebar-bottlespec", "read-bottlespec",
@@ -103,6 +110,10 @@ const seedRBAC = async () => {
           "sidebar-coatingproduction", "read-coatingproduction", "create-coatingproduction",
           "sidebar-coatingspec", "read-coatingspec",
           "sidebar-incoming", "read-incoming",
+          "sidebar-shreno-incoming", "read-shreno-incoming",
+          "sidebar-company-address", "read-company-address",
+          "sidebar-bottleperbox", "read-bottleperbox",
+          "sidebar-itemType", "read-itemType",
           "show-user", "read-user",
           "sidebar-stock_entry", "read-stock_entry"
         ]
@@ -125,6 +136,33 @@ const seedRBAC = async () => {
       } else if (roleData.name === "Admin") {
         existingRole.permissions = rolePermissions;
         await existingRole.save();
+      } else {
+        const rolePermissionNamesToAdd = {
+          Manager: [
+            "create-shreno-incoming", "edit-shreno-incoming", "sidebar-shreno-incoming", "read-shreno-incoming",
+            "create-dispatch", "edit-dispatch", "sidebar-dispatch", "read-dispatch",
+            "create-company-address", "edit-company-address", "sidebar-company-address", "read-company-address",
+            "create-bottleperbox", "edit-bottleperbox", "sidebar-bottleperbox", "read-bottleperbox",
+            "create-itemType", "edit-itemType", "sidebar-itemType", "read-itemType",
+            "sidebar-summary", "read-summary"
+          ],
+          Operator: [
+            "sidebar-shreno-incoming", "read-shreno-incoming",
+            "sidebar-company-address", "read-company-address",
+            "sidebar-bottleperbox", "read-bottleperbox",
+            "sidebar-itemType", "read-itemType",
+            "sidebar-summary", "read-summary"
+          ]
+        }[roleData.name] || [];
+        const existingPermissionIds = new Set(existingRole.permissions.map(id => id.toString()));
+        const missingPermissions = dbPermissions.filter(permission =>
+          rolePermissionNamesToAdd.includes(permission.name) &&
+          !existingPermissionIds.has(permission._id.toString())
+        );
+        if (missingPermissions.length > 0) {
+          existingRole.permissions.push(...missingPermissions.map(permission => permission._id));
+          await existingRole.save();
+        }
       }
     }
 

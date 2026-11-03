@@ -1421,7 +1421,10 @@ exports.commitImport = async (req, res) => {
                     challanNo: record.challanNo,             // G: CHALLAN NO (optional, 'OLD STOCK' for opening balance)
                     poNo: record.poNo,                       // C: PO NO
                     poDate: record.poDate,                   // B: PO DATE
-                    
+                    isImported: true,
+                    importedAt: new Date(),
+                    importBatchId: req.body?.batchId || `SHR-IMP-${Date.now()}`,
+                    source: 'EXCEL_IMPORT',
                     // Items array - create one item per row with bottle and quantity data
                     items: [
                         {
@@ -1454,8 +1457,9 @@ exports.commitImport = async (req, res) => {
                 }
             }
 
-            // PACKING MATERIAL RECORDS
-            if (packingRecords && packingRecords.length > 0 && sheetBottleId !== 'MISSING') {
+            // PACKING MATERIAL RECORDS: Omitted during import per Prompt AW
+            // Imported data is display-only and must never create or update Packing Material stock
+            if (false && packingRecords && packingRecords.length > 0 && sheetBottleId !== 'MISSING') {
                 console.log(`[PACKING MATERIAL COMMIT] Processing ${packingRecords.length} packing material items for bottle ${sheetBottleId}`);
 
                 // Get bottle reference for linking

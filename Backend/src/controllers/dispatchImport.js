@@ -988,10 +988,10 @@ exports.commitDispatchImport = async (req, res) => {
             };
           });
 
-          if (existingDispatch) {
+          if (existingDispatch && existingDispatch.isImported) {
+            // Append to existing imported dispatch
             existingDispatch.items.push(...newItems);
             await existingDispatch.save();
-            // Update plainBottleKeys
             const plainBottleKeys = await computePlainBottleKeys(existingDispatch.items);
             await updatePlainBottleKeysAtomic(mongoose.connection.db, existingDispatch._id, plainBottleKeys);
           } else {
@@ -1000,7 +1000,11 @@ exports.commitDispatchImport = async (req, res) => {
               gatePassNo: dGroup.gatePass || null,
               companyId: dGroup.companyId,
               items: newItems,
-              remarks: dGroup.remarks || ''
+              remarks: dGroup.remarks || '',
+              isImported: true,
+              importedAt: new Date(),
+              importBatchId: req.body?.batchId || `DISP-IMP-${Date.now()}`,
+              source: 'EXCEL_IMPORT'
             });
             await newDispatch.save();
             // Update plainBottleKeys

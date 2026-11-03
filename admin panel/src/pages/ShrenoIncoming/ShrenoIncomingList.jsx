@@ -180,7 +180,7 @@ export default function ShrenoIncomingList() {
           <p className="page-subtitle mb-0">Record items specifically from Shreno</p>
         </div>
         <div className="d-flex gap-2">
-          <Can I="create" a="incoming">
+          <Can I="create" a="shreno-incoming">
             <button 
               className="btn btn-outline-primary"
               onClick={() => setShowImportModal(true)}
@@ -189,7 +189,7 @@ export default function ShrenoIncomingList() {
               <i className="bi bi-file-earmark-excel me-2" /> Import Excel
             </button>
           </Can>
-          <Can I="create" a="incoming">
+          <Can I="create" a="shreno-incoming">
             <Link to="/shreno-incoming/add" className="btn-accent companies-header-action">
               <i className="bi bi-plus-lg me-2" /> Add Shreno Challan
             </Link>
@@ -304,18 +304,25 @@ export default function ShrenoIncomingList() {
                         <tr key={inc._id} className="align-middle border-bottom transition-all hover-bg-light">
                           <td className="ps-4 text-muted fw-bold">{(currentPage - 1) * itemsPerPage + index + 1}</td>
                           <td><div className="fw-600">{new Date(inc.date).toLocaleDateString('en-GB')}</div></td>
-                          <td><div className="fw-bold text-primary">{inc.challanNo}</div></td>
+                          <td>
+                      <div className="fw-bold text-primary">
+                        {inc.challanNo}
+                        {inc.isImported && (
+                          <span className="badge bg-secondary-subtle text-secondary border ms-1" style={{ fontSize: 10 }}>Imported</span>
+                        )}
+                      </div>
+                    </td>
                           <td><div className="text-muted">{inc.poNo || '-'}</div></td>
                           <td colSpan="4" className="text-muted text-center fst-italic py-3">No items</td>
                           <td className="text-center py-3">
                             <div className="d-flex justify-content-center gap-2">
-                              <Can I="read" a="incoming">
+                              <Can I="read" a="shreno-incoming">
                                 <Link to={`/shreno-incoming/view/${inc._id}`} className="btn btn-sm btn-outline-info border-0 rounded-3 shadow-none p-2" title="View"><i className="bi bi-eye fs-6" /></Link>
                               </Can>
-                              <Can I="update" a="incoming">
+                              <Can I="edit" a="shreno-incoming">
                                 <Link to={`/shreno-incoming/edit/${inc._id}`} className="btn btn-sm btn-outline-primary border-0 rounded-3 shadow-none p-2" title="Edit"><i className="bi bi-pencil-square fs-6" /></Link>
                               </Can>
-                              <Can I="delete" a="incoming">
+                              <Can I="delete" a="shreno-incoming">
                                 <button onClick={() => handleDelete(inc._id, inc.challanNo)} className="btn btn-sm btn-outline-danger border-0 rounded-3 shadow-none p-2" title="Delete"><i className="bi bi-trash fs-6" /></button>
                               </Can>
                             </div>
@@ -364,6 +371,9 @@ export default function ShrenoIncomingList() {
                                 </td>
                                 <td rowSpan={inc.items.length} className="fw-bold text-primary border-bottom">
                                   {inc.challanNo}
+                                  {inc.isImported && (
+                                    <span className="badge bg-secondary-subtle text-secondary border ms-1" style={{ fontSize: 10 }}>Imported</span>
+                                  )}
                                 </td>
                                 <td rowSpan={inc.items.length} className="text-muted border-bottom">
                                   {inc.poNo || '-'}
@@ -394,17 +404,17 @@ export default function ShrenoIncomingList() {
                             </td>
                             <td className="text-center py-3 border-bottom">
                               <div className="d-flex justify-content-center gap-2">
-                                <Can I="read" a="incoming">
+                                <Can I="read" a="shreno-incoming">
                                   <Link to={`/shreno-incoming/view/${inc._id}`} className="btn btn-sm btn-outline-info border-0 rounded-3 shadow-none p-2" title="View Challan">
                                     <i className="bi bi-eye fs-6"></i>
                                   </Link>
                                 </Can>
-                                <Can I="update" a="incoming">
+                                <Can I="edit" a="shreno-incoming">
                                   <Link to={`/shreno-incoming/edit/${inc._id}`} className="btn btn-sm btn-outline-primary border-0 rounded-3 shadow-none p-2" title="Edit Challan">
                                     <i className="bi bi-pencil-square fs-6"></i>
                                   </Link>
                                 </Can>
-                                <Can I="delete" a="incoming">
+                                <Can I="delete" a="shreno-incoming">
                                   <button
                                     onClick={() => handleDeleteItem(inc, itemIdx)}
                                     className="btn btn-sm btn-outline-danger border-0 rounded-3 shadow-none p-2" title="Delete Item"

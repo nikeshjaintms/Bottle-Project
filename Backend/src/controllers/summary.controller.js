@@ -1216,7 +1216,8 @@ exports.getSummaryLogs = async (req, res) => {
             poOrderQty: inc.poOrderQty || null,
             box,
             qty,
-            totalQty
+            totalQty,
+            isImported: Boolean(inc.isImported)
           });
         }
       }
@@ -1256,7 +1257,8 @@ exports.getSummaryLogs = async (req, res) => {
             box,
             qty,
             totalQty,
-            remarks: disp.remarks || item.remarks || "-"
+            remarks: disp.remarks || item.remarks || "-",
+            isImported: Boolean(disp.isImported)
           });
         }
       }
@@ -1284,7 +1286,8 @@ exports.getSummaryLogs = async (req, res) => {
               poDate: inc.poDate || null,
               itemType: (item.itemType && item.itemType.name) || "-",
               configuration: item.configuration || "-",
-              quantity
+              quantity,
+            isImported: Boolean(inc.isImported)
             });
           }
         }

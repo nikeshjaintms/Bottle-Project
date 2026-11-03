@@ -967,7 +967,7 @@ export default function CompanySummary() {
                           </>
                         )}
                         <td>{formatDate(row.date)}</td>
-                        <td className="fw-bold text-dark">{row.challanNo}</td>
+                        <td className="fw-bold text-dark">{row.challanNo}{row.isImported && <span className="badge bg-secondary-subtle text-secondary border ms-1" style={{ fontSize: 10 }}>Imported</span>}</td>
                         <td className="num-col">{formatNum(row.box)}</td>
                         <td className="num-col text-muted">{formatNum(row.qty)}</td>
                         <td className="num-col bold-num text-success">
@@ -1062,7 +1062,7 @@ export default function CompanySummary() {
                           {idx + 1}
                         </td>
                         <td>{formatDate(row.date || row.dispatchDate)}</td>
-                        <td className="fw-bold text-dark">{row.gatePassNo || row.dcNo || '-'}</td>
+                        <td className="fw-bold text-dark">{row.gatePassNo || row.dcNo || '-'}{row.isImported && <span className="badge bg-secondary-subtle text-secondary border ms-1" style={{ fontSize: 10 }}>Imported</span>}</td>
                         {isShreno ? (
                           <td style={{ textAlign: 'center', minWidth: '120px' }}>
                             {row.coating || '-'} - {row.printing || '-'} - {row.detectedTextColor || '-'}

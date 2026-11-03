@@ -3,6 +3,7 @@ import { Link, useNavigate, useSearchParams, } from 'react-router-dom';
 import { Can } from '../../context/AbilityContext';
 import { useDispatch, useSelector } from 'react-redux';
 import {fetchUsers, deleteUser, setSearchTerm} from '../../redux/slices/userSlice';
+import { getFullImageUrl } from '../../utils/imageUrl';
 import Swal from 'sweetalert2';
 
 const avatarColors = [
@@ -12,12 +13,6 @@ const avatarColors = [
   'linear-gradient(135deg,#e91e63,#c2185b)',
   'linear-gradient(135deg,#6366f1,#8b5cf6)',
 ];
-
-const getImageUrl = (imagePath) => {
-  if (!imagePath) return null;
-  if (imagePath.startsWith('http')) return imagePath;
-  return `${import.meta.env.VITE_API_URL || 'https://application.shayonaglass.com/api'}/../${imagePath}`;
-};
 
 export default function Users() {
   const navigate = useNavigate();
@@ -212,7 +207,7 @@ const { users,
                 >
                   {u.image ? (
                     <img
-                      src={getImageUrl(u.image)}
+                      src={getFullImageUrl(u.image)}
                       alt={u.name}
                       style={{
                         width: '100%',
@@ -308,7 +303,7 @@ const { users,
                       }}>
                         {u.image ? (
                           <img
-                            src={getImageUrl(u.image)}
+                            src={getFullImageUrl(u.image)}
                             alt={u.name}
                             style={{
                               width: '100%',

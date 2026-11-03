@@ -1,11 +1,13 @@
 const express = require("express");
 const router = express.Router();
 const lacquerPlanController = require("../controllers/lacquerPlan.controller");
+const { auth } = require("../middleware/auth.middleware");
 
 const multer = require("multer");
 const upload = multer({ storage: multer.memoryStorage() }); // using memory storage for temporary parsing
 
 router.post("/", lacquerPlanController.createPlan);
+router.post("/layout", auth, lacquerPlanController.previewPlanLayout);
 router.get("/paginated", lacquerPlanController.getPlansPaginated);
 router.get("/totals", lacquerPlanController.getPlansTotals);
 router.get("/", lacquerPlanController.getPlans);

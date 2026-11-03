@@ -31,7 +31,7 @@ async function reconcileStock() {
     }
   }
 
-  const incomings = await db.collection('incomings').find({ isDeleted: false }).toArray();
+  const incomings = await db.collection('incomings').find({ isDeleted: false, isImported: { $ne: true } }).toArray();
   for (const inc of incomings) {
     for (const item of (inc.items || [])) {
       if (item.bottleId) {

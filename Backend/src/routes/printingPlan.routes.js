@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 const printingPlanController = require("../controllers/printingPlan.controller");
 const printingPlanImport = require("../controllers/printingPlanImport");
+const { auth } = require("../middleware/auth.middleware");
 
 const multer = require("multer");
 const upload = multer({ storage: multer.memoryStorage() });
@@ -29,6 +30,11 @@ router.get("/totals", printingPlanController.getPlansTotals);
 
 // GET /printing-plan/stats/computed (fetch live stats for form changes)
 router.get("/stats/computed", printingPlanController.getComputedStats);
+
+// Quantity entry endpoints
+router.post("/:id/add-order-qty", auth, printingPlanController.addOrderQty);
+router.post("/:id/add-ready-qty", auth, printingPlanController.addReadyQty);
+router.delete("/:id/entries/:entryId", auth, printingPlanController.deleteQtyEntry);
 
 // GET /printing-plan/:id (get single plan)
 router.get("/:id", printingPlanController.getPlanById);

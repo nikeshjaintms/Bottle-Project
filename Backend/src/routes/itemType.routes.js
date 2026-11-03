@@ -13,7 +13,7 @@ const checkAbility = require("../middleware/checkAbility");
 router.post("/", auth, checkAbility("create", "itemType"), createItemType);
 router.get("/", auth, checkAbility("read", "itemType"), getAllItemTypes);
 router.get("/:id", auth, checkAbility("read", "itemType"), getItemTypeById);
-router.put("/:id", auth, checkAbility("update", "itemType"), updateItemType);
+router.put("/:id", auth, checkAbility("edit", "itemType"), updateItemType);
 router.delete("/:id", auth, checkAbility("delete", "itemType"), deleteItemType);
 
 module.exports = router;

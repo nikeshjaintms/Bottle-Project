@@ -68,12 +68,31 @@ const incomingSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    isImported: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+    importedAt: {
+      type: Date,
+      default: null,
+    },
+    importBatchId: {
+      type: String,
+      default: null,
+    },
+    source: {
+      type: String,
+      default: null,
+    },
   },
   { timestamps: true }
 );
 
 // Indexes for incoming queries with common filters
 incomingSchema.index({ billToId: 1, isDeleted: 1, documentDate: -1 });
+incomingSchema.index({ billToId: 1, isDeleted: 1, isImported: 1, documentDate: -1 });
+incomingSchema.index({ 'items.bottleId': 1, isDeleted: 1, isImported: 1 });
 incomingSchema.index({ billToId: 1, createdAt: -1 });
 incomingSchema.index({ deliveryNumber: 1, isDeleted: 1 });
 

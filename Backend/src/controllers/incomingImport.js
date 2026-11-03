@@ -1038,12 +1038,17 @@ exports.commitImport = async (req, res) => {
 
                 // For records without a date, use today's date as documentDate
                 const effectiveDate = docDate || new Date();
+                const importBatchId = req.body?.batchId || `INC-IMP-${Date.now()}`;
                 const incomingRecord = new Incoming({
                     date: effectiveDate,
                     documentDate: effectiveDate,
                     deliveryNumber: record.challanNo || null,
                     billToId: new mongoose.Types.ObjectId(record.companyId),
                     createdBy: req.user?._id || null,
+                    isImported: true,
+                    importedAt: new Date(),
+                    importBatchId: importBatchId,
+                    source: 'EXCEL_IMPORT',
                     items: [
                         {
                             bottleId,
@@ -1089,65 +1094,6 @@ exports.commitImport = async (req, res) => {
                             const saved = await doc.save();
 
                             totalIncomingImported++;
-
-                            // NEW: Create dispatch plans from this incoming record
-                            // For each item in the incoming, create a LacquerPlan row
-                            const LacquerPlan = require('../models/LacquerPlan');
-                            for (const item of saved.items) {
-                                try {
-                                    // Find bottle name from BottlePerBox master
-                                    const bottt = await BottlePerBox.findById(item.bottleId);
-                                    if (!bottt) {
-                                        console.warn(`[INCOMING IMPORT COMMIT] Row ${sourceRecord.excelRowNumber}: Bottle master not found for ID ${item.bottleId}`);
-                                        continue;
-                                    }
-
-                                    const bottleNameForPlan = bottt.bottleName || bottt.plainBottleName;
-
-                                    // Check if plan already exists for this bottle on this date
-                                    const planDate = new Date(saved.documentDate);
-                                    const planStartDate = new Date(planDate);
-                                    planStartDate.setHours(0, 0, 0, 0);
-                                    const planEndDate = new Date(planDate);
-                                    planEndDate.setHours(23, 59, 59, 999);
-
-                                    const existingPlan = await LacquerPlan.findOne({
-                                        companyId: saved.billToId,
-                                        bottleName: bottleNameForPlan,
-                                        planDate: {
-                                            $gte: planStartDate,
-                                            $lte: planEndDate
-                                        },
-                                        isDeleted: false
-                                    });
-
-                                    if (existingPlan) {
-
-                                        continue;
-                                    }
-
-                                    // Create new LacquerPlan from incoming
-                                    const newPlan = new LacquerPlan({
-                                        planDate: saved.documentDate,
-                                        bottleName: bottleNameForPlan,
-                                        companyId: saved.billToId,
-                                        orderQty: item.totalQty || 0,
-                                        coatingCompletedQty: 0,
-                                        balanceToMake: item.totalQty || 0,
-                                        status: true,
-                                        remarks: `Created from incoming: ${saved.deliveryNumber || 'No challan'}`,
-                                        plainStock: item.totalQty || 0,
-                                        importGroupId: null,
-                                        isEditedAfterImport: false
-                                    });
-
-                                    await newPlan.save();
-                                    plansCreated++;
-
-                                } catch (planErr) {
-                                    console.error(`[INCOMING IMPORT COMMIT] Row ${sourceRecord.excelRowNumber}: Error creating plan: ${planErr.message}`);
-                                }
-                            }
                         } catch (docErr) {
                             console.error(`[INCOMING IMPORT COMMIT] FAILED to save Row ${sourceRecord.excelRowNumber}: ${docErr.message}`, docErr);
                             totalSkipped++;
@@ -1162,16 +1108,8 @@ exports.commitImport = async (req, res) => {
                 }
             }
 
-            // Update stock
-            if (stockBulkOps.length > 0) {
-                try {
-                    await PlainBottleStock.bulkWrite(stockBulkOps);
-                    totalBottlesUpdated += stockBulkOps.length;
-
-                } catch (err) {
-                    console.warn(`[INCOMING IMPORT COMMIT] Error updating stock: ${err.message}`);
-                }
-            }
+            // Import is display-only: do NOT update PlainBottleStock
+            // stockBulkOps omitted to satisfy Prompt AW requirement
         }
 
         // Build response message with skip details

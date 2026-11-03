@@ -134,17 +134,17 @@ export default function ShrenoIncomingTable({ incomings, handleDelete, bottleFil
                 <td className="py-3 text-center text-muted">{row.qtyPerBox}</td>
                 <td className="py-3 text-center fw-bold text-success">{row.totalQty.toLocaleString()}</td>
                 <td className="py-3 text-center">
-                  <Can I="read" a="incoming">
+                  <Can I="read" a="shreno-incoming">
                     <Link to={`/incoming/view/${row.id}`} className="btn btn-sm btn-outline-info border-0 rounded-3 shadow-none p-2 mx-1" title="View">
                       <i className="bi bi-eye" style={{ fontSize: '14px' }}></i>
                     </Link>
                   </Can>
-                  <Can I="update" a="incoming">
+                  <Can I="edit" a="shreno-incoming">
                     <Link to={`/incoming/edit/${row.id}`} className="btn btn-sm btn-outline-primary border-0 rounded-3 shadow-none p-2 mx-1" title="Edit">
                       <i className="bi bi-pencil-square" style={{ fontSize: '14px' }}></i>
                     </Link>
                   </Can>
-                  <Can I="delete" a="incoming">
+                  <Can I="delete" a="shreno-incoming">
                     <button onClick={() => handleDelete(row.id, row.deliveryNumber)} className="btn btn-sm btn-outline-danger border-0 rounded-3 shadow-none p-2 mx-1" title="Delete">
                       <i className="bi bi-trash" style={{ fontSize: '14px' }}></i>
                     </button>

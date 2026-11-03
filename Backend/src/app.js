@@ -41,6 +41,7 @@ app.use("/api/company-address", require("./routes/companyAddress.routes"));
 app.use("/api/brand", require("./routes/brand.routes"));
 app.use("/api/variant", require("./routes/variant.routes"));
 app.use("/api/bottle-spec", require("./routes/bottlespecs.routes"));
+app.use("/api/bottle-specs", require("./routes/bottlespecs.routes"));
 app.use("/api/production", require("./routes/production.routes"));
 app.use("/api/coating-production", require("./routes/coatingProduction.routes"));
 app.use("/api/roles", require("./routes/role.routes"));

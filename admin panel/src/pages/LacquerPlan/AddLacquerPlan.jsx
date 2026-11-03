@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { createLacquerPlan } from '../../redux/slices/lacquerPlanSlice';
@@ -14,7 +14,7 @@ import CreatableSelect from 'react-select/creatable';
 import API from '../../services/api';
 import Swal from 'sweetalert2';
 import { useLacquerPlanLanguage } from '../../hooks/useLacquerPlanLanguage';
-import { isPlanRowCompleted, checkRowStockWarning, checkRowStockWarningInPool, getCoatedQty } from '../../utils/lacquerPlanUtils';
+import { isPlanRowCompleted } from '../../utils/lacquerPlanUtils';
 
 // Pool key: (company, plain bottle id / canonical name), strictly NO brand and NO section in the key.
 const getPoolKey = (companyId, bottleName, bottlePerBoxes = []) => {
@@ -89,7 +89,9 @@ export default function AddLacquerPlan() {
   const { loading, error } = useSelector((state) => state.lacquerPlans);
   const { labels, language, toggleLanguage } = useLacquerPlanLanguage();
 
-  const [planDate, setPlanDate] = useState(new Date().toISOString().split('T')[0]);
+  const [planDate, setPlanDate] = useState(() => (
+    new URLSearchParams(location.search).get('date') || new Date().toISOString().split('T')[0]
+  ));
   const [openingStockMap, setOpeningStockMap] = useState({});
   const [rows, setRows] = useState([
     {
@@ -111,6 +113,40 @@ export default function AddLacquerPlan() {
       remarks: ''
     }
   ]);
+  const [stockWarnings, setStockWarnings] = useState({});
+  const [stockWarningPreviewError, setStockWarningPreviewError] = useState(false);
+  const [stockWarningRetryNonce, setStockWarningRetryNonce] = useState(0);
+  const stockWarningRequestId = useRef(0);
+
+  useEffect(() => {
+    const requestId = ++stockWarningRequestId.current;
+    const controller = new AbortController();
+    const timeout = setTimeout(async () => {
+      try {
+        const response = await API.post('/lacquer-plan/layout', {
+          planDate,
+          rows: rows.map((row, index) => ({ ...row, draftKey: String(index) }))
+        }, { signal: controller.signal });
+        if (requestId !== stockWarningRequestId.current) return;
+        const nextWarnings = {};
+        for (const row of response.data?.data?.rows || []) {
+          nextWarnings[Number(row.draftKey)] = row;
+        }
+        setStockWarnings(nextWarnings);
+        setStockWarningPreviewError(false);
+      } catch (error) {
+        if (!controller.signal.aborted && requestId === stockWarningRequestId.current) {
+          console.error('Failed to preview Lacquer Plan stock warnings:', error);
+          setStockWarningPreviewError(true);
+        }
+      }
+    }, 250);
+
+    return () => {
+      clearTimeout(timeout);
+      controller.abort();
+    };
+  }, [planDate, rows, stockWarningRetryNonce]);
 
   const [showMissingSpecModal, setShowMissingSpecModal] = useState(false);
   const [missingSpecData, setMissingSpecData] = useState({
@@ -143,22 +179,18 @@ export default function AddLacquerPlan() {
           baseStock: base,
           shownStock: base,
           totalCoated: 0,
-          totalOrder: 0,
           plainBottleName: getCanonicalPlainBottleName(r.bottleName || r.plainBottle, bottlePerBoxes),
-          rows: []  // Track rows in this pool for pool-aware warning
         };
       }
       const rowCoated = parseFloat(r.coatedQty !== undefined && r.coatedQty !== '' ? r.coatedQty : r.coatingCompletedQty) || 0;
       stats[pk].totalCoated += rowCoated;
-      stats[pk].totalOrder += (parseFloat(r.orderQty) || 0);
-      stats[pk].rows.push(r);  // Add row to pool tracking
     });
 
     Object.keys(stats).forEach(pk => {
       const pool = stats[pk];
-      const base = Number.isFinite(Number(pool.baseStock)) ? Number(pool.baseStock) : (Number.isFinite(Number(pool.plainStock)) ? Number(pool.plainStock) : 0);
-      pool.shownStock = base - pool.totalCoated;
-      pool.isCoatedExceeded = Number.isFinite(base) && pool.totalCoated > base;
+      const base = Number.isFinite(Number(pool.baseStock)) ? Number(pool.baseStock) : (Number.isFinite(Number(pool.plainStock)) ? Number(pool.plainStock) : null);
+      pool.shownStock = base !== null ? (base - pool.totalCoated) : (pool.plainStock ?? '-');
+      pool.isCoatedExceeded = base !== null && pool.totalCoated > base;
     });
 
     return stats;
@@ -566,7 +598,7 @@ export default function AddLacquerPlan() {
 
         // Fetch printing type and color from BottleSpec
         try {
-          const bottleSpecRes = await API.get('/bottle-specs', {
+          const bottleSpecRes = await API.get('/bottle-spec', {
             params: {
               bottleName: valStr,
               brandId: currentRow.brandId,
@@ -680,18 +712,6 @@ export default function AddLacquerPlan() {
           }
           currentRow.plainStock = fetchedStock;
 
-          // Insufficient-stock warning on bottle change: warn only when that row's own Order Qty > opening stock of the pool
-          if (pk && checkRowStockWarning(currentRow.orderQty, fetchedOpeningStock)) {
-            Swal.fire({
-              toast: true,
-              position: 'top-end',
-              icon: 'warning',
-              title: labels.orderExceedsOpeningStock || 'Order Qty exceeds opening plain bottle stock',
-              text: `Opening Stock: ${fetchedOpeningStock}`,
-              showConfirmButton: false,
-              timer: 3000
-            });
-          }
         } catch (err) {
           console.error("Failed to fetch plain stock", err);
         }
@@ -1461,9 +1481,13 @@ export default function AddLacquerPlan() {
               })(),
               stockSources: (() => {
                 const rPk = getPoolKey(row.companyId, row.bottleName, bottlePerBoxes);
-                return poolSourcesMap[rPk] || row.stockSources || [row.companyId];
+                const sources = poolSourcesMap[rPk] || row.stockSources || [row.companyId];
+                return (sources || []).map(s => (s?._id || s)?.toString()).filter(Boolean);
               })(),
-              stockAllocation: row.stockAllocation || [],
+              stockAllocation: (row.stockAllocation || []).map(a => ({
+                companyId: (a.companyId?._id || a.companyId)?.toString(),
+                qty: Number(a.qty) || 0
+              })),
               stockWarningAcknowledged: true
             });
           });
@@ -1613,6 +1637,14 @@ export default function AddLacquerPlan() {
                     value={planDate} onChange={(e) => setPlanDate(e.target.value)} required />
                 </div>
               </div>
+              {stockWarningPreviewError && (
+                <div className="small text-danger mb-3" role="status">
+                  Stock check unavailable,{' '}
+                  <button type="button" className="btn btn-link btn-sm p-0 align-baseline" onClick={() => setStockWarningRetryNonce(value => value + 1)}>
+                    retry
+                  </button>
+                </div>
+              )}
 
               <div className="bg-white border border-light-subtle rounded-3 p-4 mb-4 shadow-sm position-relative lacquer-plan-section">
 
@@ -1805,6 +1837,7 @@ export default function AddLacquerPlan() {
                                 <th className="small text-muted text-center align-middle" style={{ width: '9%' }}>{labels.balanceToMake}</th>
                                 <th className="small text-muted text-center align-middle" style={{ width: '6%' }}>{labels.bottlePerBox}</th>
                                 <th className="small text-muted text-center align-middle" style={{ width: '6%' }}>{labels.noOfOrderBoxes}</th>
+                                <th className="small text-muted text-center align-middle" style={{ width: '6%' }}>{labels.readyBoxes || 'Ready Boxes'}</th>
                                 <th className="small text-muted text-center align-middle" style={{ width: '9%' }}>{labels.dispatchPendingQty}</th>
                                 <th className="small text-muted text-center align-middle" style={{ width: '5%' }}>{labels.soldQty}</th>
                                 <th className="small text-muted text-center align-middle" style={{ width: '15%', minWidth: '250px' }}>{labels.remarks}</th>
@@ -1847,9 +1880,9 @@ export default function AddLacquerPlan() {
                                     ? poolInfo.shownStock
                                     : (row.plainStock || 0);
                                   
-                                  // Use pool-aware warning: check this row against earlier rows in same pool
-                                  const poolRows = poolInfo ? poolInfo.rows || [] : [];
-                                  const rowIsExceeding = checkRowStockWarningInPool(row, poolRows, poolInfo?.openingStock || 0);
+                                  const warningDetails = stockWarnings[index];
+                                  const rowIsExceeding = Boolean(warningDetails?.stockWarning);
+                                  const rowTooltip = warningDetails?.warningMessage || '';
 
                                   const renderShadeGroupCell = true;
                                   const renderProcessCell = true;
@@ -1979,8 +2012,44 @@ export default function AddLacquerPlan() {
                                               if (!selected) {
                                                 handleRowChange(index, 'plainBottleId', '');
                                               } else {
-                                                // Use the new plainBottleId flow
-                                                handleRowChange(index, 'plainBottleId', selected.value);
+                                                // Get the bottle name from the selected option
+                                                const selectedBottleName = selected.plainBottleName || selected.label;
+                                                
+                                                // Look up the actual BottlePerBox data
+                                                const bottlePerBoxData = (bottlePerBoxes || []).find(b =>
+                                                  normalizeRollOn(b.plainBottleName || b.bottleName || '').trim() === normalizeRollOn(selectedBottleName || '').trim()
+                                                );
+                                                
+                                                // Check if selected bottle exists for current brand via BottleSpec
+                                                const bottleExistsForBrand = (bottleSpecs || []).some(bs => 
+                                                  (bs.brandId?._id || bs.brandId)?.toString() === gBrandId?.toString() &&
+                                                  (bs.bottleName || '').trim().toLowerCase() === selectedBottleName.trim().toLowerCase()
+                                                );
+
+                                                if (!bottleExistsForBrand && gBrandId) {
+                                                  // Bottle doesn't exist for this brand - show modal to create it
+                                                  setMissingPlainBottleData({
+                                                    bottleName: selectedBottleName,
+                                                    companyId: gCompanyId || '',
+                                                    brandId: gBrandId || '',
+                                                    companyName: companies.find(c => c._id === gCompanyId)?.name || '',
+                                                    brandName: brands.find(b => b._id === gBrandId)?.name || '',
+                                                    bottlePerBox: bottlePerBoxData?.bottlePerBox || '',
+                                                    printingTypeId: '',
+                                                    printingColorId: '',
+                                                    rowIndex: index,
+                                                    status: true
+                                                  });
+                                                  setShowMissingPlainBottleModal(true);
+                                                } else {
+                                                  // Bottle exists for brand or no brand selected - proceed normally
+                                                  handleRowChange(index, 'plainBottleId', selected.value);
+                                                  
+                                                  // Auto-populate boxQty if bottle has bottlePerBox value
+                                                  if (bottlePerBoxData && bottlePerBoxData.bottlePerBox) {
+                                                    handleRowChange(index, 'boxQty', bottlePerBoxData.bottlePerBox);
+                                                  }
+                                                }
                                               }
                                             }}
                                             onCreateOption={(inputValue) => {
@@ -2108,8 +2177,8 @@ export default function AddLacquerPlan() {
                                         </td>
                                       )}
                                       {renderGroupCell && (
-                                        <td rowSpan={rowSpan} className="align-middle text-center" style={{ backgroundColor: isGrouped ? '#f8f9fa' : (rowIsExceeding ? '#fff3cd' : 'inherit') }}>
-                                          <input type="number" className={`form-control form-control-sm shadow-none text-center ${rowIsExceeding ? 'bg-warning' : ''}`} value={currentShownStock} readOnly />
+                                        <td rowSpan={rowSpan} className={`align-middle text-center ${rowIsExceeding ? 'bg-warning text-dark' : ''}`} style={{ backgroundColor: isGrouped && !rowIsExceeding ? '#f8f9fa' : undefined }} title={rowTooltip}>
+                                          <input type="number" className={`form-control form-control-sm shadow-none text-center ${rowIsExceeding ? 'bg-warning text-dark fw-bold' : ''}`} value={currentShownStock} readOnly title={rowTooltip} />
                                           {(() => {
                                             const hasBottle = Boolean(row.bottleName || row.plainBottle);
                                             if (!hasBottle) return null;
@@ -2189,21 +2258,21 @@ export default function AddLacquerPlan() {
                                           })()}
                                         </td>
                                       )}
-                                      <td>
+                                      <td className={rowIsExceeding ? 'bg-warning text-dark' : ''} title={rowTooltip}>
                                         <input
                                           type="number"
-                                          className={`form-control form-control-sm shadow-none text-center ${rowIsExceeding ? 'bg-warning' : ''}`}
+                                          className={`form-control form-control-sm shadow-none text-center ${rowIsExceeding ? 'bg-warning text-dark fw-bold' : ''}`}
                                           value={row.orderQty}
                                           onChange={(e) => handleRowChange(index, 'orderQty', e.target.value)}
+                                          title={rowTooltip}
                                           onBlur={() => {
-                                            // Insufficient stock warning: popup must show the same number the form shows (opening stock = shown stock + Σ coated)
-                                            if (rowIsExceeding && poolInfo) {
+                                            if (rowIsExceeding && warningDetails?.openingStock !== null) {
                                               Swal.fire({
                                                 toast: true,
                                                 position: 'top-end',
                                                 icon: 'warning',
                                                 title: labels.orderExceedsOpeningStock || 'Order Qty exceeds opening plain bottle stock',
-                                                text: `Opening Stock: ${poolInfo.openingStock}`,
+                                                text: `Opening Stock: ${warningDetails.openingStock}`,
                                                 showConfirmButton: false,
                                                 timer: 3000
                                               });
@@ -2301,6 +2370,14 @@ export default function AddLacquerPlan() {
                                       )}
                                       <td>
                                         <input type="number" className="form-control form-control-sm shadow-none text-center" value={row.noOfBoxes} onChange={(e) => handleRowChange(index, 'noOfBoxes', e.target.value)} min="0" />
+                                      </td>
+                                      <td className="text-center">
+                                        {stockWarningPreviewError || stockWarnings[index]?.readyBoxes === null || stockWarnings[index]?.readyBoxes === undefined
+                                          ? '—'
+                                          : stockWarnings[index].readyBoxes}
+                                        {!stockWarningPreviewError && stockWarnings[index]?.showLooseQty && stockWarnings[index]?.looseQty !== null && stockWarnings[index]?.looseQty !== undefined && (
+                                          <div className="small text-muted">Loose: {stockWarnings[index].looseQty}</div>
+                                        )}
                                       </td>
                                       <td>
                                         <input type="number" className="form-control form-control-sm shadow-none text-center" value={row.dispatchBalance} onChange={(e) => handleRowChange(index, 'dispatchBalance', e.target.value)} min="0" />
@@ -2632,4 +2709,3 @@ export default function AddLacquerPlan() {
     </div>
   );
 }
-

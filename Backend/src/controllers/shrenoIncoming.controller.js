@@ -105,6 +105,10 @@ exports.updateShrenoIncoming = async (req, res) => {
       updateData.images = req.files.map(file => `/uploads/incoming/${file.filename}`);
     }
 
+    const existingShreno = await ShrenoIncoming.findById(req.params.id);
+    if (existingShreno && existingShreno.isImported) {
+      updateData.isImported = true;
+    }
     const shrenoIncoming = await ShrenoIncoming.findByIdAndUpdate(
       req.params.id,
       updateData,

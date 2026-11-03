@@ -1,12 +1,7 @@
 import { useState } from 'react';
 import { useSelector, useDispatch } from 'react-redux';
 import { useNavigate } from 'react-router-dom';
-
-const getImageUrl = (imagePath) => {
-  if (!imagePath) return null;
-  if (imagePath.startsWith('http')) return imagePath;
-  return `${import.meta.env.VITE_API_URL || 'https://application.shayonaglass.com/api'}/../${imagePath}`;
-};
+import { getFullImageUrl } from '../utils/imageUrl';
 
 export default function Topbar({ collapsed, onToggle, onLogout }) {
   const [showDropdown, setShowDropdown] = useState(false);
@@ -16,7 +11,7 @@ export default function Topbar({ collapsed, onToggle, onLogout }) {
 
   const userRole = typeof user?.role === 'object' ? user.role.name : user?.role;
   const displayName = user?.name || (userRole ? userRole.charAt(0).toUpperCase() + userRole.slice(1) : 'Admin');
-  const imageUrl = getImageUrl(user?.image);
+  const imageUrl = getFullImageUrl(user?.image);
 
   const goToChangePassword = () => {
     setShowDropdown(false);

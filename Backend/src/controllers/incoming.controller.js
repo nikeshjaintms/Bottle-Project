@@ -331,9 +331,11 @@ exports.deleteIncoming = async (req, res) => {
     incoming.isDeleted = true;
     await incoming.save();
 
-    for (const item of (incoming.items || [])) {
-      await recomputePlainStock(item.bottleId, incoming.billToId, req.user?._id, req);
-      await replayStockAllocations(item.bottleId, incoming.documentDate, [incoming.billToId], req.user?._id);
+    if (!incoming.isImported) {
+      for (const item of (incoming.items || [])) {
+        await recomputePlainStock(item.bottleId, incoming.billToId, req.user?._id, req);
+        await replayStockAllocations(item.bottleId, incoming.documentDate, [incoming.billToId], req.user?._id);
+      }
     }
     
     res.json({ message: "Incoming deleted successfully and stock reversed" });
@@ -361,6 +363,7 @@ exports.bulkDeleteIncoming = async (req, res) => {
 
     const affectedPairs = new Set();
     for (const inc of incomings) {
+      if (inc.isImported) continue; // Imported records never touch stock
       for (const item of (inc.items || [])) {
         if (item.bottleId && inc.billToId) {
           affectedPairs.add(`${item.bottleId}:::${inc.billToId}`);
@@ -402,6 +405,7 @@ exports.rollbackImport = async (req, res) => {
 
     const affectedPairs = new Set();
     for (const inc of incomings) {
+      if (inc.isImported) continue; // Imported records never touch stock
       for (const item of (inc.items || [])) {
         if (item.bottleId && inc.billToId) {
           affectedPairs.add(`${item.bottleId}:::${inc.billToId}`);
@@ -438,7 +442,8 @@ exports.reconcileStock = async (req, res) => {
 
       const incs = await Incoming.find({
         'items.bottleId': bId,
-        isDeleted: false
+        isDeleted: false,
+        isImported: { $ne: true }
       }).lean();
 
       let totalIncoming = 0;
@@ -574,19 +579,21 @@ exports.updateIncoming = async (req, res) => {
 
     await incoming.save();
 
-    // Recompute stock for all old and new items
-    const affectedBottleIds = new Set([
-      ...oldItems.map(i => i.bottleId?.toString()).filter(Boolean),
-      ...items.map(i => i.bottleId?.toString()).filter(Boolean)
-    ]);
+    // Recompute stock for all old and new items (skip if imported)
+    if (!incoming.isImported) {
+      const affectedBottleIds = new Set([
+        ...oldItems.map(i => i.bottleId?.toString()).filter(Boolean),
+        ...items.map(i => i.bottleId?.toString()).filter(Boolean)
+      ]);
 
-    for (const bId of affectedBottleIds) {
-      if (oldBillTo && oldBillTo.toString() !== billToId.toString()) {
-        await recomputePlainStock(bId, oldBillTo, req.user?._id, req);
-        await replayStockAllocations(bId, incoming.documentDate, [oldBillTo], req.user?._id);
+      for (const bId of affectedBottleIds) {
+        if (oldBillTo && oldBillTo.toString() !== billToId.toString()) {
+          await recomputePlainStock(bId, oldBillTo, req.user?._id, req);
+          await replayStockAllocations(bId, incoming.documentDate, [oldBillTo], req.user?._id);
+        }
+        await recomputePlainStock(bId, billToId, req.user?._id, req);
+        await replayStockAllocations(bId, incoming.documentDate, [billToId], req.user?._id);
       }
-      await recomputePlainStock(bId, billToId, req.user?._id, req);
-      await replayStockAllocations(bId, incoming.documentDate, [billToId], req.user?._id);
     }
     
     res.json({ success: true, message: "Incoming updated and stock adjusted successfully", data: incoming });
@@ -603,8 +610,10 @@ exports.restoreIncoming = async (req, res) => {
     incoming.isDeleted = false;
     await incoming.save();
 
-    for (const item of (incoming.items || [])) {
-      await recomputePlainStock(item.bottleId, incoming.billToId, req.user?._id, req);
+    if (!incoming.isImported) {
+      for (const item of (incoming.items || [])) {
+        await recomputePlainStock(item.bottleId, incoming.billToId, req.user?._id, req);
+      }
     }
 
     res.json({ success: true, message: "Incoming restored successfully", data: incoming });

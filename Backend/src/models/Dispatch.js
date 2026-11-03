@@ -94,15 +94,32 @@ const dispatchSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    isImported: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+    importedAt: {
+      type: Date,
+      default: null,
+    },
+    importBatchId: {
+      type: String,
+      default: null,
+    },
+    source: {
+      type: String,
+      default: null,
+    },
   },
   { timestamps: true }
 );
 
 // Indexes for dispatch list filtering and sorting
 dispatchSchema.index({ companyId: 1, dispatchDate: -1, createdAt: -1 });
-dispatchSchema.index({ companyId: 1, isDeleted: 1 });
+dispatchSchema.index({ companyId: 1, isDeleted: 1, isImported: 1 });
 dispatchSchema.index({ gatePassNo: 1, isDeleted: 1 });
-dispatchSchema.index({ plainBottleKeys: 1 });
+dispatchSchema.index({ plainBottleKeys: 1, isDeleted: 1, isImported: 1 });
 // Automatically compute plainBottleKeys before saving
 dispatchSchema.pre("save", async function () {
   const { computePlainBottleKeys } = require("../utils/computePlainBottleKeys");

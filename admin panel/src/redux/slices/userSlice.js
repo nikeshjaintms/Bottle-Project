@@ -207,39 +207,53 @@ export const uploadUserImage =
     ) => {
 
       try {
+        console.log('[uploadUserImage] Starting upload for user:', id, 'File:', imageFile?.name);
+
+        if (!imageFile) {
+          console.error('[uploadUserImage] No image file provided');
+          return rejectWithValue('No image file selected');
+        }
+
+        if (!id) {
+          console.error('[uploadUserImage] No user ID provided');
+          return rejectWithValue('No user ID provided');
+        }
 
         const formData = new FormData();
         formData.append("image", imageFile);
 
-        const response =
-          await API.post(
+        console.log('[uploadUserImage] FormData created, sending to:', `/users/${id}/profile-image`);
 
-            `/users/${id}/profile-image`,
-
-            formData,
-            {
-              headers: {
-                "Content-Type": "multipart/form-data"
-              }
+        const response = await API.post(
+          `/users/${id}/profile-image`,
+          formData,
+          {
+            headers: {
+              "Content-Type": "multipart/form-data"
             }
+          }
+        );
 
-          );
+        console.log('[uploadUserImage] Response status:', response.status);
+        console.log('[uploadUserImage] Response data:', response.data);
+        
+        if (!response.data) {
+          return rejectWithValue('No data returned from server');
+        }
 
         return response.data;
 
       } catch (error) {
+        console.error('[uploadUserImage] Exception caught:', error);
+        console.error('[uploadUserImage] Error response:', error.response?.data);
+        console.error('[uploadUserImage] Error status:', error.response?.status);
+        console.error('[uploadUserImage] Error message:', error.message);
 
         return rejectWithValue(
-
-          error.response?.data?.message ||
-          "Failed to upload image"
-
+          error.response?.data?.message || error.message || "Failed to upload image"
         );
-
       }
-
     }
-
   );
 
 export const deleteUserImage =
@@ -250,29 +264,39 @@ export const deleteUserImage =
     async (id, { rejectWithValue }) => {
 
       try {
+        console.log('[deleteUserImage] Starting deletion for user:', id);
 
-        const response =
-          await API.delete(
+        if (!id) {
+          console.error('[deleteUserImage] No user ID provided');
+          return rejectWithValue('No user ID provided');
+        }
 
-            `/users/${id}/profile-image`
+        console.log('[deleteUserImage] Sending DELETE to:', `/users/${id}/profile-image`);
 
-          );
+        const response = await API.delete(
+          `/users/${id}/profile-image`
+        );
+
+        console.log('[deleteUserImage] Response status:', response.status);
+        console.log('[deleteUserImage] Response data:', response.data);
+        
+        if (!response.data) {
+          return rejectWithValue('No data returned from server');
+        }
 
         return response.data;
 
       } catch (error) {
+        console.error('[deleteUserImage] Exception caught:', error);
+        console.error('[deleteUserImage] Error response:', error.response?.data);
+        console.error('[deleteUserImage] Error status:', error.response?.status);
+        console.error('[deleteUserImage] Error message:', error.message);
 
         return rejectWithValue(
-
-          error.response?.data?.message ||
-          "Failed to delete image"
-
+          error.response?.data?.message || error.message || "Failed to delete image"
         );
-
       }
-
     }
-
   );
 
 const userSlice = createSlice({

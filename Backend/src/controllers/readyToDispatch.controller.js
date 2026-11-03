@@ -10,6 +10,55 @@ const { derivePlainBottleName } = require("../utils/derivePlainBottleName");
 const mongoose = require("mongoose");
 const { recomputePlainStock } = require("../utils/stockRecompute");
 
+const splitStockAllocation = (allocations, splitQty, totalQty, fallbackCompanyId) => {
+  const sourceAllocations = Array.isArray(allocations)
+    ? allocations
+      .map(allocation => ({
+        companyId: allocation.companyId?._id || allocation.companyId,
+        qty: Math.max(0, Number(allocation.qty) || 0)
+      }))
+      .filter(allocation => allocation.companyId && allocation.qty > 0)
+    : [];
+  const normalizedAllocations = sourceAllocations.length || !fallbackCompanyId || totalQty <= 0
+    ? sourceAllocations
+    : [{ companyId: fallbackCompanyId?._id || fallbackCompanyId, qty: totalQty }];
+
+  const totalAllocated = normalizedAllocations.reduce((sum, allocation) => sum + allocation.qty, 0);
+  if (totalAllocated <= 0 || totalQty <= 0) {
+    return { dispatched: [], remaining: normalizedAllocations };
+  }
+
+  const dispatchedTarget = Math.min(totalAllocated, Math.round(totalAllocated * Math.min(splitQty, totalQty) / totalQty));
+  const shares = normalizedAllocations.map((allocation, index) => {
+    const exactQty = allocation.qty * dispatchedTarget / totalAllocated;
+    const dispatchedQty = Math.floor(exactQty);
+    return {
+      ...allocation,
+      index,
+      dispatchedQty,
+      fractionalRemainder: exactQty - dispatchedQty
+    };
+  });
+  let undistributedQty = dispatchedTarget - shares.reduce((sum, share) => sum + share.dispatchedQty, 0);
+  const remainderOrder = [...shares].sort((a, b) => b.fractionalRemainder - a.fractionalRemainder);
+  for (const share of remainderOrder) {
+    if (undistributedQty <= 0) break;
+    if (share.dispatchedQty < share.qty) {
+      share.dispatchedQty += 1;
+      undistributedQty -= 1;
+    }
+  }
+
+  const dispatched = shares
+    .filter(share => share.dispatchedQty > 0)
+    .map(({ companyId, dispatchedQty }) => ({ companyId, qty: dispatchedQty }));
+  const remaining = shares
+    .filter(share => share.qty - share.dispatchedQty > 0)
+    .map(({ companyId, qty, dispatchedQty }) => ({ companyId, qty: qty - dispatchedQty }));
+
+  return { dispatched, remaining };
+};
+
 // Helpers for Plain Bottle resolution
 const normalizeStr = (str) => {
   if (!str) return '';
@@ -96,7 +145,9 @@ const computeGroupsAndSummary = (groups = []) => {
         const parsedWeight = Number(vl.weight);
         if (!isNaN(parsedWeight) && parsedWeight > 0) {
           weight = parsedWeight;
-          if (noOfBoxes > 0) {
+          if (producedQty > 0 && unit > 0) {
+            totalWeightCalc = parseFloat(((producedQty / unit) * weight).toFixed(3));
+          } else if (noOfBoxes > 0) {
             totalWeightCalc = parseFloat((noOfBoxes * weight).toFixed(3));
           }
         }
@@ -1414,7 +1465,7 @@ exports.createFromPlan = async (req, res) => {
     if (source === "lacquer") {
       if (unit > 0) {
         noOfBoxes = Math.ceil(sendQty / unit);
-        producedQtyCalc = noOfBoxes * unit;
+        producedQtyCalc = sendQty;
       } else {
         noOfBoxes = planRow.noOfBoxes !== null && planRow.noOfBoxes !== undefined ? Number(planRow.noOfBoxes) : 0;
         producedQtyCalc = sendQty;
@@ -1436,7 +1487,7 @@ exports.createFromPlan = async (req, res) => {
 
     const totalWeightCalc =
       boxWeight !== null && boxWeight > 0 && noOfBoxes > 0
-        ? parseFloat((noOfBoxes * boxWeight).toFixed(3))
+        ? parseFloat(((source === "lacquer" && unit > 0 ? producedQtyCalc / unit : noOfBoxes) * boxWeight).toFixed(3))
         : null;
 
     // Warnings
@@ -1496,11 +1547,13 @@ exports.createFromPlan = async (req, res) => {
 
     if (existingLine && source === "lacquer") {
       // Add to existing line
-      existingLine.noOfBoxes = (existingLine.noOfBoxes || 0) + noOfBoxes;
       existingLine.producedQty = (existingLine.producedQty || 0) + producedQtyCalc;
+      existingLine.noOfBoxes = unit > 0
+        ? Math.ceil(existingLine.producedQty / unit)
+        : (existingLine.noOfBoxes || 0) + noOfBoxes;
       existingLine.totalWeight =
         boxWeight !== null && boxWeight > 0 && existingLine.noOfBoxes > 0
-          ? parseFloat((existingLine.noOfBoxes * boxWeight).toFixed(3))
+          ? parseFloat(((unit > 0 ? existingLine.producedQty / unit : existingLine.noOfBoxes) * boxWeight).toFixed(3))
           : null;
       variantLineId = existingLine._id;
       isExisting = true;
@@ -1559,7 +1612,7 @@ exports.createFromPlan = async (req, res) => {
       const performedByUserId = req.user?._id || null;
 
       if (action === "CLOSE_ENTIRE_ORDER") {
-        cancelledQty = Math.max(0, originalOrder - totalCoated);
+        cancelledQty = Math.max(0, originalOrder - newAlreadySent);
         planRow.readyToDispatch = {
           sheetId: sheet._id,
           lineId: variantLineId,
@@ -1583,8 +1636,8 @@ exports.createFromPlan = async (req, res) => {
         planRow.orderHistory.push({
           date: new Date(),
           originalOrder: originalOrder,
-          updatedOrder: totalCoated,
-          totalOrder: totalCoated,
+          updatedOrder: newAlreadySent,
+          totalOrder: newAlreadySent,
           notes: auditNote
         });
 
@@ -1592,8 +1645,8 @@ exports.createFromPlan = async (req, res) => {
         planRow.qtyEntries.push({
           type: 'orderQty',
           subType: 'order',
-          qty: totalCoated - originalOrder,
-          runningTotal: totalCoated,
+          qty: newAlreadySent - originalOrder,
+          runningTotal: newAlreadySent,
           note: auditNote,
           at: new Date(),
           by: performedBy
@@ -1618,7 +1671,9 @@ exports.createFromPlan = async (req, res) => {
 
         await planRow.save();
       } else if (action === "SPLIT_REMAINING_ORDER") {
-        remainingOrderQty = Math.max(0, originalOrder - totalCoated);
+        const totalDispatchedQty = Math.min(totalCoated, newAlreadySent);
+        const remainingCoatedQty = Math.max(0, totalCoated - totalDispatchedQty);
+        remainingOrderQty = Math.max(0, originalOrder - totalDispatchedQty);
 
         if (remainingOrderQty <= 0) {
           // No remaining quantity to split, close the order
@@ -1636,11 +1691,29 @@ exports.createFromPlan = async (req, res) => {
           planRow.closedAt = new Date();
           planRow.closedBy = performedBy;
           planRow.cancelledQty = 0;
+          planRow.productionAudit = planRow.productionAudit || [];
+          planRow.productionAudit.push({
+            action: "SPLIT_REMAINING_ORDER",
+            originalOrderQty: originalOrder,
+            quantityCoated: totalCoated,
+            quantitySentToReady: sendQty,
+            quantityCancelledOrClosed: 0,
+            quantityRemainingAfterSplit: 0,
+            sourcePlanId: planRow._id,
+            sheetId: sheet._id,
+            lineId: variantLineId,
+            performedAt: new Date(),
+            performedBy,
+            performedByUserId,
+            notes: `Sent ${sendQty} to Ready To Dispatch; order completed.`
+          });
           await planRow.save();
         } else {
-          const splitNote = `Sent ${totalCoated} to Ready To Dispatch; remaining ${remainingOrderQty} kept`;
+          const splitNote = `Sent ${sendQty} to Ready To Dispatch; ${totalDispatchedQty} dispatched in total; remaining order ${remainingOrderQty}, coated ${remainingCoatedQty} kept`;
+          const { dispatched: dispatchedStockAllocation, remaining: remainingStockAllocation } =
+            splitStockAllocation(planRow.stockAllocation, totalDispatchedQty, totalCoated, planRow.companyId);
 
-          // 1. Create archived sibling historical record for the completed portion with stockAllocation intact
+          // 1. Archive the dispatched portion and keep undispatched production on the active row.
           const planObj = planRow.toObject();
           delete planObj._id;
           delete planObj.createdAt;
@@ -1649,12 +1722,13 @@ exports.createFromPlan = async (req, res) => {
           const dispatchedDoc = new LacquerPlan({
             ...planObj,
             _id: new mongoose.Types.ObjectId(),
-            orderQty: totalCoated,
-            orderQtyInitial: totalCoated,
-            coatingCompletedQty: totalCoated,
-            coatedQty: totalCoated,
+            orderQty: totalDispatchedQty,
+            orderQtyInitial: totalDispatchedQty,
+            coatingCompletedQty: totalDispatchedQty,
+            coatedQty: totalDispatchedQty,
+            coatedQtyInitial: totalDispatchedQty,
             balanceToMake: 0,
-            sentToReadyQty: newAlreadySent,
+            sentToReadyQty: totalDispatchedQty,
             readyToDispatch: {
               sheetId: sheet._id,
               lineId: variantLineId,
@@ -1665,8 +1739,11 @@ exports.createFromPlan = async (req, res) => {
             isArchived: true,
             isSibling: true,
             siblingOf: planRow._id,
-            appliedStockDeduction: totalCoated,
-            stockAllocation: planRow.stockAllocation || [],
+            appliedStockDeduction: totalDispatchedQty,
+            stockAllocation: dispatchedStockAllocation,
+            stockAllocationInitial: dispatchedStockAllocation,
+            carriedFromCoatedQty: 0,
+            carriedStockAllocation: [],
             productionAudit: [{
               action: "SPLIT_REMAINING_ORDER",
               originalOrderQty: originalOrder,
@@ -1696,23 +1773,25 @@ exports.createFromPlan = async (req, res) => {
           }
           await sheet.save();
 
-          // 2. Update visible active planRow with remaining production
+          // 2. Keep the unshipped order and coated quantity active.
           const boxQty = Number(planRow.boxQty) || 0;
           const recalculatedNoOfBoxes = boxQty > 0 ? Math.ceil(remainingOrderQty / boxQty) : planRow.noOfBoxes;
 
           planRow.orderQty = remainingOrderQty;
           planRow.orderQtyInitial = remainingOrderQty;
-          planRow.coatingCompletedQty = 0;
-          planRow.coatedQty = 0;
-          planRow.balanceToMake = 0 - remainingOrderQty;
+          planRow.coatingCompletedQty = remainingCoatedQty;
+          planRow.coatedQty = remainingCoatedQty;
+          planRow.coatedQtyInitial = remainingCoatedQty;
+          planRow.balanceToMake = remainingCoatedQty - remainingOrderQty;
           planRow.noOfBoxes = recalculatedNoOfBoxes;
           planRow.sentToReadyQty = 0;
           planRow.readyToDispatch = null;
-          planRow.appliedStockDeduction = 0;
-          planRow.stockAllocation = [];
-          planRow.stockAllocationInitial = [];
+          planRow.appliedStockDeduction = remainingCoatedQty;
+          planRow.stockAllocation = remainingStockAllocation;
+          planRow.stockAllocationInitial = remainingStockAllocation;
           planRow.qtyEntries = [];
           planRow.carriedFromCoatedQty = 0;
+          planRow.carriedStockAllocation = [];
           planRow.productionStatus = "ACTIVE";
           planRow.isClosed = false;
           planRow.isArchived = false;

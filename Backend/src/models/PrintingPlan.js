@@ -62,6 +62,51 @@ const printingPlanSchema = new mongoose.Schema({
   producedQty: {
     type: Number
   },
+  qtyEntries: [{
+    type: {
+      type: String
+    },
+    subType: String,
+    qty: Number,
+    rejectionQty: { type: Number, default: 0 },
+    rejectionBoxes: { type: Number, default: 0 },
+    rejectionLooseQty: { type: Number, default: 0 },
+    at: { type: Date, default: Date.now },
+    by: String,
+    note: String,
+    runningTotal: Number,
+    stockAllocation: [{
+      companyId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "Company"
+      },
+      qty: {
+        type: Number,
+        default: 0
+      }
+    }],
+    isDeleted: { type: Boolean, default: false },
+    deletedAt: Date,
+    deletedBy: String
+  }],
+  orderQtyInitial: {
+    type: Number,
+    default: null
+  },
+  producedQtyInitial: {
+    type: Number,
+    default: null
+  },
+  stockAllocationInitial: [{
+    companyId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Company"
+    },
+    qty: {
+      type: Number,
+      default: 0
+    }
+  }],
   dispatchBalance: {
     type: Number,
     default: 0

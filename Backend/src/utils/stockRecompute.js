@@ -1,10 +1,15 @@
 const mongoose = require("mongoose");
 const BottlePerBox = require("../models/BottlePerBox");
 const Incoming = require("../models/Incoming");
+const { NOT_IMPORTED_FILTER, getNotImportedFilter } = require("./importedFilter");
 const LacquerPlan = require("../models/LacquerPlan");
 const PrintingPlan = require("../models/PrintingPlan");
 const PlainBottleStock = require("../models/PlainBottleStock");
 const Company = require("../models/Company");
+
+function inSession(query, session) {
+  return session ? query.session(session) : query;
+}
 
 function escapeRegex(str) {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -13,25 +18,25 @@ function escapeRegex(str) {
 /**
  * Resolves a BottlePerBox document from an ID, name, or object.
  */
-async function resolveBottlePerBoxDoc(bottleIdOrName) {
+async function resolveBottlePerBoxDoc(bottleIdOrName, session = null) {
   if (!bottleIdOrName) return null;
   if (typeof bottleIdOrName === 'object' && bottleIdOrName._id) {
     return bottleIdOrName;
   }
   let bp = null;
   if (mongoose.Types.ObjectId.isValid(bottleIdOrName)) {
-    bp = await BottlePerBox.findById(bottleIdOrName);
+    bp = await inSession(BottlePerBox.findById(bottleIdOrName), session);
   }
   if (!bp) {
     const nameTrimmed = String(bottleIdOrName).trim();
-    bp = await BottlePerBox.findOne({
+    bp = await inSession(BottlePerBox.findOne({
       $or: [
         { bottleName: { $regex: new RegExp("^" + escapeRegex(nameTrimmed) + "$", "i") } },
         { plainBottleName: { $regex: new RegExp("^" + escapeRegex(nameTrimmed) + "$", "i") } },
         { bottleNames: { $regex: new RegExp("^" + escapeRegex(nameTrimmed) + "$", "i") } }
       ],
       isDeleted: false
-    });
+    }), session);
   }
   return bp;
 }
@@ -60,7 +65,7 @@ function buildBottleRegexes(bp) {
  * Pool stock = Σ Incoming − Σ allocated coating (Lacquer) − Σ allocated Ready of PLAIN printing
  * Updates PlainBottleStock ledger in DB and returns the computed details.
  */
-async function recomputePlainStock(bottleIdOrName, companyId = null, userId = null, reqCache = null) {
+async function recomputePlainStock(bottleIdOrName, companyId = null, userId = null, reqCache = null, session = null) {
   if (!bottleIdOrName) return null;
 
   if (reqCache && reqCache.stockCache) {
@@ -70,7 +75,7 @@ async function recomputePlainStock(bottleIdOrName, companyId = null, userId = nu
     }
   }
 
-  const bp = await resolveBottlePerBoxDoc(bottleIdOrName);
+  const bp = await resolveBottlePerBoxDoc(bottleIdOrName, session);
   if (!bp) return null;
 
   let resolvedCompanyId = null;
@@ -83,15 +88,16 @@ async function recomputePlainStock(bottleIdOrName, companyId = null, userId = nu
 
   const { bottleMatchCondition } = buildBottleRegexes(bp);
 
-  // 1. Σ non-deleted Incoming
+  // 1. Σ non-deleted Incoming (excluding imported records)
   const incomingQuery = {
     isDeleted: false,
+    isImported: { $ne: true },
     'items.bottleId': bp._id
   };
   if (resolvedCompanyId) {
     incomingQuery.billToId = resolvedCompanyId;
   }
-  const incomings = await Incoming.find(incomingQuery).lean();
+  const incomings = await inSession(Incoming.find(incomingQuery), session).lean();
   let totalIncoming = 0;
   for (const inc of incomings) {
     for (const item of (inc.items || [])) {
@@ -121,25 +127,37 @@ async function recomputePlainStock(bottleIdOrName, companyId = null, userId = nu
     $and: andLacquer
   };
 
-  const lacquerPlans = await LacquerPlan.find(lacquerQuery).lean();
+  const lacquerPlans = await inSession(LacquerPlan.find(lacquerQuery), session).lean();
   let totalCoatingCompleted = 0;
   for (const lp of lacquerPlans) {
     if (Array.isArray(lp.stockAllocation) && lp.stockAllocation.length > 0) {
+      const carriedAllocMap = new Map();
+      if (Array.isArray(lp.carriedStockAllocation)) {
+        for (const ca of lp.carriedStockAllocation) {
+          const cId = (ca.companyId?._id || ca.companyId)?.toString();
+          if (cId) carriedAllocMap.set(cId, (carriedAllocMap.get(cId) || 0) + (Number(ca.qty) || 0));
+        }
+      }
       if (resolvedCompanyId) {
         for (const alloc of lp.stockAllocation) {
-          if (alloc.companyId && alloc.companyId.toString() === resolvedCompanyId.toString()) {
-            totalCoatingCompleted += Number(alloc.qty) || 0;
+          const cId = (alloc.companyId?._id || alloc.companyId)?.toString();
+          if (cId && cId === resolvedCompanyId.toString()) {
+            const carriedPart = carriedAllocMap.get(cId) || 0;
+            totalCoatingCompleted += Math.max(0, (Number(alloc.qty) || 0) - carriedPart);
           }
         }
       } else {
         for (const alloc of lp.stockAllocation) {
-          totalCoatingCompleted += Number(alloc.qty) || 0;
+          const cId = (alloc.companyId?._id || alloc.companyId)?.toString();
+          const carriedPart = carriedAllocMap.get(cId) || 0;
+          totalCoatingCompleted += Math.max(0, (Number(alloc.qty) || 0) - carriedPart);
         }
       }
     } else {
       const c1 = Number(lp.coatingCompletedQty) || 0;
       const c2 = Number(lp.coatedQty) || 0;
-      totalCoatingCompleted += Math.max(c1, c2);
+      const carried = Number(lp.carriedFromCoatedQty) || 0;
+      totalCoatingCompleted += Math.max(0, Math.max(c1, c2) - carried);
     }
   }
 
@@ -166,7 +184,7 @@ async function recomputePlainStock(bottleIdOrName, companyId = null, userId = nu
     $and: andPrinting
   };
 
-  const printingPlans = await PrintingPlan.find(printingQuery).lean();
+  const printingPlans = await inSession(PrintingPlan.find(printingQuery), session).lean();
   let totalPlainPrintingReady = 0;
   for (const pp of printingPlans) {
     if (Array.isArray(pp.stockAllocation) && pp.stockAllocation.length > 0) {
@@ -204,14 +222,14 @@ async function recomputePlainStock(bottleIdOrName, companyId = null, userId = nu
     updateFields.lastUpdatedBy = userId;
   }
 
-  const stockDoc = await PlainBottleStock.findOneAndUpdate(
+  const stockDoc = await inSession(PlainBottleStock.findOneAndUpdate(
     stockFilter,
     {
       $set: updateFields,
       $setOnInsert: { reservedQuantity: 0 }
     },
     { upsert: true, returnDocument: 'after' }
-  );
+  ), session);
 
   const result = {
     bp,
@@ -236,10 +254,10 @@ async function recomputePlainStock(bottleIdOrName, companyId = null, userId = nu
  * Computes live day-based stock for one or more sources:
  * Returns combined available stock and per-source breakdown.
  */
-async function computeLivePlainStock(bottleIdOrName, companyIdOrSources = null, targetDate = null, excludePlanIds = null) {
+async function computeLivePlainStock(bottleIdOrName, companyIdOrSources = null, targetDate = null, excludePlanIds = null, session = null) {
   if (!bottleIdOrName) return 0;
 
-  const bp = await resolveBottlePerBoxDoc(bottleIdOrName);
+  const bp = await resolveBottlePerBoxDoc(bottleIdOrName, session);
   if (!bp) return 0;
 
   // Normalize sources list
@@ -292,7 +310,9 @@ async function computeLivePlainStock(bottleIdOrName, companyIdOrSources = null, 
 
   // Fetch company docs for names
   const validSourceObjIds = sourceIdStrings.filter(s => s && mongoose.Types.ObjectId.isValid(s)).map(s => new mongoose.Types.ObjectId(s));
-  const companies = validSourceObjIds.length > 0 ? await Company.find({ _id: { $in: validSourceObjIds } }).lean() : [];
+  const companies = validSourceObjIds.length > 0
+    ? await inSession(Company.find({ _id: { $in: validSourceObjIds } }), session).lean()
+    : [];
   const companyNameMap = new Map(companies.map(c => [c._id.toString(), c.name]));
 
   let combinedOpening = 0;
@@ -301,9 +321,10 @@ async function computeLivePlainStock(bottleIdOrName, companyIdOrSources = null, 
   const sourcesBreakdown = [];
 
   async function computeSingleSource(srcObjectId, companyName) {
-    // 1. Σ non-deleted Incoming (≤D)
+    // 1. Σ non-deleted Incoming (≤D, excluding imported records)
     const incomingQuery = {
       isDeleted: false,
+      isImported: { $ne: true },
       'items.bottleId': bp._id
     };
     if (srcObjectId) {
@@ -312,7 +333,7 @@ async function computeLivePlainStock(bottleIdOrName, companyIdOrSources = null, 
     if (endOfDay) {
       incomingQuery.documentDate = { $lte: endOfDay };
     }
-    const incomings = await Incoming.find(incomingQuery).lean();
+    const incomings = await inSession(Incoming.find(incomingQuery), session).lean();
     let totalIncoming = 0;
     for (const inc of incomings) {
       for (const item of (inc.items || [])) {
@@ -350,7 +371,7 @@ async function computeLivePlainStock(bottleIdOrName, companyIdOrSources = null, 
       };
       if (excludeIds.length > 0) priorQuery._id = { $nin: excludeIds };
 
-      const priorPlans = await LacquerPlan.find(priorQuery).lean();
+      const priorPlans = await inSession(LacquerPlan.find(priorQuery), session).lean();
       for (const lp of priorPlans) {
         if (Array.isArray(lp.stockAllocation) && lp.stockAllocation.length > 0) {
           if (srcObjectId) {
@@ -365,7 +386,8 @@ async function computeLivePlainStock(bottleIdOrName, companyIdOrSources = null, 
         } else {
           const c1 = Number(lp.coatingCompletedQty) || 0;
           const c2 = Number(lp.coatedQty) || 0;
-          priorCoatingCompleted += Math.max(c1, c2);
+          const carried = Number(lp.carriedFromCoatedQty) || 0;
+          priorCoatingCompleted += Math.max(0, Math.max(c1, c2) - carried);
         }
       }
 
@@ -376,22 +398,36 @@ async function computeLivePlainStock(bottleIdOrName, companyIdOrSources = null, 
       };
       if (excludeIds.length > 0) sameDayQuery._id = { $nin: excludeIds };
 
-      const sameDayPlans = await LacquerPlan.find(sameDayQuery).lean();
+      const sameDayPlans = await inSession(LacquerPlan.find(sameDayQuery), session).lean();
       for (const lp of sameDayPlans) {
         if (Array.isArray(lp.stockAllocation) && lp.stockAllocation.length > 0) {
+          const carriedAllocMap = new Map();
+          if (Array.isArray(lp.carriedStockAllocation)) {
+            for (const ca of lp.carriedStockAllocation) {
+              const cId = (ca.companyId?._id || ca.companyId)?.toString();
+              if (cId) carriedAllocMap.set(cId, (carriedAllocMap.get(cId) || 0) + (Number(ca.qty) || 0));
+            }
+          }
           if (srcObjectId) {
             for (const a of lp.stockAllocation) {
-              if (a.companyId && a.companyId.toString() === srcObjectId.toString()) {
-                sameDayCoated += Number(a.qty) || 0;
+              const cId = (a.companyId?._id || a.companyId)?.toString();
+              if (cId && cId === srcObjectId.toString()) {
+                const carriedPart = carriedAllocMap.get(cId) || 0;
+                sameDayCoated += Math.max(0, (Number(a.qty) || 0) - carriedPart);
               }
             }
           } else {
-            for (const a of lp.stockAllocation) sameDayCoated += Number(a.qty) || 0;
+            for (const a of lp.stockAllocation) {
+              const cId = (a.companyId?._id || a.companyId)?.toString();
+              const carriedPart = carriedAllocMap.get(cId) || 0;
+              sameDayCoated += Math.max(0, (Number(a.qty) || 0) - carriedPart);
+            }
           }
         } else {
           const c1 = Number(lp.coatingCompletedQty) || 0;
           const c2 = Number(lp.coatedQty) || 0;
-          sameDayCoated += Math.max(c1, c2);
+          const carried = Number(lp.carriedFromCoatedQty) || 0;
+          sameDayCoated += Math.max(0, Math.max(c1, c2) - carried);
         }
       }
     } else {
@@ -403,7 +439,7 @@ async function computeLivePlainStock(bottleIdOrName, companyIdOrSources = null, 
       if (endOfDay) allLacquerQuery.$and.push({ planDate: { $lte: endOfDay } });
       if (excludeIds.length > 0) allLacquerQuery._id = { $nin: excludeIds };
 
-      const allPlans = await LacquerPlan.find(allLacquerQuery).lean();
+      const allPlans = await inSession(LacquerPlan.find(allLacquerQuery), session).lean();
       for (const lp of allPlans) {
         if (Array.isArray(lp.stockAllocation) && lp.stockAllocation.length > 0) {
           if (srcObjectId) {
@@ -418,7 +454,8 @@ async function computeLivePlainStock(bottleIdOrName, companyIdOrSources = null, 
         } else {
           const c1 = Number(lp.coatingCompletedQty) || 0;
           const c2 = Number(lp.coatedQty) || 0;
-          priorCoatingCompleted += Math.max(c1, c2);
+          const carried = Number(lp.carriedFromCoatedQty) || 0;
+          priorCoatingCompleted += Math.max(0, Math.max(c1, c2) - carried);
         }
       }
     }
@@ -435,7 +472,7 @@ async function computeLivePlainStock(bottleIdOrName, companyIdOrSources = null, 
     if (excludeIds.length > 0) {
       printingQuery._id = { $nin: excludeIds };
     }
-    const printingPlans = await PrintingPlan.find(printingQuery).lean();
+    const printingPlans = await inSession(PrintingPlan.find(printingQuery), session).lean();
     let totalPlainPrintingReady = 0;
     for (const pp of printingPlans) {
       if (Array.isArray(pp.stockAllocation) && pp.stockAllocation.length > 0) {
@@ -478,18 +515,19 @@ async function computeLivePlainStock(bottleIdOrName, companyIdOrSources = null, 
   }
 
   // Check which stock suppliers have at least one non-deleted incoming entry for this bottle on or before endOfDay
-  const allSuppliers = await Company.find({ isStockSupplier: true, isDeleted: { $ne: true } }).lean();
+  const allSuppliers = await inSession(Company.find({ isStockSupplier: true, isDeleted: { $ne: true } }), session).lean();
   const eligibleSuppliersList = [];
   for (const supp of allSuppliers) {
-    const incExists = await Incoming.findOne({
+    const incExists = await inSession(Incoming.findOne({
       isDeleted: false,
+      isImported: { $ne: true },
       billToId: supp._id,
       'items.bottleId': bp._id,
       $or: [
         { documentDate: { $lte: endOfDay || new Date() } },
         { date: { $lte: endOfDay || new Date() } }
       ]
-    }).select('_id').lean();
+    }).select('_id'), session).lean();
     if (incExists) {
       let found = sourcesBreakdown.find(s => s.companyId && s.companyId.toString() === supp._id.toString());
       if (!found) {
@@ -532,9 +570,9 @@ async function computeLivePlainStock(bottleIdOrName, companyIdOrSources = null, 
  * Replays stock allocations for a bottle starting from startDate across all involved companies.
  * Day isolation: Plans with planDate < startDate are NEVER updated.
  */
-async function replayStockAllocations(bottleRef, startDate, extraCompanyIds = [], userId = null) {
+async function replayStockAllocations(bottleRef, startDate, extraCompanyIds = [], userId = null, session = null, options = {}) {
   try {
-    const bp = await resolveBottlePerBoxDoc(bottleRef);
+    const bp = await resolveBottlePerBoxDoc(bottleRef, session);
     if (!bp) return { success: false, message: "Bottle not found" };
 
     const { bottleMatchCondition } = buildBottleRegexes(bp);
@@ -544,8 +582,8 @@ async function replayStockAllocations(bottleRef, startDate, extraCompanyIds = []
 
     // 1. Fetch future plans (>= startCutoff)
     const [futureLacquer, futurePrinting] = await Promise.all([
-      LacquerPlan.find({ isDeleted: false, $and: [bottleMatchCondition, { planDate: { $gte: startCutoff } }] }).lean(),
-      PrintingPlan.find({ isDeleted: false, coatingShade: { $regex: /^PLAIN$/i }, $and: [bottleMatchCondition, { planDate: { $gte: startCutoff } }] }).lean()
+      inSession(LacquerPlan.find({ isDeleted: false, $and: [bottleMatchCondition, { planDate: { $gte: startCutoff } }] }), session).lean(),
+      inSession(PrintingPlan.find({ isDeleted: false, coatingShade: { $regex: /^PLAIN$/i }, $and: [bottleMatchCondition, { planDate: { $gte: startCutoff } }] }), session).lean()
     ]);
 
     // 2. Identify all involved company IDs
@@ -563,11 +601,12 @@ async function replayStockAllocations(bottleRef, startDate, extraCompanyIds = []
 
     // 3. Preload all Incomings for involved companies and bp._id
     const incomingsByCompany = new Map();
-    const allIncomings = await Incoming.find({
+    const allIncomings = await inSession(Incoming.find({
       isDeleted: false,
+      isImported: { $ne: true },
       billToId: { $in: involvedCompanyIds },
       'items.bottleId': bp._id
-    }).sort({ documentDate: 1 }).lean();
+    }).sort({ documentDate: 1 }), session).lean();
 
     for (const inc of allIncomings) {
       const cid = inc.billToId.toString();
@@ -591,7 +630,7 @@ async function replayStockAllocations(bottleRef, startDate, extraCompanyIds = []
     }
 
     const [priorLacquer, priorPrinting] = await Promise.all([
-      LacquerPlan.find({
+      inSession(LacquerPlan.find({
         isDeleted: false,
         $and: [
           bottleMatchCondition,
@@ -608,8 +647,8 @@ async function replayStockAllocations(bottleRef, startDate, extraCompanyIds = []
             ]
           }
         ]
-      }).lean(),
-      PrintingPlan.find({
+      }), session).lean(),
+      inSession(PrintingPlan.find({
         isDeleted: false,
         coatingShade: { $regex: /^PLAIN$/i },
         $and: [
@@ -627,7 +666,7 @@ async function replayStockAllocations(bottleRef, startDate, extraCompanyIds = []
             ]
           }
         ]
-      }).lean()
+      }), session).lean()
     ]);
 
     for (const lp of priorLacquer) {
@@ -643,7 +682,8 @@ async function replayStockAllocations(bottleRef, startDate, extraCompanyIds = []
         if (cidStr && runningAllocated.has(cidStr)) {
           const c1 = Number(lp.coatingCompletedQty) || 0;
           const c2 = Number(lp.coatedQty) || 0;
-          runningAllocated.set(cidStr, runningAllocated.get(cidStr) + Math.max(c1, c2));
+          const carried = Number(lp.carriedFromCoatedQty) || 0;
+          runningAllocated.set(cidStr, runningAllocated.get(cidStr) + Math.max(0, Math.max(c1, c2) - carried));
         }
       }
     }
@@ -665,7 +705,7 @@ async function replayStockAllocations(bottleRef, startDate, extraCompanyIds = []
     }
 
     // 5. Fetch companies for ordering & names
-    const companies = await Company.find({ _id: { $in: involvedCompanyIds } }).lean();
+    const companies = await inSession(Company.find({ _id: { $in: involvedCompanyIds } }), session).lean();
     const companyNameMap = new Map(companies.map(c => [c._id.toString(), c.name || '']));
 
     // 6. Combine and deterministically sort future plans:
@@ -730,8 +770,9 @@ async function replayStockAllocations(bottleRef, startDate, extraCompanyIds = []
       }
 
       // Quantity to allocate
+      const carried = Number(plan.carriedFromCoatedQty) || 0;
       const Q = plan.planType === 'lacquer'
-        ? Math.max(Number(plan.coatingCompletedQty) || 0, Number(plan.coatedQty) || 0)
+        ? Math.max(0, Math.max(Number(plan.coatingCompletedQty) || 0, Number(plan.coatedQty) || 0) - carried)
         : (Number(plan.producedQty) || 0);
 
       // Preserve user-entered stockAllocation! Never overwrite user split.
@@ -739,16 +780,25 @@ async function replayStockAllocations(bottleRef, startDate, extraCompanyIds = []
         ? plan.stockAllocation
         : (planCid ? [{ companyId: new mongoose.Types.ObjectId(planCid), qty: Q }] : []);
 
+      const carriedAllocMap = new Map();
+      if (Array.isArray(plan.carriedStockAllocation)) {
+        for (const ca of plan.carriedStockAllocation) {
+          const cId = (ca.companyId?._id || ca.companyId)?.toString();
+          if (cId) carriedAllocMap.set(cId, (carriedAllocMap.get(cId) || 0) + (Number(ca.qty) || 0));
+        }
+      }
       let shortfallQty = 0;
       for (const a of existingAlloc) {
         const aCid = (a.companyId?._id || a.companyId)?.toString();
         const aQty = Number(a.qty) || 0;
         if (aCid && aQty > 0) {
+          const carriedPart = carriedAllocMap.get(aCid) || 0;
+          const netTargetDateQty = Math.max(0, aQty - carriedPart);
           const avail = getAvailable(aCid, plan.planDate);
-          if (aQty > avail) {
-            shortfallQty += (aQty - Math.max(0, avail));
+          if (netTargetDateQty > avail) {
+            shortfallQty += (netTargetDateQty - Math.max(0, avail));
           }
-          runningAllocated.set(aCid, (runningAllocated.get(aCid) || 0) + aQty);
+          runningAllocated.set(aCid, (runningAllocated.get(aCid) || 0) + netTargetDateQty);
         }
       }
 
@@ -766,7 +816,7 @@ async function replayStockAllocations(bottleRef, startDate, extraCompanyIds = []
       // Update plan document in MongoDB (DAY ISOLATION: planDate >= startCutoff guaranteed)
       // Notice: stockAllocation is NEVER modified by replay!
       if (plan.planType === 'lacquer') {
-        await LacquerPlan.updateOne(
+        await inSession(LacquerPlan.updateOne(
           { _id: plan._id },
           {
             $set: {
@@ -775,9 +825,9 @@ async function replayStockAllocations(bottleRef, startDate, extraCompanyIds = []
               plainStock: combinedOpeningBeforePlan
             }
           }
-        );
+        ), session);
       } else {
-        await PrintingPlan.updateOne(
+        await inSession(PrintingPlan.updateOne(
           { _id: plan._id },
           {
             $set: {
@@ -786,13 +836,13 @@ async function replayStockAllocations(bottleRef, startDate, extraCompanyIds = []
               plainBottleStock: combinedOpeningBeforePlan
             }
           }
-        );
+        ), session);
       }
     }
 
     // 8. Recompute cumulative PlainBottleStock for all involved companies
     for (const cid of involvedCompanyIds) {
-      await recomputePlainStock(bp._id, cid, userId);
+      await recomputePlainStock(options.useResolvedBottleDoc ? bp : bp._id, cid, userId, null, session);
     }
 
     return {
@@ -874,6 +924,7 @@ async function reconcileAllActiveStock(options = {}) {
     
     const incomings = await Incoming.find({ 
       isDeleted: false,
+      isImported: { $ne: true },
       $or: [
         { updatedAt: { $gte: cutoffDate } },
         { createdAt: { $gte: cutoffDate } }
@@ -938,7 +989,7 @@ async function reconcileAllActiveStock(options = {}) {
  * Returns available sources info for a canonical bottle on a given plan date.
  * Indicates whether any stock supplier company has the bottle (hasIncoming = true).
  */
-async function getBottleSourcesInfo(bottleRef, companyId, planDate, excludePlanIds = null) {
+async function getBottleSourcesInfo(bottleRef, companyId, planDate, excludePlanIds = null, options = {}) {
   const bp = await resolveBottlePerBoxDoc(bottleRef);
   if (!bp) {
     return {
@@ -958,6 +1009,7 @@ async function getBottleSourcesInfo(bottleRef, companyId, planDate, excludePlanI
   for (const s of suppliers) {
     const incExists = await Incoming.findOne({
       isDeleted: false,
+      isImported: { $ne: true },
       billToId: s._id,
       'items.bottleId': bp._id,
       $or: [
@@ -972,7 +1024,8 @@ async function getBottleSourcesInfo(bottleRef, companyId, planDate, excludePlanI
   }
 
   const allSourceIds = [cidStr, ...eligibleSuppliers.map(s => s._id.toString())].filter(Boolean);
-  const stockRes = await computeLivePlainStock(bp._id, allSourceIds, targetDate, excludePlanIds);
+  const excludedPlanIds = options.useResolvedBottleDoc && excludePlanIds ? String(excludePlanIds) : excludePlanIds;
+  const stockRes = await computeLivePlainStock(options.useResolvedBottleDoc ? bp : bp._id, allSourceIds, targetDate, excludedPlanIds);
 
   const stockSources = stockRes.sources || [];
   const ownSource = stockSources.find(s => s.companyId && s.companyId.toString() === cidStr);
@@ -1007,15 +1060,15 @@ async function getBottleSourcesInfo(bottleRef, companyId, planDate, excludePlanI
 /**
  * Validates user-entered stock split per row.
  */
-async function validateStockAllocation(planDate, bottleRef, companyId, stockSources, requestedQty, userAllocation = null, excludePlanId = null) {
-  const bp = await resolveBottlePerBoxDoc(bottleRef);
+async function validateStockAllocation(planDate, bottleRef, companyId, stockSources, requestedQty, userAllocation = null, excludePlanId = null, session = null, carriedAllocation = null, options = {}) {
+  const bp = await resolveBottlePerBoxDoc(bottleRef, session);
   if (!bp) {
     throw new Error("Plain bottle not found");
   }
 
   // Reject stock supplier as plan company
   if (companyId) {
-    const comp = await Company.findById(companyId).lean();
+    const comp = await inSession(Company.findById(companyId), session).lean();
     if (comp && comp.isStockSupplier) {
       throw new Error("Stock supplier companies cannot be used as the plan company.");
     }
@@ -1030,7 +1083,7 @@ async function validateStockAllocation(planDate, bottleRef, companyId, stockSour
   }
 
   // Verify only own company and valid stock suppliers
-  const suppliers = await Company.find({ isStockSupplier: true, isDeleted: { $ne: true } }).lean();
+  const suppliers = await inSession(Company.find({ isStockSupplier: true, isDeleted: { $ne: true } }), session).lean();
   const validSupplierMap = new Map(suppliers.map(s => [s._id.toString(), s]));
 
   for (const src of sources) {
@@ -1048,15 +1101,16 @@ async function validateStockAllocation(planDate, bottleRef, companyId, stockSour
   for (const src of sources) {
     if (cidStr && src === cidStr) continue;
     const supp = validSupplierMap.get(src);
-    const incExists = await Incoming.findOne({
+    const incExists = await inSession(Incoming.findOne({
       isDeleted: false,
+      isImported: { $ne: true },
       billToId: supp._id,
       'items.bottleId': bp._id,
       $or: [
         { documentDate: { $lte: endOfDay } },
         { date: { $lte: endOfDay } }
       ]
-    }).select('_id').lean();
+    }).select('_id'), session).lean();
 
     if (!incExists) {
       throw new Error(`${supp.name} does not have stock for this bottle.`);
@@ -1064,7 +1118,8 @@ async function validateStockAllocation(planDate, bottleRef, companyId, stockSour
   }
 
   // Compute live available stock for each selected source
-  const stockRes = await computeLivePlainStock(bp._id, sources, planDate, excludePlanId);
+  const excludedPlanId = options.useResolvedBottleDoc && excludePlanId ? String(excludePlanId) : excludePlanId;
+  const stockRes = await computeLivePlainStock(options.useResolvedBottleDoc ? bp : bp._id, sources, planDate, excludedPlanId, session);
   const availMap = new Map();
   const nameMap = new Map();
   for (const s of (stockRes.sources || [])) {
@@ -1076,11 +1131,21 @@ async function validateStockAllocation(planDate, bottleRef, companyId, stockSour
   const reqQty = Number(requestedQty) || 0;
   let finalAllocation = [];
 
+  const carriedAllocMap = new Map();
+  if (Array.isArray(carriedAllocation)) {
+    for (const ca of carriedAllocation) {
+      const cId = (ca.companyId?._id || ca.companyId)?.toString();
+      if (cId) carriedAllocMap.set(cId, (carriedAllocMap.get(cId) || 0) + (Number(ca.qty) || 0));
+    }
+  }
+
   // Case 1: Single source selected
   if (sources.length <= 1) {
     const soleSource = sources[0] || cidStr;
     const avail = availMap.get(soleSource) || 0;
     const compName = nameMap.get(soleSource) || (soleSource === cidStr ? 'Own Company' : 'Supplier');
+    const carriedPart = carriedAllocMap.get(soleSource) || 0;
+    const netToCheck = Math.max(0, reqQty - carriedPart);
 
     if (userAllocation && Array.isArray(userAllocation) && userAllocation.length > 0) {
       let sum = 0;
@@ -1095,16 +1160,19 @@ async function validateStockAllocation(planDate, bottleRef, companyId, stockSour
       if (sum !== reqQty) {
         throw new Error(`Split must add up to ${reqQty} (now ${sum})`);
       }
-      if (reqQty > avail) {
-        throw new Error(`Only ${avail} bottles available from ${compName} (requested ${reqQty})`);
+      if (netToCheck > avail) {
+        throw new Error(`Only ${avail} bottles available from ${compName} (requested ${netToCheck})`);
       }
-      finalAllocation = userAllocation.map(a => ({
-        companyId: new mongoose.Types.ObjectId(a.companyId),
-        qty: Number(a.qty)
-      }));
+      finalAllocation = userAllocation.map(a => {
+        const aCid = (a.companyId?._id || a.companyId)?.toString();
+        return {
+          companyId: aCid && mongoose.isValidObjectId(aCid) ? new mongoose.Types.ObjectId(aCid) : a.companyId,
+          qty: Number(a.qty)
+        };
+      });
     } else {
-      if (reqQty > avail) {
-        throw new Error(`Only ${avail} bottles available from ${compName} (requested ${reqQty})`);
+      if (netToCheck > avail) {
+        throw new Error(`Only ${avail} bottles available from ${compName} (requested ${netToCheck})`);
       }
       finalAllocation = [{
         companyId: new mongoose.Types.ObjectId(soleSource),
@@ -1131,8 +1199,10 @@ async function validateStockAllocation(planDate, bottleRef, companyId, stockSour
       }
       const avail = availMap.get(aCid) || 0;
       const compName = nameMap.get(aCid) || 'Company';
-      if (q > avail) {
-        throw new Error(`Only ${avail} bottles available from ${compName} (requested ${q})`);
+      const carriedPart = carriedAllocMap.get(aCid) || 0;
+      const netToCheck = Math.max(0, q - carriedPart);
+      if (netToCheck > avail) {
+        throw new Error(`Only ${avail} bottles available from ${compName} (requested ${netToCheck})`);
       }
       sum += q;
     }
@@ -1141,15 +1211,18 @@ async function validateStockAllocation(planDate, bottleRef, companyId, stockSour
       throw new Error(`Split must add up to ${reqQty} (now ${sum})`);
     }
 
-    finalAllocation = userAllocation.map(a => ({
-      companyId: new mongoose.Types.ObjectId(a.companyId),
-      qty: Number(a.qty)
-    }));
+    finalAllocation = userAllocation.map(a => {
+      const aCid = (a.companyId?._id || a.companyId)?.toString();
+      return {
+        companyId: aCid && mongoose.isValidObjectId(aCid) ? new mongoose.Types.ObjectId(aCid) : a.companyId,
+        qty: Number(a.qty)
+      };
+    });
   }
 
   return {
     valid: true,
-    stockSources: sources.map(s => new mongoose.Types.ObjectId(s)),
+    stockSources: sources.filter(s => s && mongoose.isValidObjectId(s)).map(s => new mongoose.Types.ObjectId(s)),
     stockAllocation: finalAllocation,
     combinedAvailable: stockRes.available,
     sources: stockRes.sources

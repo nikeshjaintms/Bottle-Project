@@ -50,9 +50,30 @@ const shrenoIncomingSchema = new mongoose.Schema({
   isDeleted: {
     type: Boolean,
     default: false
+  },
+  isImported: {
+    type: Boolean,
+    default: false,
+    index: true
+  },
+  importedAt: {
+    type: Date,
+    default: null
+  },
+  importBatchId: {
+    type: String,
+    default: null
+  },
+  source: {
+    type: String,
+    default: null
   }
 }, {
   timestamps: true
 });
+
+shrenoIncomingSchema.index({ date: -1, isDeleted: 1, isImported: 1 });
+shrenoIncomingSchema.index({ challanNo: 1, isDeleted: 1 });
+shrenoIncomingSchema.index({ 'items.plainBottle': 1, isDeleted: 1, isImported: 1 });
 
 module.exports = mongoose.model('ShrenoIncoming', shrenoIncomingSchema);

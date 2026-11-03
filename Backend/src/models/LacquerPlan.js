@@ -201,6 +201,9 @@ const lacquerPlanSchema = new mongoose.Schema({
     },
     subType: String,
     qty: Number,
+    rejectionQty: { type: Number, default: 0 },
+    rejectionBoxes: { type: Number, default: 0 },
+    rejectionLooseQty: { type: Number, default: 0 },
     at: { type: Date, default: Date.now },
     by: String,
     note: String,
@@ -231,6 +234,16 @@ const lacquerPlanSchema = new mongoose.Schema({
     type: Number,
     default: 0
   },
+  carriedStockAllocation: [{
+    companyId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Company"
+    },
+    qty: {
+      type: Number,
+      default: 0
+    }
+  }],
   stockAllocationInitial: [{
     companyId: {
       type: mongoose.Schema.Types.ObjectId,

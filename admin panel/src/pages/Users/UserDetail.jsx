@@ -2,13 +2,8 @@ import { useState, useEffect } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
 import { fetchSingleUser, updateUserStatus } from '../../redux/slices/userSlice';
+import { getFullImageUrl } from '../../utils/imageUrl';
 import Swal from 'sweetalert2';
-
-const getImageUrl = (imagePath) => {
-  if (!imagePath) return null;
-  if (imagePath.startsWith('http')) return imagePath;
-  return `${import.meta.env.VITE_API_URL || 'https://application.shayonaglass.com/api'}/../${imagePath}`;
-};
 
 export default function UserDetail() {
   const { id } = useParams();
@@ -48,7 +43,7 @@ export default function UserDetail() {
   if (loading && !user) return <div className="p-5 text-center"><div className="spinner-border text-primary"></div></div>;
   if (!user) return <div className="p-5 text-center text-muted">User not found</div>;
 
-  const imageUrl = getImageUrl(user.image);
+  const imageUrl = getFullImageUrl(user.image);
 
   return (
     <div className="page-content">
@@ -82,9 +77,11 @@ export default function UserDetail() {
               <div className="d-flex align-items-center gap-4 mb-4 pb-4" style={{ borderBottom: '1px solid var(--card-border)' }}>
                 <div style={{
                   width: 100, height: 100, borderRadius: '50%', flexShrink: 0,
-                  background: imageUrl ? 'transparent' : 'linear-gradient(135deg,#6366f1,#8b5cf6)',
+                  background: imageUrl ? 'transparent' : 'linear-gradient(135deg,#00aeef,#008ecc)',
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  fontSize: 32, fontWeight: 700, color: '#fff', overflow: 'hidden'
+                  fontSize: 40, fontWeight: 700, color: '#fff', overflow: 'hidden',
+                  border: '3px solid rgba(0, 174, 239, 0.2)',
+                  boxShadow: '0 4px 12px rgba(0, 0, 0, 0.1)'
                 }}>
                   {imageUrl ? (
                     <img
@@ -97,11 +94,19 @@ export default function UserDetail() {
                       }}
                       onError={(e) => {
                         e.target.style.display = 'none';
-                        e.target.nextElementSibling.style.display = 'flex';
+                        if (e.target.nextElementSibling) {
+                          e.target.nextElementSibling.style.display = 'flex';
+                        }
                       }}
                     />
                   ) : null}
-                  <div style={{ display: imageUrl ? 'none' : 'flex' }}>
+                  <div style={{ 
+                    display: imageUrl ? 'none' : 'flex',
+                    width: '100%',
+                    height: '100%',
+                    alignItems: 'center',
+                    justifyContent: 'center'
+                  }}>
                     {user.name?.charAt(0).toUpperCase() || 'U'}
                   </div>
                 </div>

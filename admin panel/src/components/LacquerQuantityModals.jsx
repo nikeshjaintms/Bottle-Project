@@ -2,14 +2,36 @@ import { useState, useEffect } from 'react';
 import Swal from 'sweetalert2';
 import API from '../services/api';
 
+const getIndiaDateInput = (date = new Date()) => {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map(part => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
+};
+
+const getEntryDateTime = date => {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Kolkata',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23'
+  }).formatToParts(new Date());
+  const values = Object.fromEntries(parts.map(part => [part.type, part.value]));
+  return new Date(`${date}T${values.hour}:${values.minute}:${values.second}+05:30`).toISOString();
+};
+
 /**
  * Order Qty Modal - for adding to existing order quantity
  */
 export function OrderQtyModal({ show, plan, onClose, onSave }) {
   const [addQty, setAddQty] = useState('');
   const [entryDate, setEntryDate] = useState(() => {
-    const today = new Date().toISOString().split('T')[0];
-    return today;
+    return getIndiaDateInput();
   });
   const [loading, setLoading] = useState(false);
 
@@ -18,101 +40,13 @@ export function OrderQtyModal({ show, plan, onClose, onSave }) {
       setAddQty('');
       // Set default date to plan date if available
       if (plan.planDate) {
-        setEntryDate(new Date(plan.planDate).toISOString().split('T')[0]);
+        setEntryDate(getIndiaDateInput(new Date(plan.planDate)));
       } else {
-        setEntryDate(new Date().toISOString().split('T')[0]);
+        setEntryDate(getIndiaDateInput());
       }
     }
   }, [show, plan]);
 
-
-  const planSources = (plan?.stockSources && plan.stockSources.length > 0)
-    ? plan.stockSources.map(s => (s._id || s).toString())
-    : [plan?.companyId?._id || plan?.companyId].filter(Boolean);
-
-  const ownCompId = (plan?.companyId?._id || plan?.companyId)?.toString();
-
-  const handleCoatQtyChange = (val) => {
-    setCoatQty(val);
-    setError('');
-    const quantity = Number(val) || 0;
-    if (planSources.length >= 2) {
-      const availMap = new Map();
-      (sourcesList || []).forEach(s => availMap.set(s.companyId, Number(s.available) || 0));
-      // Suggest own-company first
-      const sorted = [...planSources].sort((a, b) => {
-        if (a === ownCompId) return -1;
-        if (b === ownCompId) return 1;
-        return 0;
-      });
-      let rem = quantity;
-      const initial = [];
-      for (const sId of sorted) {
-        const av = availMap.get(sId) ?? 0;
-        const part = Math.min(rem, Math.max(0, av));
-        initial.push({ companyId: sId, qty: part });
-        rem -= part;
-      }
-      if (rem > 0 && initial.length > 0) {
-        initial[initial.length - 1].qty += rem;
-      }
-      setSplitAlloc(initial);
-      validateSplit(initial, quantity, availMap);
-    }
-  };
-
-  const handleModalSplitChange = (sourceId, val) => {
-    const quantity = Number(coatQty) || 0;
-    const parsedVal = val === '' ? '' : Math.max(0, parseInt(val, 10) || 0);
-    const availMap = new Map();
-    (sourcesList || []).forEach(s => availMap.set(s.companyId, Number(s.available) || 0));
-
-    let updated = [...splitAlloc];
-    planSources.forEach(sId => {
-      if (!updated.some(a => (a.companyId?._id || a.companyId)?.toString() === sId)) {
-        updated.push({ companyId: sId, qty: 0 });
-      }
-    });
-
-    if (planSources.length === 2) {
-      const otherSourceId = planSources.find(id => id !== sourceId);
-      const thisQty = typeof parsedVal === 'number' ? parsedVal : 0;
-      const otherQty = Math.max(0, quantity - thisQty);
-      updated = [
-        { companyId: sourceId, qty: parsedVal },
-        { companyId: otherSourceId, qty: otherQty }
-      ];
-    } else {
-      updated = updated.map(a => {
-        const aId = (a.companyId?._id || a.companyId)?.toString();
-        if (aId === sourceId) return { companyId: aId, qty: parsedVal };
-        return a;
-      });
-    }
-    setSplitAlloc(updated);
-    validateSplit(updated, quantity, availMap);
-  };
-
-  const validateSplit = (allocArray, targetTotal, availMap) => {
-    let sum = 0;
-    let err = '';
-    for (const a of allocArray) {
-      const sId = (a.companyId?._id || a.companyId)?.toString();
-      const q = Number(a.qty) || 0;
-      const maxAv = availMap.get(sId) ?? 0;
-      const sObj = (sourcesList || []).find(s => s.companyId === sId);
-      const sName = sObj?.companyName || 'Company';
-      if (q > maxAv && !err) {
-        err = `Only ${maxAv} bottles available for ${sName}`;
-      }
-      sum += q;
-    }
-    if (!err && sum !== targetTotal) {
-      err = `Split must add up to ${targetTotal} (now ${sum})`;
-    }
-    setSplitError(err);
-    return !err;
-  };
   const handleSave = async () => {
     const quantity = Number(addQty);
     if (!addQty || !Number.isInteger(quantity) || quantity === 0) {
@@ -135,7 +69,7 @@ export function OrderQtyModal({ show, plan, onClose, onSave }) {
     try {
       const response = await API.post(`/lacquer-plan/${plan._id}/add-order-qty`, {
         qty: Number(addQty),
-        date: entryDate,
+        date: getEntryDateTime(entryDate),
         note: ''
       });
 
@@ -226,15 +160,142 @@ export function OrderQtyModal({ show, plan, onClose, onSave }) {
  */
 export function CoatingQtyModal({ show, plan, onClose, onSave }) {
   const [coatQty, setCoatQty] = useState('');
-  const [entryDate, setEntryDate] = useState(() => {
-    return plan?.planDate ? new Date(plan.planDate).toISOString().split('T')[0] : new Date().toISOString().split('T')[0];
-  });
+  const [rejectionQty, setRejectionQty] = useState('');
+  const [rejectionBoxes, setRejectionBoxes] = useState('');
+  const [entryDate, setEntryDate] = useState(() => getIndiaDateInput(plan?.planDate ? new Date(plan.planDate) : new Date()));
   const [availableStock, setAvailableStock] = useState(null);
   const [sourcesList, setSourcesList] = useState([]);
   const [splitAlloc, setSplitAlloc] = useState([]);
   const [splitError, setSplitError] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+
+  const planSources = (plan?.stockSources && plan.stockSources.length > 0)
+    ? plan.stockSources.map(s => (s._id || s).toString())
+    : [plan?.companyId?._id || plan?.companyId].filter(Boolean).map(id => id.toString());
+
+  const ownCompId = (plan?.companyId?._id || plan?.companyId)?.toString();
+  const boxSize = Number(plan?.boxQty) || 0;
+  const currentCoated = Number(plan?.coatingCompletedQty) || 0;
+  const rejectedQuantity = (Number(rejectionBoxes) || 0) * boxSize + (Number(rejectionQty) || 0);
+  const maxAdditionalQty = availableStock === null ? null : Math.max(0, Number(availableStock) - currentCoated);
+
+  const validateSplit = (allocArray, targetTotal, availMap) => {
+    let sum = 0;
+    let err = '';
+    for (const a of allocArray) {
+      const sId = (a.companyId?._id || a.companyId)?.toString();
+      const q = Number(a.qty) || 0;
+      const maxAv = availMap.get(sId) ?? 0;
+      const sObj = (sourcesList || []).find(s => s.companyId === sId);
+      const sName = sObj?.companyName || 'Company';
+      if (q > maxAv && !err) {
+        err = `Only ${maxAv} bottles available for ${sName}`;
+      }
+      sum += q;
+    }
+    if (!err && sum !== targetTotal) {
+      err = `Split must add up to ${targetTotal} (now ${sum})`;
+    }
+    setSplitError(err);
+    return !err;
+  };
+
+  const updateCoatingSplit = quantity => {
+    if (planSources.length >= 2) {
+      const availMap = new Map();
+      (sourcesList || []).forEach(s => availMap.set(s.companyId, Number(s.available) || 0));
+      const sorted = [...planSources].sort((a, b) => {
+        if (a === ownCompId) return -1;
+        if (b === ownCompId) return 1;
+        return 0;
+      });
+      let rem = quantity;
+      const initial = [];
+      for (const sId of sorted) {
+        const av = availMap.get(sId) ?? 0;
+        const part = Math.min(rem, Math.max(0, av));
+        initial.push({ companyId: sId, qty: part });
+        rem -= part;
+      }
+      if (rem > 0 && initial.length > 0) initial[initial.length - 1].qty += rem;
+      setSplitAlloc(initial);
+      validateSplit(initial, quantity, availMap);
+    }
+  };
+
+  const handleCoatQtyChange = (val) => {
+    setError('');
+    let nextQty = Number(val) || 0;
+    if (maxAdditionalQty !== null && nextQty > 0 && nextQty + rejectedQuantity > maxAdditionalQty) {
+      nextQty = Math.max(0, maxAdditionalQty - rejectedQuantity);
+      setError(`Cannot exceed available plain stock. Maximum additional quantity: ${maxAdditionalQty}.`);
+    }
+    setCoatQty(val === '' ? '' : String(nextQty));
+    updateCoatingSplit(nextQty + rejectedQuantity);
+  };
+
+  const updateRejectedTotal = requestedTotal => {
+    let total = Math.max(0, Number(requestedTotal) || 0);
+    const maxRejected = maxAdditionalQty === null
+      ? Number.POSITIVE_INFINITY
+      : Math.max(0, maxAdditionalQty - Math.max(0, Number(coatQty) || 0));
+    if (total > maxRejected) {
+      total = maxRejected;
+      setError(`Cannot exceed available plain stock. Maximum rejection quantity: ${maxRejected}.`);
+    } else {
+      setError('');
+    }
+    setRejectionBoxes(boxSize > 0 ? String(Math.floor(total / boxSize)) : '');
+    setRejectionQty(boxSize > 0 ? String(total % boxSize || '') : String(total || ''));
+    updateCoatingSplit((Number(coatQty) || 0) + total);
+  };
+
+  const handleRejectionQtyChange = value => {
+    const looseQty = Number(value);
+    if (boxSize > 0 && value !== '' && Number.isInteger(looseQty) && looseQty >= 0) {
+      const totalRejected = (Number(rejectionBoxes) || 0) * boxSize + looseQty;
+      updateRejectedTotal(totalRejected);
+      return;
+    }
+    updateRejectedTotal((Number(rejectionBoxes) || 0) * boxSize + (Number(value) || 0));
+  };
+
+  const handleRejectionBoxesChange = value => {
+    updateRejectedTotal((Number(value) || 0) * boxSize + (Number(rejectionQty) || 0));
+  };
+
+  const handleModalSplitChange = (sourceId, val) => {
+    const quantity = (Number(coatQty) || 0) + rejectedQuantity;
+    const parsedVal = val === '' ? '' : Math.max(0, parseInt(val, 10) || 0);
+    const availMap = new Map();
+    (sourcesList || []).forEach(s => availMap.set(s.companyId, Number(s.available) || 0));
+
+    let updated = [...splitAlloc];
+    planSources.forEach(sId => {
+      if (!updated.some(a => (a.companyId?._id || a.companyId)?.toString() === sId)) {
+        updated.push({ companyId: sId, qty: 0 });
+      }
+    });
+
+    if (planSources.length === 2) {
+      const otherSourceId = planSources.find(id => id !== sourceId);
+      const thisQty = typeof parsedVal === 'number' ? parsedVal : 0;
+      const otherQty = Math.max(0, quantity - thisQty);
+      updated = [
+        { companyId: sourceId, qty: parsedVal },
+        { companyId: otherSourceId, qty: otherQty }
+      ];
+    } else {
+      updated = updated.map(a => {
+        const aId = (a.companyId?._id || a.companyId)?.toString();
+        if (aId === sourceId) return { companyId: aId, qty: parsedVal };
+        return a;
+      });
+    }
+    setSplitAlloc(updated);
+    validateSplit(updated, quantity, availMap);
+  };
 
   useEffect(() => {
     if (!show || !plan) return undefined;
@@ -284,9 +345,17 @@ export function CoatingQtyModal({ show, plan, onClose, onSave }) {
   }, [show, plan]);
 
   const handleSave = async () => {
-    const quantity = Number(coatQty);
-    if (!coatQty || !Number.isInteger(quantity) || quantity === 0) {
-      setError('Please enter a non-zero whole quantity');
+    const wholeQuantity = Number(coatQty) || 0;
+    const rejectedBoxes = Number(rejectionBoxes) || 0;
+    const rejectedLooseQty = Number(rejectionQty) || 0;
+    const rejectedQuantity = rejectedBoxes * boxSize + rejectedLooseQty;
+    const quantity = wholeQuantity + rejectedQuantity;
+    if ((!coatQty && !rejectionQty && !rejectionBoxes) || !Number.isInteger(wholeQuantity) || !Number.isInteger(rejectedBoxes) || rejectedBoxes < 0 || !Number.isInteger(rejectedLooseQty) || rejectedLooseQty < 0 || (rejectedBoxes > 0 && boxSize <= 0) || quantity === 0) {
+      setError('Enter whole and rejection quantities as whole numbers, with a non-zero total.');
+      return;
+    }
+    if (wholeQuantity < 0 && rejectedQuantity > 0) {
+      setError('Rejection Qty cannot be added when subtracting quantity.');
       return;
     }
 
@@ -326,8 +395,11 @@ export function CoatingQtyModal({ show, plan, onClose, onSave }) {
       }
 
       const response = await API.post(`/lacquer-plan/${plan._id}/add-coated-qty`, {
-        qty: Number(coatQty),
-        date: entryDate,
+        qty: quantity,
+        rejectionQty: rejectedQuantity,
+        rejectionBoxes: rejectedBoxes,
+        rejectionLooseQty: rejectedLooseQty,
+        date: getEntryDateTime(entryDate),
         note: '',
         stockAllocation: planSources.length >= 2 ? splitAlloc.map(a => ({ companyId: a.companyId?._id || a.companyId, qty: Number(a.qty) || 0 })) : undefined
       });
@@ -355,8 +427,8 @@ export function CoatingQtyModal({ show, plan, onClose, onSave }) {
 
   if (!show || !plan) return null;
 
-  const currentCoated = plan.coatingCompletedQty || 0;
-  const newCoatedTotal = currentCoated + (Number(coatQty) || 0);
+  const wholeQuantity = Number(coatQty) || 0;
+  const newCoatedTotal = currentCoated + wholeQuantity + rejectedQuantity;
   const newBalance = newCoatedTotal - (plan.orderQty || 0);
   const newPoolStock = availableStock === null ? null : availableStock - newCoatedTotal;
 
@@ -396,9 +468,44 @@ export function CoatingQtyModal({ show, plan, onClose, onSave }) {
                 className="form-control"
                 value={coatQty}
                 onChange={e => handleCoatQtyChange(e.target.value)}
-                placeholder="Enter quantity coated"
+                max={maxAdditionalQty === null ? undefined : maxAdditionalQty - rejectedQuantity}
+                placeholder="Enter whole quantity coated"
                 disabled={loading}
               />
+              <div className="row g-2 mt-2 align-items-end">
+                <div className="col-6">
+                  <label className="form-label">Rejection Boxes</label>
+                  <input
+                    type="number"
+                    className="form-control"
+                    min="0"
+                    step="1"
+                    value={rejectionBoxes}
+                    onChange={e => handleRejectionBoxesChange(e.target.value)}
+                    max={boxSize > 0 && maxAdditionalQty !== null ? Math.floor(Math.max(0, maxAdditionalQty - Math.max(0, wholeQuantity) - (Number(rejectionQty) || 0)) / boxSize) : undefined}
+                    placeholder="Boxes"
+                    disabled={loading || boxSize <= 0}
+                  />
+                </div>
+                <div className="col-6">
+                  <label className="form-label">Rejection Qty</label>
+                  <input
+                    type="number"
+                    className="form-control"
+                    min="0"
+                    step="1"
+                    value={rejectionQty}
+                    onChange={e => handleRejectionQtyChange(e.target.value)}
+                    max={maxAdditionalQty === null ? undefined : Math.max(0, maxAdditionalQty - Math.max(0, wholeQuantity) - (Number(rejectionBoxes) || 0) * boxSize)}
+                    placeholder="Loose bottles"
+                    disabled={loading}
+                  />
+                </div>
+              </div>
+              <small className="text-muted d-block mt-1">Bottle per box: {boxSize || '-'}</small>
+              {availableStock !== null && (
+                <small className="text-muted d-block">Available plain stock for this entry: {maxAdditionalQty}</small>
+              )}
               {planSources.length >= 2 && (
                 <div className="mt-2 p-2 bg-light border rounded">
                   <div className="small fw-bold text-muted mb-1 text-uppercase" style={{ fontSize: '11px' }}>Per-Source Split:</div>
@@ -433,7 +540,10 @@ export function CoatingQtyModal({ show, plan, onClose, onSave }) {
                 </div>
               )}
               <small className="text-muted mt-2 d-block">
-                New total = {currentCoated} + {Number(coatQty) || 0} = <strong>{newCoatedTotal}</strong>
+                Rejected total = {rejectionBoxes || 0} × {boxSize || 0} + {rejectionQty || 0} = <strong>{rejectedQuantity}</strong>
+              </small>
+              <small className="text-muted d-block">
+                New total = {currentCoated} + {wholeQuantity} + {rejectedQuantity} = <strong>{newCoatedTotal}</strong>
               </small>
               <small className="text-muted d-block">
                 Balance to make = {newCoatedTotal} − {plan.orderQty || 0} = <strong>{newBalance}</strong>

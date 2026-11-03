@@ -1,59 +1,29 @@
-/**
- * UNIFIED BALANCE AND STOCK CALCULATION FOR PRINTING PLAN
- * 
- * Rules:
- * - For PLAIN shade: Balance = orderQty - producedQty (stock never enters)
- * - For non-PLAIN shade: Balance = orderQty - producedQty (stock never enters)
- * - Stock (display only): opening coated stock for the shade/company
- * 
- * This function is called by Add form, Edit form, list display, and footer totals.
- */
+import API from '../services/api';
 
-export const calculateBalanceAndStock = (row, allRowsInBlock, companyId) => {
-  if (!row) return { balanceToMake: 0, displayStock: 0 };
-
-  const shade = (row.coatingShade || '').trim().toUpperCase();
-  const orderQty = parseFloat(row.orderQty) || 0;
-  const producedQty = parseFloat(row.producedQty) || 0;
-  
-  // RULE 1: Balance is ALWAYS orderQty - producedQty for all shades
-  const balanceToMake = Math.max(0, orderQty - producedQty);
-  
-  // RULE 2: Display stock (informational only, not used in balance)
-  // For PLAIN: uses plainBottleStock
-  // For non-PLAIN: uses coatedStockAvailable
-  const displayStock = shade === 'PLAIN' 
-    ? (parseFloat(row.plainBottleStock) || 0)
-    : (parseFloat(row.coatedStockAvailable) || 0);
-  
-  return {
-    balanceToMake,
-    displayStock
-  };
-};
-
-/**
- * Recalculate balance for all rows in a block after any change
- * Used by Add and Edit forms when balance depends on current form state
- */
-export const recalculateBalanceForBlock = (items, companyId) => {
-  if (!Array.isArray(items)) return items;
-  
-  return items.map(item => {
-    const calcs = calculateBalanceAndStock(item, items, companyId);
-    return {
-      ...item,
-      balanceToMake: calcs.balanceToMake
-    };
+export const fetchPrintingPlanCalculations = async ({
+  row,
+  companyId,
+  brandId,
+  planDate,
+  excludePlanIds
+}) => {
+  const response = await API.get('/printing-plan/stats/computed', {
+    params: {
+      bottleName: row.plainBottle || row.bottleName,
+      brandId: brandId || undefined,
+      coatingShade: row.coatingShade || '',
+      companyId: (companyId?._id || companyId)?.toString(),
+      planDate,
+      stockSources: (row.stockSources || (companyId ? [companyId] : []))
+        .map(source => (source?._id || source)?.toString()).join(','),
+      orderQty: row.orderQty,
+      readyQty: row.producedQty,
+      boxQty: row.boxQty,
+      excludePlanIds
+    }
   });
-};
-
-/**
- * Calculate balance for a single row
- * Used by list display to show current balance
- */
-export const calculateBalance = (orderQty, producedQty) => {
-  const o = parseFloat(orderQty) || 0;
-  const p = parseFloat(producedQty) || 0;
-  return Math.max(0, o - p);
+  if (!response.data?.success || !response.data.data) {
+    throw new Error(response.data?.message || 'Printing calculations were not returned.');
+  }
+  return response.data.data;
 };

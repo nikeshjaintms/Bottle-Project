@@ -21,6 +21,7 @@ exports.getBottleOptions = async (req, res) => {
         $match: {
           companyId: new mongoose.Types.ObjectId(companyId),
           isDeleted: false,
+          isImported: { $ne: true },
           plainBottleKeys: { $exists: true, $ne: [] }
         }
       },
@@ -95,7 +96,7 @@ exports.getDispatchBottles = async (req, res) => {
     }
 
     // Get all dispatches for this company and extract unique bottles
-    const dispatches = await Dispatch.find({ companyId, isDeleted: false })
+    const dispatches = await Dispatch.find({ companyId, isDeleted: false, isImported: { $ne: true } })
       .populate({
         path: 'items.bottleId',
         select: 'bottleName plainBottleName _id'
@@ -526,10 +527,12 @@ exports.updateDispatch = async (req, res) => {
       dispatch.items = validatedItems;
     }
 
+    const wasImported = Boolean(dispatch.isImported);
     if (dispatchDate) dispatch.dispatchDate = dispatchDate;
     if (gatePassNo) dispatch.gatePassNo = gatePassNo;
     if (companyId) dispatch.companyId = companyId;
     if (remarks !== undefined) dispatch.remarks = remarks;
+    if (wasImported) dispatch.isImported = true;
 
     await dispatch.save();
     

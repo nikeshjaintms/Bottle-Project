@@ -361,7 +361,7 @@ const validatePlanCompanyBottleVariant = async (planData, isUpdate = false, exis
         throw new Error("Invalid stock sources. Only own company and stock supplier companies are allowed.");
       }
     }
-    planData.stockSources = sources.map(s => new mongoose.Types.ObjectId(s));
+    planData.stockSources = sources.filter(s => s && mongoose.isValidObjectId(s)).map(s => new mongoose.Types.ObjectId(s));
   } else if (!isUpdate) {
     planData.stockSources = [company._id];
   }
@@ -465,9 +465,14 @@ const validatePlanCompanyBottleVariant = async (planData, isUpdate = false, exis
 const syncPrintingPlanForLacquerPlan = async (plan, userId = null) => {
   if (!plan) return null;
 
+  // Sibling rows and soft-removed rows must never create Printing rows
+  if (plan.isSibling) {
+    return null;
+  }
+
   // Rule: C is excluded from Printing Plan. C+P, C+F, P, F are included.
-  // If plan is deleted or process does not qualify for printing, soft-delete linked PrintingPlan
-  if (plan.isDeleted || !isPrintingProcess(plan.process)) {
+  // If plan is deleted, soft-removed, closed, or process does not qualify for printing, soft-delete linked PrintingPlan
+  if (plan.isDeleted || plan.isSoftRemoved || plan.isClosed || plan.productionStatus === 'CLOSED' || !isPrintingProcess(plan.process)) {
     if (plan._id) {
       await PrintingPlan.updateMany(
         { lacquerPlanId: plan._id, isDeleted: false },
@@ -512,12 +517,32 @@ const syncPrintingPlanForLacquerPlan = async (plan, userId = null) => {
   }
 
   const shade = plan.coatingShade || plan.colour || "";
-  const plainStock = (plan.process === 'P') 
-    ? await computeLivePlainStock(plan.bottleName, plan.companyId, plan.planDate) 
+  const plainStock = (plan.process === 'P')
+    ? await computeLivePlainStock(plan.bottleName, plan.companyId, plan.planDate)
     : (plan.coatingCompletedQty ?? plan.coatedQty ?? 0);
 
   // Find linked PrintingPlan for this specific lacquerPlanId (including soft-deleted to restore)
   let existingPlan = await PrintingPlan.findOne({ lacquerPlanId: plan._id });
+  if (!existingPlan && plan.planDate) {
+    const startOfDay = new Date(plan.planDate);
+    startOfDay.setUTCHours(0, 0, 0, 0);
+    const endOfDay = new Date(plan.planDate);
+    endOfDay.setUTCHours(23, 59, 59, 999);
+    existingPlan = await PrintingPlan.findOne({
+      planDate: { $gte: startOfDay, $lte: endOfDay },
+      companyId: plan.companyId,
+      brandId: plan.brandId,
+      bottleName: { $regex: new RegExp("^" + (plan.bottleName || '').trim() + "$", "i") },
+      $or: [
+        { printingToBeDone: pToBeDone },
+        { coatingShade: shade }
+      ],
+      lacquerPlanId: { $in: [null, undefined] }
+    });
+    if (existingPlan) {
+      existingPlan.lacquerPlanId = plan._id;
+    }
+  }
 
   if (existingPlan) {
     existingPlan.planDate = plan.planDate;
@@ -527,9 +552,10 @@ const syncPrintingPlanForLacquerPlan = async (plan, userId = null) => {
     if (plan.brandName) existingPlan.brandName = plan.brandName;
     existingPlan.coatingShade = shade;
     existingPlan.printingToBeDone = pToBeDone || existingPlan.printingToBeDone || "";
+    existingPlan.printingVariant = pToBeDone || existingPlan.printingVariant || "";
     if (tColor) existingPlan.textColor = tColor;
     existingPlan.plainBottleStock = plainStock;
-    existingPlan.balanceToMake = (existingPlan.producedQty && existingPlan.producedQty > 0) ? (plainStock - existingPlan.producedQty) : plainStock;
+    existingPlan.balanceToMake = (Number(existingPlan.producedQty) || 0) - (Number(plan.orderQty) || 0);
     existingPlan.process = plan.process;
     existingPlan.orderQty = plan.orderQty;
     if (plan.boxQty !== undefined) existingPlan.boxQty = plan.boxQty;
@@ -551,10 +577,10 @@ const syncPrintingPlanForLacquerPlan = async (plan, userId = null) => {
       brandName: plan.brandName,
       coatingShade: shade,
       printingToBeDone: pToBeDone,
-      printingVariant: "",
+      printingVariant: pToBeDone,
       textColor: tColor,
       plainBottleStock: plainStock,
-      balanceToMake: plainStock,
+      balanceToMake: (0 - (Number(plan.orderQty) || 0)),
       producedQty: 0,
       process: plan.process,
       orderQty: plan.orderQty,
@@ -684,6 +710,204 @@ const validateRowStockWarning = async (plainBottleName, companyId, orderQty, exc
   }
 };
 
+const getReadyBoxFields = (row) => {
+  const bottlePerBox = Number(row.boxQty);
+  if (!Number.isFinite(bottlePerBox) || bottlePerBox <= 0) {
+    return { readyBoxes: null, looseQty: null, showLooseQty: false };
+  }
+
+  const rawCoatedQty = Number(row.coatingCompletedQty ?? row.coatedQty ?? 0);
+  const coatingCompletedQty = Number.isFinite(rawCoatedQty) ? rawCoatedQty : 0;
+  const readyBoxes = Math.floor(coatingCompletedQty / bottlePerBox);
+  const looseQty = coatingCompletedQty - (readyBoxes * bottlePerBox);
+
+  return {
+    readyBoxes,
+    looseQty,
+    showLooseQty: coatingCompletedQty !== 0
+  };
+};
+
+const calculatePoolStockWarnings = async (
+  targetRows,
+  { planDate, draftRows = [], excludePlanIds = [] } = {}
+) => {
+  if (!Array.isArray(targetRows) || targetRows.length === 0) return [];
+
+  const excludedIds = new Set(
+    (Array.isArray(excludePlanIds) ? excludePlanIds : String(excludePlanIds || "").split(","))
+      .map(id => String(id?._id || id || "").trim())
+      .filter(Boolean)
+  );
+  const dateStarts = new Map();
+  for (const row of [...targetRows, ...draftRows]) {
+    const date = new Date(row.planDate || planDate);
+    if (!Number.isFinite(date.getTime())) continue;
+    date.setUTCHours(0, 0, 0, 0);
+    dateStarts.set(date.toISOString().slice(0, 10), date);
+  }
+
+  const [companies, brands, ...savedRowsByDate] = await Promise.all([
+    Company.find({ isDeleted: { $ne: true } }).select("_id name").lean(),
+    Brand.find({ isDeleted: { $ne: true } }).select("_id companyId").lean(),
+    ...Array.from(dateStarts.values()).map(async start => {
+      const end = new Date(start);
+      end.setUTCHours(23, 59, 59, 999);
+      return LacquerPlan.find({
+        planDate: { $gte: start, $lte: end },
+        isDeleted: { $ne: true },
+        isArchived: { $ne: true },
+        isSoftRemoved: { $ne: true },
+        isSibling: { $ne: true }
+      }).populate("brandId", "companyId").lean();
+    })
+  ]);
+  const companyIdsByName = new Map(companies.map(company => [company.name.trim().toLowerCase(), String(company._id)]));
+  const companyIdsByBrand = new Map(brands.map(brand => [String(brand._id), String(brand.companyId)]));
+  const canonicalBottleCache = new Map();
+  const dateKeys = Array.from(dateStarts.keys());
+  const savedRows = savedRowsByDate.flatMap((rows, index) =>
+    (rows || []).map(row => ({ row, dateKey: dateKeys[index] }))
+  );
+
+  const identityFor = async (row, fallbackDate) => {
+    const date = new Date(row.planDate || fallbackDate);
+    if (!Number.isFinite(date.getTime())) return null;
+    const dateKey = date.toISOString().slice(0, 10);
+    const directId = row.canonicalCompanyId?._id || row.canonicalCompanyId || row.companyId?._id || row.companyId;
+    const brandRef = row.brandId?._id || row.brandId;
+    const companyId = String(directId || row.brandId?.companyId?._id || row.brandId?.companyId ||
+      companyIdsByBrand.get(String(brandRef || "")) ||
+      companyIdsByName.get(String(row.companyName || "").trim().toLowerCase()) || "");
+    const bottle = row.plainBottle || row.plainBottleName || row.bottleName;
+    if (!companyId || !bottle) return null;
+    const canonicalKey = `${companyId}::${normalizeBottleCanonical(bottle)}`;
+    if (!canonicalBottleCache.has(canonicalKey)) {
+      canonicalBottleCache.set(canonicalKey, resolveCanonicalPlainBottle(bottle, companyId));
+    }
+    const canonicalBottle = await canonicalBottleCache.get(canonicalKey);
+    if (!canonicalBottle) return null;
+    return {
+      dateKey,
+      companyId,
+      canonicalBottle,
+      key: `${dateKey}::${companyId}::${normalizeBottleCanonical(canonicalBottle)}`
+    };
+  };
+
+  const identityMap = new WeakMap();
+  const getIdentity = async (row, fallbackDate) => {
+    if (identityMap.has(row)) return identityMap.get(row);
+    const identity = await identityFor(row, fallbackDate);
+    identityMap.set(row, identity);
+    return identity;
+  };
+  const candidatePools = new Map();
+  const addCandidate = async (row, fallbackDate, isDraft) => {
+    if (!isDraft && row._id && excludedIds.has(String(row._id))) return;
+    const identity = await getIdentity(row, fallbackDate);
+    if (!identity) return;
+    if (!candidatePools.has(identity.key)) candidatePools.set(identity.key, { identity, rows: [] });
+    candidatePools.get(identity.key).rows.push(row);
+  };
+
+  await Promise.all(savedRows.map(({ row, dateKey }) => addCandidate(row, dateStarts.get(dateKey), false)));
+  await Promise.all(draftRows.map(row => addCandidate(row, planDate, true)));
+
+  const targetPoolKeys = new Set(
+    (await Promise.all(targetRows.map(row => getIdentity(row, planDate))))
+      .filter(Boolean)
+      .map(identity => identity.key)
+  );
+  const warningByPool = new Map();
+  await Promise.all(Array.from(candidatePools.entries()).map(async ([key, pool]) => {
+    if (!targetPoolKeys.has(key)) return;
+    const sourceIds = new Set();
+    for (const row of pool.rows) {
+      const ownerId = String(row.canonicalCompanyId?._id || row.canonicalCompanyId || row.companyId?._id || row.companyId ||
+        row.brandId?.companyId?._id || row.brandId?.companyId ||
+        companyIdsByBrand.get(String(row.brandId?._id || row.brandId || "")) ||
+        companyIdsByName.get(String(row.companyName || "").trim().toLowerCase()) ||
+        pool.identity.companyId);
+      const configured = Array.isArray(row.stockSources) ? row.stockSources : [];
+      const allocated = Array.isArray(row.stockAllocation) ? row.stockAllocation.map(item => item.companyId) : [];
+      const ids = [...configured, ...allocated]
+        .map(source => String(source?._id || source || ""))
+        .filter(id => mongoose.Types.ObjectId.isValid(id));
+      if (ids.length) ids.forEach(id => sourceIds.add(id));
+      else if (mongoose.Types.ObjectId.isValid(ownerId)) sourceIds.add(ownerId);
+    }
+
+    const stock = await computeLivePlainStock(
+      pool.identity.canonicalBottle,
+      Array.from(sourceIds),
+      dateStarts.get(pool.identity.dateKey)
+    );
+    const openingStock = stock && typeof stock === "object" && Number.isFinite(Number(stock.openingStock))
+      ? Number(stock.openingStock)
+      : null;
+    const poolPlainStock = stock && typeof stock === "object" && Number.isFinite(Number(stock.plainStock))
+      ? Number(stock.plainStock)
+      : null;
+    const poolOrderTotal = pool.rows.reduce((total, row) => total + (Number(row.orderQty) || 0), 0);
+    const shortBy = openingStock === null ? 0 : Math.max(0, poolOrderTotal - openingStock);
+    const stockWarning = openingStock !== null && poolOrderTotal > openingStock;
+    const sourceStockBreakdown = (stock?.sources || []).map(source => ({
+      companyId: String(source.companyId || ""),
+      companyName: source.companyName || "Company",
+      openingStock: Number(source.openingStock) || 0,
+      plainStock: Number(source.available) || 0
+    }));
+    const sourceMessage = sourceStockBreakdown
+      .map(source => `${source.companyName}: ${source.openingStock}`)
+      .join(" · ");
+    const warningMessage = stockWarning
+      ? `Total order of this bottle: ${poolOrderTotal} · Opening stock: ${openingStock} · Short by: ${shortBy}${sourceMessage ? ` · Sources: ${sourceMessage}` : ""}`
+      : "";
+    warningByPool.set(key, {
+      stockWarning,
+      poolOrderTotal,
+      openingStock,
+      poolPlainStock,
+      shortBy,
+      warningMessage,
+      sourceStockBreakdown
+    });
+  }));
+
+  return Promise.all(targetRows.map(async (row, index) => {
+    const identity = await getIdentity(row, planDate);
+    const warning = identity ? warningByPool.get(identity.key) : null;
+    const result = warning || {
+      stockWarning: false,
+      poolOrderTotal: 0,
+      openingStock: null,
+      poolPlainStock: null,
+      shortBy: 0,
+      warningMessage: "",
+      sourceStockBreakdown: []
+    };
+    const warnedRow = {
+      ...row,
+      ...result,
+      ...getReadyBoxFields(row),
+      isYellow: result.stockWarning,
+      stockWarningTooltip: result.warningMessage,
+      groupStockWarning: result.stockWarning,
+      groupStockWarningTooltip: result.warningMessage,
+      poolOpeningStock: result.openingStock,
+      poolTotalOrder: result.poolOrderTotal,
+      ...(row.draftKey !== undefined ? {} : { warningRowIndex: index })
+    };
+    if (result.poolPlainStock !== null && result.poolPlainStock !== undefined) {
+      warnedRow.plainStock = result.poolPlainStock;
+      warnedRow.livePlainStock = result.poolPlainStock;
+      warnedRow.availableStock = result.poolPlainStock;
+    }
+    return warnedRow;
+  }));
+};
+
 /**
  * Validates that the sum of Coating Completed Qty of all rows in the submission
  * for each pool (company + plain bottle) does not exceed available plain bottle stock.
@@ -728,7 +952,7 @@ const validateCoatedQtyLimit = async (items, excludePlanIds = null) => {
           available,
           totalCoated: pool.totalCoated,
           plainBottle: pool.bottleName,
-          message: breakdownText 
+          message: breakdownText
             ? `Only ${available} bottles available from the selected stock (${breakdownText})`
             : `Only ${available} bottles available for ${pool.bottleName} (this entry adds up to ${pool.totalCoated}).`
         };
@@ -1240,12 +1464,40 @@ function computeReadyActions(plan) {
     coatedQty: coated,
     sentQty,
     sendableQty: sendable,
+    isFullySent: coated > 0 && sentQty >= coated,
     orderQty: order,
     remainingQty: remaining,
     options
   };
 }
 exports.computeReadyActions = computeReadyActions;
+
+exports.previewPlanLayout = async (req, res) => {
+  try {
+    const { planDate, rows, excludePlanIds = [] } = req.body || {};
+    if (!planDate || !Array.isArray(rows)) {
+      return res.status(400).json({
+        success: false,
+        message: "planDate and rows are required."
+      });
+    }
+
+    const draftRows = rows.map((row, index) => ({
+      ...row,
+      planDate: row.planDate || planDate,
+      draftKey: row.draftKey !== undefined ? row.draftKey : String(index)
+    }));
+    const warnedRows = await calculatePoolStockWarnings(draftRows, {
+      planDate,
+      draftRows,
+      excludePlanIds
+    });
+
+    return res.status(200).json({ success: true, data: { rows: warnedRows } });
+  } catch (error) {
+    return res.status(400).json({ success: false, message: error.message });
+  }
+};
 
 // Get Plans
 exports.getPlans = async (req, res) => {
@@ -1452,9 +1704,9 @@ exports.getPlans = async (req, res) => {
       let plainBottleName = plan.plainBottle || plan.bottleName || '';
       if (plan.bottleName && !plan.plainBottle) {
         const BottleSpec = require("../models/Bottlespecs");
-        const bspec = await BottleSpec.findOne({ 
+        const bspec = await BottleSpec.findOne({
           bottleName: { $regex: new RegExp("^" + plan.bottleName.trim() + "$", "i") },
-          isDeleted: false 
+          isDeleted: false
         }).select('bottleName').lean();
         if (bspec) {
           plainBottleName = bspec.bottleName;
@@ -1502,21 +1754,6 @@ exports.getPlans = async (req, res) => {
       };
     }));
 
-    // Apply search filter on augmented plans AFTER aggregation
-    let filteredPlans = augmentedPlans;
-    if (search) {
-      filteredPlans = augmentedPlans.filter(plan => {
-        const searchLower = search.toLowerCase();
-        return (
-          (plan.bottleName && plan.bottleName.toLowerCase().includes(searchLower)) ||
-          (plan.brandName && plan.brandName.toLowerCase().includes(searchLower)) ||
-          (plan.companyName && plan.companyName.toLowerCase().includes(searchLower)) ||
-          (plan.variantName && plan.variantName.toLowerCase().includes(searchLower)) ||
-          (plan.colour && plan.colour.toLowerCase().includes(searchLower))
-        );
-      });
-    }
-
     // Sort augmented plans with canonical plain bottle resolution
     for (const plan of augmentedPlans) {
       const rawCompId = plan.canonicalCompanyId || (plan.companyId?._id || plan.companyId);
@@ -1526,6 +1763,23 @@ exports.getPlans = async (req, res) => {
       plan.canonicalBottleNormalized = normalizeBottleCanonical(canonicalBottle);
       plan.plainBottle = canonicalBottle;
       plan.plainBottleName = canonicalBottle;
+    }
+
+    const plansWithWarnings = await calculatePoolStockWarnings(augmentedPlans);
+
+    // Apply search filter on augmented plans AFTER aggregation
+    let filteredPlans = plansWithWarnings;
+    if (search) {
+      filteredPlans = plansWithWarnings.filter(plan => {
+        const searchLower = search.toLowerCase();
+        return (
+          (plan.bottleName && plan.bottleName.toLowerCase().includes(searchLower)) ||
+          (plan.brandName && plan.brandName.toLowerCase().includes(searchLower)) ||
+          (plan.companyName && plan.companyName.toLowerCase().includes(searchLower)) ||
+          (plan.variantName && plan.variantName.toLowerCase().includes(searchLower)) ||
+          (plan.colour && plan.colour.toLowerCase().includes(searchLower))
+        );
+      });
     }
 
     // Sort augmented plans strictly according to:
@@ -1647,7 +1901,7 @@ exports.getPlans = async (req, res) => {
         procRunStart = procRunEnd;
       }
 
-      // Assign blockKey, blockSize, blockIndex, bottleSpan, stockSpan, boxSpan
+      // Assign block metadata; warning values come from the complete database pool.
       for (let i = 0; i < blockSize; i++) {
         const row = block[i];
         row.blockKey = blockKey;
@@ -1659,6 +1913,7 @@ exports.getPlans = async (req, res) => {
         row.boxSpan = (i === 0) ? blockSize : 0;
         row.groupId = row.groupId || null;
         row.rowOrder = row.rowOrder !== undefined ? row.rowOrder : (row.rowSeq || 1);
+
       }
     }
 
@@ -1962,7 +2217,7 @@ exports.getPlansPaginated = async (req, res) => {
       pipeline.push({ $match: matchStage });
     }
 
-    const rawPlans = await LacquerPlan.aggregate(pipeline)
+    let rawPlans = await LacquerPlan.aggregate(pipeline)
       .option({ maxTimeMS: 15000 })
       .collation({ locale: 'en', strength: 2 });
 
@@ -1983,6 +2238,7 @@ exports.getPlansPaginated = async (req, res) => {
       plan.plainBottle = canonicalBottle;
       plan.plainBottleName = canonicalBottle;
     }));
+    rawPlans = await calculatePoolStockWarnings(rawPlans);
 
     // Sort strictly according to Prompt O
     rawPlans.sort((a, b) => {
@@ -2203,7 +2459,7 @@ exports.getPlansPaginated = async (req, res) => {
         procRunStart = procRunEnd;
       }
 
-      // Assign block fields
+      // Assign block fields & Yellow Warning flags
       for (let i = 0; i < blockSize; i++) {
         const row = block[i];
         const spec = bSpecMap.get(row.bottleName);
@@ -2234,6 +2490,9 @@ exports.getPlansPaginated = async (req, res) => {
           }
         }
 
+        const displayedPlainStock = row.poolPlainStock !== null && row.poolPlainStock !== undefined
+          ? Number(row.poolPlainStock)
+          : poolStock.plainStock;
         const augmentedRow = {
           ...row,
           blockKey,
@@ -2243,17 +2502,25 @@ exports.getPlansPaginated = async (req, res) => {
           bottleSpan: (i === 0) ? blockSize : 0,
           stockSpan: (i === 0) ? blockSize : 0,
           boxSpan: (i === 0) ? blockSize : 0,
-          plainStock: poolStock.plainStock,
-          openingStock: poolStock.openingStock,
-          availableStock: poolStock.plainStock,
-          livePlainStock: poolStock.plainStock,
+          plainStock: displayedPlainStock,
+          openingStock: row.openingStock,
+          availableStock: displayedPlainStock,
+          livePlainStock: displayedPlainStock,
           coatedQty,
+          coatingRejectedQty: (row.qtyEntries || [])
+            .filter(entry => !entry.isDeleted && (entry.subType === 'coated' || entry.type === 'coatedQty' || (entry.type === 'edit-adjustment' && entry.subType === 'coated')))
+            .reduce((sum, entry) => sum + (Number(entry.rejectionQty) || 0), 0),
           balanceToMake,
           status: isCompleted,
           sentToReadyQty: row.sentToReadyQty || 0,
           usedFrom: rowUsedFrom,
           usedFromTooltip: rowUsedFromTooltip,
-          readyActions: computeReadyActions(row)
+          readyActions: computeReadyActions(row),
+          stockWarning: Boolean(row.stockWarning),
+          isYellow: Boolean(row.stockWarning),
+          stockWarningTooltip: row.warningMessage || "",
+          groupStockWarning: Boolean(row.stockWarning),
+          groupStockWarningTooltip: row.warningMessage || ""
         };
         augmentedItems.push(augmentedRow);
       }
@@ -2414,10 +2681,11 @@ exports.importPreviousDay = async (req, res) => {
     const openCandidates = oldPlans.filter(p => !isPreviousDaySourcePlanCompleted(p));
     const completedCandidates = oldPlans.filter(p => isPreviousDaySourcePlanCompleted(p));
 
-    // Handle completed rows: do NOT carry forward.
+    // Handle completed rows: do NOT carry forward if fully dispatched.
     // For Process C completed rows: auto-send to Ready To Dispatch (idempotent, once only)
     let completedSentCount = 0;
     let notCarriedCount = 0;
+    const freshlyDispatchedMap = new Map();
 
     for (const cp of completedCandidates) {
       const isProcessC = String(cp.process || '').trim().toUpperCase() === 'C';
@@ -2428,6 +2696,7 @@ exports.importPreviousDay = async (req, res) => {
       if (isProcessC && sendable > 0) {
         try {
           await syncLacquerPlanReadyToDispatch(cp._id);
+          freshlyDispatchedMap.set(cp._id.toString(), coated);
           completedSentCount++;
         } catch (rtdErr) {
           console.error(`Failed to auto-send completed plan ${cp._id} to Ready To Dispatch:`, rtdErr);
@@ -2445,7 +2714,11 @@ exports.importPreviousDay = async (req, res) => {
     const year = srcDateObj.getUTCFullYear();
     const sourceDateFormatted = `${day}-${month}-${year}`;
 
-    const newPlansData = openCandidates.map(p => {
+    // Apply exact carry-forward formula from Section 4:
+    // carryForwardOrder = Math.max(0, originalOrderQty - dispatchedQty)
+    // carryForwardCoated = Math.max(0, originalCoatingCompletedQty - dispatchedQty)
+    // balanceToMake = carryForwardCoated - carryForwardOrder
+    const newPlansData = oldPlans.map(p => {
       const { _id, createdAt, updatedAt, __v, ...rest } = p;
       let values = { ...rest };
 
@@ -2461,19 +2734,54 @@ exports.importPreviousDay = async (req, res) => {
 
       const originalOrder = Number(values.orderQty) || 0;
       const sourceCoated = Number(p.coatingCompletedQty ?? p.coatedQty ?? 0);
-      const remainingOrder = Math.max(0, originalOrder - sourceCoated);
-      const boxQty = Number(values.boxQty) || 0;
-      const recalculatedNoOfBoxes = (boxQty > 0 && remainingOrder > 0)
-        ? Math.ceil(remainingOrder / boxQty)
-        : (remainingOrder === 0 ? 0 : values.noOfBoxes);
-      const recalculatedBalanceToMake = 0 - remainingOrder;
+      const dispatchedQty = freshlyDispatchedMap.has(p._id.toString())
+        ? freshlyDispatchedMap.get(p._id.toString())
+        : Number(p.sentToReadyQty || 0);
 
-      const historyNote = `Carried from ${sourceDateFormatted}: order ${originalOrder}, coated ${sourceCoated}`;
+      const carryForwardOrder = Math.max(0, originalOrder - dispatchedQty);
+      const carryForwardCoated = Math.max(0, sourceCoated - dispatchedQty);
+      const recalculatedBalanceToMake = carryForwardCoated - carryForwardOrder;
+
+      // Calculate carried stock allocation proportionally from source allocation
+      let carriedSplit = [];
+      if (carryForwardCoated > 0) {
+        if (Array.isArray(p.stockAllocation) && p.stockAllocation.length > 0) {
+          const sourceSumAlloc = p.stockAllocation.reduce((sum, a) => sum + (Number(a.qty) || 0), 0);
+          if (sourceSumAlloc > 0) {
+            let allocatedSoFar = 0;
+            carriedSplit = p.stockAllocation.map((a, idx) => {
+              const origQty = Number(a.qty) || 0;
+              let q = 0;
+              if (idx === p.stockAllocation.length - 1) {
+                q = Math.max(0, carryForwardCoated - allocatedSoFar);
+              } else {
+                q = Math.round((origQty / sourceSumAlloc) * carryForwardCoated);
+                allocatedSoFar += q;
+              }
+              return {
+                companyId: a.companyId?._id || a.companyId,
+                qty: q
+              };
+            });
+          } else if (p.companyId) {
+            carriedSplit = [{ companyId: p.companyId?._id || p.companyId, qty: carryForwardCoated }];
+          }
+        } else if (p.companyId) {
+          carriedSplit = [{ companyId: p.companyId?._id || p.companyId, qty: carryForwardCoated }];
+        }
+      }
+
+      const boxQty = Number(values.boxQty) || 0;
+      const recalculatedNoOfBoxes = (boxQty > 0 && carryForwardOrder > 0)
+        ? Math.ceil(carryForwardOrder / boxQty)
+        : (carryForwardOrder === 0 ? 0 : values.noOfBoxes);
+
+      const historyNote = `Carried from ${sourceDateFormatted}: order ${carryForwardOrder}, coated ${carryForwardCoated} (orig order ${originalOrder}, orig coated ${sourceCoated}, dispatched ${dispatchedQty})`;
 
       const snapshot = {
-        orderQty: remainingOrder,
-        coatingCompletedQty: 0,
-        coatedQty: 0,
+        orderQty: carryForwardOrder,
+        coatingCompletedQty: carryForwardCoated,
+        coatedQty: carryForwardCoated,
         balanceToMake: recalculatedBalanceToMake,
         boxQty: values.boxQty,
         noOfBoxes: recalculatedNoOfBoxes,
@@ -2487,33 +2795,46 @@ exports.importPreviousDay = async (req, res) => {
 
       return {
         ...values,
-        orderQty: remainingOrder,
-        orderQtyInitial: remainingOrder,
+        orderQty: carryForwardOrder,
+        orderQtyInitial: carryForwardOrder,
         noOfBoxes: recalculatedNoOfBoxes,
-        coatingCompletedQty: 0,
-        coatedQty: 0,
+        coatingCompletedQty: carryForwardCoated,
+        coatedQty: carryForwardCoated,
         balanceToMake: recalculatedBalanceToMake,
         appliedStockDeduction: 0,
-        stockAllocation: [],
-        stockAllocationInitial: [],
-        coatedQtyInitial: 0,
-        qtyEntries: [{
-          type: 'orderQty',
-          subType: 'order',
-          qty: remainingOrder,
-          runningTotal: remainingOrder,
-          note: historyNote,
-          at: new Date(),
-          by: req.user?.username || req.user?.name || req.user?.email || 'System'
-        }],
+        stockAllocation: carriedSplit,
+        stockAllocationInitial: carriedSplit,
+        carriedStockAllocation: carriedSplit,
+        coatedQtyInitial: carryForwardCoated,
+        carriedFromCoatedQty: carryForwardCoated,
+        qtyEntries: [
+          ...(carryForwardCoated > 0 ? [{
+            type: 'coatingCompletedQty',
+            subType: 'carried',
+            qty: carryForwardCoated,
+            runningTotal: carryForwardCoated,
+            stockAllocation: carriedSplit,
+            note: `Carried from ${sourceDateFormatted}`,
+            at: new Date(),
+            by: req.user?.username || req.user?.name || req.user?.email || 'System'
+          }] : []),
+          {
+            type: 'orderQty',
+            subType: 'order',
+            qty: carryForwardOrder,
+            runningTotal: carryForwardOrder,
+            note: historyNote,
+            at: new Date(),
+            by: req.user?.username || req.user?.name || req.user?.email || 'System'
+          }
+        ],
         orderHistory: [{
           date: new Date(),
-          originalOrder: remainingOrder,
-          updatedOrder: remainingOrder,
-          totalOrder: remainingOrder,
+          originalOrder: carryForwardOrder,
+          updatedOrder: carryForwardOrder,
+          totalOrder: carryForwardOrder,
           notes: historyNote
         }],
-        carriedFromCoatedQty: sourceCoated,
         stockSources: (p.stockSources && p.stockSources.length > 0)
           ? p.stockSources
           : (p.companyId ? [p.companyId] : []),
@@ -2548,52 +2869,21 @@ exports.importPreviousDay = async (req, res) => {
         );
 
         if (existingImport) {
-          const hasTargetProgress = Number(existingImport.coatingCompletedQty || existingImport.coatedQty || 0) > 0 ||
-            (Array.isArray(existingImport.qtyEntries) && existingImport.qtyEntries.length > 0) ||
-            Number(existingImport.sentToReadyQty || 0) > 0;
-          const isTargetEdited = existingImport.isEditedAfterImport === true;
-
-          if (hasTargetProgress || isTargetEdited) {
-            // PRESERVE target day's manually entered production progress and manually edited data
-            await LacquerPlan.updateOne(
-              { _id: existingImport._id },
-              {
-                $set: {
-                  importedFromDate: candidate.importedFromDate,
-                  carriedFromCoatedQty: candidate.carriedFromCoatedQty
-                }
-              }
-            );
-          } else {
-            // Target has no progress and was not edited: update with source remaining values
-            await LacquerPlan.updateOne(
-              { _id: existingImport._id },
-              {
-                $set: {
-                  orderQty: candidate.orderQty,
-                  orderQtyInitial: candidate.orderQty,
-                  coatingCompletedQty: 0,
-                  coatedQty: 0,
-                  balanceToMake: candidate.balanceToMake,
-                  boxQty: candidate.boxQty,
-                  noOfBoxes: candidate.noOfBoxes,
-                  dispatchPendingQty: candidate.dispatchPendingQty,
-                  dispatchBalance: candidate.dispatchBalance,
-                  soldQty: candidate.soldQty,
-                  plainStock: candidate.plainStock,
-                  remarks: candidate.remarks,
-                  process: candidate.process,
-                  importedFromDate: candidate.importedFromDate,
-                  carriedFromCoatedQty: candidate.carriedFromCoatedQty,
-                  originalImportedValues: candidate.originalImportedValues
-                }
-              }
-            );
-            const updP = await LacquerPlan.findById(existingImport._id);
-            if (updP) {
-              await syncPrintingPlanForLacquerPlan(updP, req.user?._id);
-            }
+          // STRICT RULE: PRESERVE target day's latest production data (orderQty, coatingCompletedQty, coatedQty, balanceToMake, stockAllocation, qtyEntries).
+          // Only update non-destructive descriptive fields if modified in source.
+          const metaUpdates = {
+            importedFromDate: candidate.importedFromDate
+          };
+          if (candidate.remarks && candidate.remarks !== existingImport.remarks) {
+            metaUpdates.remarks = candidate.remarks;
           }
+          if (candidate.boxQty && candidate.boxQty !== existingImport.boxQty) {
+            metaUpdates.boxQty = candidate.boxQty;
+          }
+          await LacquerPlan.updateOne(
+            { _id: existingImport._id },
+            { $set: metaUpdates }
+          );
           alreadyImportedSourceIds.add(candidate.importedFromId.toString());
         }
       }
@@ -2608,11 +2898,10 @@ exports.importPreviousDay = async (req, res) => {
         newPlans = await LacquerPlan.insertMany(plansToInsert);
         for (const plan of newPlans) {
           await syncLacquerPlanStockDeduction(plan, plan.coatingCompletedQty ?? plan.coatedQty, req.user?._id);
-          await createPrintingPlanIfApplicable(plan);
         }
       }
     } else if (importMode === 'without_changes' && hasExistingImport) {
-      // Only add rows that haven't been imported yet; keep existing target records untouched
+      // Keep existing target records untouched; only add rows that haven't been imported yet
       const plansToInsert = newPlansData.filter(newP =>
         !alreadyImportedSourceIds.has(newP.importedFromId.toString())
       );
@@ -2622,7 +2911,6 @@ exports.importPreviousDay = async (req, res) => {
         newPlans = await LacquerPlan.insertMany(plansToInsert);
         for (const plan of newPlans) {
           await syncLacquerPlanStockDeduction(plan, plan.coatingCompletedQty ?? plan.coatedQty, req.user?._id);
-          await createPrintingPlanIfApplicable(plan);
         }
       }
     } else {
@@ -2638,7 +2926,6 @@ exports.importPreviousDay = async (req, res) => {
         newPlans = await LacquerPlan.insertMany(plansToInsert);
         for (const plan of newPlans) {
           await syncLacquerPlanStockDeduction(plan, plan.coatingCompletedQty ?? plan.coatedQty, req.user?._id);
-          await createPrintingPlanIfApplicable(plan);
         }
       }
     }
@@ -2756,6 +3043,7 @@ function computePlanRowHistory(plan, plainStock, companyNameMap = new Map()) {
   // 2. Coated initial & active additions
   const coatingEntries = entries.filter(e => e.subType === 'coated' || e.type === 'coatedQty' || (e.type === 'edit-adjustment' && e.subType === 'coated'));
   const activeCoatedEntriesSum = coatingEntries.filter(e => !e.isDeleted).reduce((sum, e) => sum + Number(e.qty || 0), 0);
+  const coatingRejectionQty = coatingEntries.filter(e => !e.isDeleted).reduce((sum, e) => sum + (Number(e.rejectionQty) || 0), 0);
 
   const currentCoated = Number(plan.coatingCompletedQty ?? plan.coatedQty ?? 0);
   let initialCoated = (typeof plan.coatedQtyInitial === 'number' && plan.coatedQtyInitial >= 0)
@@ -2818,12 +3106,23 @@ function computePlanRowHistory(plan, plainStock, companyNameMap = new Map()) {
       : []);
   const openingUsedFrom = formatUsedFrom(openingAlloc, ownCompId, ownCompName, initialCoated, companyNameMap);
 
+  const carriedCoated = Number(plan.carriedFromCoatedQty || 0);
+  const isCarried = carriedCoated > 0 && !!plan.importedFromDate;
+  let carriedDateStr = '';
+  if (isCarried) {
+    const dObj = new Date(plan.importedFromDate);
+    const dd = String(dObj.getUTCDate()).padStart(2, '0');
+    const mm = String(dObj.getUTCMonth() + 1).padStart(2, '0');
+    const yyyy = dObj.getUTCFullYear();
+    carriedDateStr = `${dd}-${mm}-${yyyy}`;
+  }
+
   let runningCoated = initialCoated;
   const coatingRows = [];
   coatingRows.push({
     sr: 1,
     at: plan.createdAt || plan.planDate || new Date(),
-    type: 'Opening balance',
+    type: isCarried ? `Carried from ${carriedDateStr}` : 'Opening balance',
     rawType: 'opening',
     qtyChange: `${initialCoated}`,
     displayQty: `${initialCoated}`,
@@ -2831,16 +3130,7 @@ function computePlanRowHistory(plan, plainStock, companyNameMap = new Map()) {
     stockRemaining: plainStock !== undefined ? plainStock : (plan.plainStock ?? 0),
     balance: initialCoated - finalOrder,
     by: plan.createdBy?.name || plan.createdBy || 'System',
-    note: (() => {
-      const carriedCoated = Number(plan.carriedFromCoatedQty || 0);
-      if (carriedCoated > 0 && plan.importedFromDate) {
-        const dObj = new Date(plan.importedFromDate);
-        const dd = String(dObj.getUTCDate()).padStart(2, '0');
-        const mm = String(dObj.getUTCMonth() + 1).padStart(2, '0');
-        return `Carried from ${dd}-${mm}: coated ${carriedCoated}`;
-      }
-      return 'Opening balance';
-    })(),
+    note: isCarried ? `Carried from ${carriedDateStr}: coated ${carriedCoated}` : 'Opening balance',
     isDeleted: false,
     usedFrom: openingUsedFrom.usedFrom,
     usedFromText: openingUsedFrom.usedFromText
@@ -2873,6 +3163,9 @@ function computePlanRowHistory(plan, plainStock, companyNameMap = new Map()) {
       stockAllocation: entry.stockAllocation || [],
       usedFrom: entryUsedFrom.usedFrom,
       usedFromText: entryUsedFrom.usedFromText,
+      rejectionQty: Number(entry.rejectionQty) || 0,
+      rejectionBoxes: Number(entry.rejectionBoxes) || 0,
+      rejectionLooseQty: Number(entry.rejectionLooseQty ?? entry.rejectionQty) || 0,
       _id: entry._id
     });
   });
@@ -2922,6 +3215,7 @@ function computePlanRowHistory(plan, plainStock, companyNameMap = new Map()) {
     coatingSummary: {
       opening: initialCoated,
       totalAdded: activeCoatedEntriesSum,
+      rejectionQty: coatingRejectionQty,
       current: finalCoated,
       totalUsedFromText,
       usedFrom: currentTotalList
@@ -2982,12 +3276,18 @@ exports.getPlanById = async (req, res) => {
     const companyNameMap = new Map(allCompanies.map(c => [c._id.toString(), c.name]));
 
     const planObj = plan.toObject();
+    planObj.coatingRejectedQty = (planObj.qtyEntries || [])
+      .filter(entry => !entry.isDeleted && (entry.subType === 'coated' || entry.type === 'coatedQty' || (entry.type === 'edit-adjustment' && entry.subType === 'coated')))
+      .reduce((sum, entry) => sum + (Number(entry.rejectionQty) || 0), 0);
     planObj.livePlainStock = plainStock;
     planObj.plainStock = plainStock;
     planObj.openingStock = openingStock;
 
     groupPlans = groupPlans.map(p => ({
       ...p,
+      coatingRejectedQty: (p.qtyEntries || [])
+        .filter(entry => !entry.isDeleted && (entry.subType === 'coated' || entry.type === 'coatedQty' || (entry.type === 'edit-adjustment' && entry.subType === 'coated')))
+        .reduce((sum, entry) => sum + (Number(entry.rejectionQty) || 0), 0),
       livePlainStock: plainStock,
       plainStock: plainStock,
       openingStock: openingStock
@@ -3006,6 +3306,11 @@ exports.getPlanById = async (req, res) => {
       return pObj;
     });
 
+    planObj.groupPlans = groupPlans;
+
+    const warnedViewRows = await calculatePoolStockWarnings([planObj, ...groupPlans]);
+    Object.assign(planObj, warnedViewRows[0]);
+    groupPlans = warnedViewRows.slice(1);
     planObj.groupPlans = groupPlans;
 
     res.status(200).json({
@@ -3214,7 +3519,9 @@ exports.updatePlan = async (req, res) => {
       allocSources,
       newCoatedVal,
       allocSplit,
-      existingPlan._id
+      existingPlan._id,
+      null,
+      existingPlan.carriedStockAllocation
     );
     updateData.stockSources = allocRes.stockSources;
     updateData.stockAllocation = allocRes.stockAllocation;
@@ -3270,6 +3577,7 @@ exports.updatePlan = async (req, res) => {
         const allCids = new Set([...oldAllocMap.keys(), ...newAllocMap.keys()]);
         const entryAllocDiff = [];
         for (const cid of allCids) {
+          if (!cid || !mongoose.isValidObjectId(cid)) continue;
           const qDiff = (newAllocMap.get(cid) || 0) - (oldAllocMap.get(cid) || 0);
           if (qDiff !== 0) {
             entryAllocDiff.push({ companyId: new mongoose.Types.ObjectId(cid), qty: qDiff });
@@ -5157,7 +5465,7 @@ exports.addOrderQty = async (req, res) => {
     // Update plan
     plan.orderQty = newOrderQty;
     plan.balanceToMake = (plan.coatingCompletedQty || 0) - newOrderQty;
-    
+
     // Update status based on completion
     const isCompleted = newOrderQty > 0 && (plan.coatingCompletedQty || 0) >= newOrderQty;
     plan.status = isCompleted;
@@ -5170,7 +5478,13 @@ exports.addOrderQty = async (req, res) => {
     plan.qtyEntries = plan.qtyEntries || [];
     plan.qtyEntries.push(entry);
 
+    plan.isEditedAfterImport = true;
+    plan.lastEditedAt = new Date();
+
     await plan.save();
+
+    // Sync to Printing Plan
+    await syncPrintingPlanForLacquerPlan(plan, req.user?._id);
 
     // Refresh and return
     const updated = await LacquerPlan.findById(id);
@@ -5194,13 +5508,22 @@ exports.addOrderQty = async (req, res) => {
 exports.addCoatedQty = async (req, res) => {
   try {
     const { id } = req.params;
-    const { qty, note, date } = req.body;
+    const { qty, rejectionQty = 0, rejectionBoxes = 0, rejectionLooseQty, note, date } = req.body;
     const userId = req.user?.email || req.user?.name || 'unknown';
 
     // Validation
     const quantity = Number(qty);
+    const rejectedQuantity = Number(rejectionQty);
+    const rejectedBoxCount = Number(rejectionBoxes);
+    const rejectedLooseBottleCount = rejectionLooseQty === undefined ? rejectedQuantity : Number(rejectionLooseQty);
     if (qty === undefined || qty === null || !Number.isInteger(quantity) || quantity === 0) {
       return res.status(400).json({ success: false, message: 'Qty must be a non-zero integer' });
+    }
+    if (!Number.isInteger(rejectedQuantity) || rejectedQuantity < 0 ||
+      !Number.isInteger(rejectedBoxCount) || rejectedBoxCount < 0 ||
+      !Number.isInteger(rejectedLooseBottleCount) || rejectedLooseBottleCount < 0 ||
+      (quantity < 0 && rejectedQuantity > 0)) {
+      return res.status(400).json({ success: false, message: 'Rejection Qty must be a non-negative whole quantity and cannot be added when subtracting.' });
     }
 
     const plan = await LacquerPlan.findById(id);
@@ -5210,6 +5533,9 @@ exports.addCoatedQty = async (req, res) => {
 
     if (plan.isDeleted) {
       return res.status(400).json({ success: false, message: 'Cannot modify deleted plan' });
+    }
+    if (rejectedBoxCount * (Number(plan.boxQty) || 0) + rejectedLooseBottleCount !== rejectedQuantity) {
+      return res.status(400).json({ success: false, message: 'Rejection boxes and loose bottles do not match the rejection quantity.' });
     }
 
     // Acquire pool lock
@@ -5344,6 +5670,9 @@ exports.addCoatedQty = async (req, res) => {
         type: 'added',
         subType: 'coated',
         qty: quantity,
+        rejectionQty: rejectedQuantity,
+        rejectionBoxes: rejectedBoxCount,
+        rejectionLooseQty: rejectedLooseBottleCount,
         at: date ? new Date(date) : new Date(),
         by: userId,
         note: note || '',
@@ -5384,6 +5713,9 @@ exports.addCoatedQty = async (req, res) => {
         qty: q
       }));
 
+      freshPlan.isEditedAfterImport = true;
+      freshPlan.lastEditedAt = new Date();
+
       await freshPlan.save();
 
       // Replay allocations and stock deduction
@@ -5397,9 +5729,7 @@ exports.addCoatedQty = async (req, res) => {
       await syncSameDayPlansPlainStock(plainBottleName, companyId, freshPlan.planDate, req.user?._id);
 
       // Sync Printing Plan if applicable (C+P rows)
-      if (freshPlan.process === 'C+P' || freshPlan.process === 'CP') {
-        // TODO: Sync to Printing Plan with new coated qty
-      }
+      await syncPrintingPlanForLacquerPlan(freshPlan, req.user?._id);
 
       // Auto-send to Ready To Dispatch if row is completed and is process C
       if (isCompleted && freshPlan.process === 'C' && !freshPlan.readyToDispatch) {
@@ -5517,6 +5847,9 @@ exports.deleteQtyEntry = async (req, res) => {
     await recomputePlainStock(plan.bottleName, plan.companyId, req.user?._id);
     await syncSameDayPlansPlainStock(plan.bottleName, plan.companyId, plan.planDate, req.user?._id);
 
+    // Sync to Printing Plan
+    await syncPrintingPlanForLacquerPlan(plan, req.user?._id);
+
     // Refresh and return
     const updated = await LacquerPlan.findById(id);
     res.status(200).json({
@@ -5558,3 +5891,6 @@ exports.getOpeningStock = async (req, res) => {
     res.status(500).json({ success: false, message: err.message });
   }
 };
+
+exports.syncPrintingPlanForLacquerPlan = syncPrintingPlanForLacquerPlan;
+exports.createPrintingPlanIfApplicable = syncPrintingPlanForLacquerPlan;

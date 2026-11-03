@@ -547,7 +547,12 @@ export default function IncomingList() {
                               ? '-' 
                               : new Date(inc.documentDate || inc.date || inc.createdAt).toLocaleDateString()}
                           </td>
-                          <td className="fw-bold text-primary">{inc.deliveryNumber}</td>
+                          <td className="fw-bold text-primary">
+                            {inc.deliveryNumber}
+                            {inc.isImported && (
+                              <span className="badge bg-secondary-subtle text-secondary border ms-1" style={{ fontSize: 10 }}>Imported</span>
+                            )}
+                          </td>
                           {!companyId && <td>{inc.billToId?.name || '-'}</td>}
                           {isShreno && (
                             <>
@@ -613,6 +618,9 @@ export default function IncomingList() {
                                   </td>
                                   <td rowSpan={itemsToRender.length} className="fw-bold text-primary border-bottom">
                                     {inc.deliveryNumber}
+                                    {inc.isImported && (
+                                      <span className="badge bg-secondary-subtle text-secondary border ms-1" style={{ fontSize: 10 }}>Imported</span>
+                                    )}
                                   </td>
                                   {!companyId && (
                                     <td rowSpan={itemsToRender.length} className="border-bottom">

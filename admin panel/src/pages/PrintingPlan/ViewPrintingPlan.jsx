@@ -21,6 +21,28 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { fetchPrintingPlanById, clearCurrentPlan } from '../../redux/slices/printingPlanSlice';
 import { usePrintingPlanLanguage } from '../../hooks/usePrintingPlanLanguage';
 
+function formatHistoryDateTime(dateValue) {
+  if (!dateValue) return '-';
+  const date = new Date(dateValue);
+  if (Number.isNaN(date.getTime())) return '-';
+  const formattedDate = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Kolkata',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric'
+  }).format(date);
+  if (date.getUTCHours() === 0 && date.getUTCMinutes() === 0 && date.getUTCSeconds() === 0 && date.getUTCMilliseconds() === 0) {
+    return `${formattedDate} (time not recorded)`;
+  }
+  const formattedTime = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Kolkata',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23'
+  }).format(date);
+  return `${formattedDate} ${formattedTime} IST`;
+}
+
 export default function ViewPrintingPlan() {
   const { id } = useParams();
   const dispatch = useDispatch();
@@ -132,6 +154,9 @@ export default function ViewPrintingPlan() {
                     </td>
                     <td>
                       <input type="text" className="form-control form-control-sm shadow-none bg-light text-center" disabled value={currentPlan.producedQty || '0'} />
+                      {Number(currentPlan.readyRejectionQty) > 0 && (
+                        <div className="small text-danger mt-1">Rejected: {currentPlan.readyRejectionQty}</div>
+                      )}
                       {(currentPlan.coatingShade || '').trim().toUpperCase() === 'PLAIN' && renderUsedFrom(currentPlan.stockAllocation)}
                     </td>
                     <td>
@@ -191,6 +216,43 @@ export default function ViewPrintingPlan() {
               </table>
             </div>
             </div>
+
+            <section className="mb-4">
+              <h6 className="fw-bold mb-3">Quantity History</h6>
+              <div className="table-responsive border rounded">
+                <table className="table table-sm table-bordered align-middle text-center mb-0">
+                  <thead className="table-light">
+                    <tr>
+                      <th>Date</th>
+                      <th>User</th>
+                      <th>Type</th>
+                      <th>Quantity</th>
+                      <th>Rejected (Boxes + Qty)</th>
+                      <th>Running Total</th>
+                      <th>Note</th>
+                      <th>Stock from</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(currentPlan.quantityHistory || []).map((entry, index) => (
+                      <tr key={entry._id || `${entry.type}-${index}`} className={entry.isDeleted ? 'table-danger text-muted' : ''}>
+                        <td>{formatHistoryDateTime(entry.at)}</td>
+                        <td>{entry.by || '-'}</td>
+                        <td>{entry.isDeleted ? 'Removed' : entry.type}</td>
+                        <td>{entry.qty > 0 ? `+${entry.qty}` : entry.qty}</td>
+                        <td>{`${entry.rejectionBoxes || 0} boxes + ${entry.rejectionLooseQty ?? entry.rejectionQty ?? 0} (${entry.rejectionQty || 0} bottles)`}</td>
+                        <td>{entry.runningTotal ?? '-'}</td>
+                        <td className="text-start">{entry.note || '-'}</td>
+                        <td>{entry.sourceText || '-'}</td>
+                      </tr>
+                    ))}
+                    {(!currentPlan.quantityHistory || currentPlan.quantityHistory.length === 0) && (
+                      <tr><td colSpan="8" className="text-muted">No quantity history.</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </section>
 
             <div className="d-flex gap-2 mt-4 user-form-actions border-top pt-4">
               <button type="button" onClick={() => navigate('/printing-plan')} className="btn-ghost px-5 py-3 text-decoration-none text-center">
