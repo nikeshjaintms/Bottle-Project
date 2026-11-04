@@ -12,6 +12,72 @@ const { recomputePlainStock, computeLivePlainStock, replayStockAllocations, vali
 const { isPrintingProcess } = require("../utils/processRouting");
 const { decodeCursor, encodeCursor, buildKeysetQuery, parseLimit } = require("../utils/keyset-pagination");
 
+const normalizeStockDisplayText = value => String(value || "").replace(/\s+/g, " ").trim().toUpperCase();
+
+const escapeRegex = value => String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+const buildNormalizedFieldRegex = value => {
+  const pattern = String(value || "").trim().split(/\s+/).map(escapeRegex).join("\\s+");
+  return new RegExp(`^\\s*${pattern}\\s*$`, "i");
+};
+
+const getStockDisplayGroupKey = (plan, companyNameMap) => {
+  const companyRef = plan.companyId?._id || plan.companyId;
+  const companyId = companyRef?.toString();
+  const companyName = plan.companyId?.name || plan.companyName || plan.company?.name || companyNameMap.get(companyId) || "";
+  const shade = normalizeStockDisplayText(plan.coatingShade);
+  if (String(companyName).toUpperCase().includes("SHRENO") && !shade) {
+    return `row_${plan._id?.toString()}`;
+  }
+  const boundary = `${companyRef || plan.companyName || plan.company}_${plan.planDate ? new Date(plan.planDate).toISOString() : ""}`;
+  return normalizeStockDisplayText(`${boundary}_${plan.bottleName || ""}_${plan.coatingShade || ""}`);
+};
+
+const buildStockDisplayGroupFilter = plan => {
+  const conditions = [
+    { planDate: new Date(plan.planDate) },
+    plan.bottleName
+      ? { bottleName: buildNormalizedFieldRegex(plan.bottleName) }
+      : { $or: [{ bottleName: null }, { bottleName: { $exists: false } }, { bottleName: /^\s*$/ }] }
+  ];
+  const companyId = (plan.companyId?._id || plan.companyId)?.toString();
+  if (companyId && mongoose.Types.ObjectId.isValid(companyId)) {
+    conditions.push({ companyId: new mongoose.Types.ObjectId(companyId) });
+  } else {
+    conditions.push({ $or: [{ companyId: null }, { companyId: { $exists: false } }] });
+  }
+  conditions.push(
+    plan.coatingShade
+      ? { coatingShade: buildNormalizedFieldRegex(plan.coatingShade) }
+      : { $or: [{ coatingShade: null }, { coatingShade: { $exists: false } }, { coatingShade: /^\s*$/ }] }
+  );
+  return { $and: conditions };
+};
+
+const compareStockDisplayRows = (left, right) => {
+  const compareText = (a, b) => {
+    const textA = String(a || "").toLowerCase();
+    const textB = String(b || "").toLowerCase();
+    return textA < textB ? -1 : textA > textB ? 1 : 0;
+  };
+  const compareBrands = (a, b) => {
+    if (!a && !b) return 0;
+    if (!a) return 1;
+    if (!b) return -1;
+    return compareText(a, b);
+  };
+  const bottleA = String(left.bottleName || "").toLowerCase();
+  const bottleB = String(right.bottleName || "").toLowerCase();
+  const sizeA = Number.parseFloat(bottleA.match(/(\d+(?:\.\d+)?)/)?.[0] || "Infinity");
+  const sizeB = Number.parseFloat(bottleB.match(/(\d+(?:\.\d+)?)/)?.[0] || "Infinity");
+  if (sizeA !== sizeB) return sizeA - sizeB;
+  return compareText(bottleA, bottleB)
+    || compareBrands(left.brandId?.name || left.brandName, right.brandId?.name || right.brandName)
+    || compareText(left.coatingShade, right.coatingShade)
+    || compareText(left.printingToBeDone, right.printingToBeDone)
+    || compareText(left.textColor, right.textColor);
+};
+
 const getQtyEntryTotal = (plan, subType) => (plan.qtyEntries || [])
   .filter(entry => !entry.isDeleted && entry.subType === subType)
   .reduce((sum, entry) => sum + (Number(entry.qty) || 0), 0);
@@ -1699,6 +1765,8 @@ exports.getPlansPaginated = async (req, res) => {
       query.$or.push({ printingToBeDone: { $regex: search, $options: 'i' } });
     }
 
+    const baseQuery = { ...query };
+
     // Keyset pagination: exclude already-fetched records
     const decodedCursor = decodeCursor(cursor);
     if (decodedCursor) {
@@ -1710,7 +1778,7 @@ exports.getPlansPaginated = async (req, res) => {
     // Use aggregate pipeline for efficiency
     const pipeline = [
       { $match: query },
-      { $sort: { planDate: -1, _id: -1 } },
+      { $sort: { companyName: 1, bottleName: 1, coatingShade: 1, printingToBeDone: 1, textColor: 1, planDate: -1, _id: -1 } },
       {
         $lookup: {
           from: 'brands',
@@ -1818,10 +1886,58 @@ exports.getPlansPaginated = async (req, res) => {
     const stockCache = new Map();
     const stockWarnings = await getPlainStockWarnings(items, stockCache);
     const boxQtyByAlias = await getBottlePerBoxByAlias(items);
+    // Resolve each group's displayed value without the cursor so split groups stay consistent.
+    const stockDisplayRowsByKey = new Map();
+    const stockDisplayGroupFilters = new Map();
+
+    for (const plan of items) {
+      const key = getStockDisplayGroupKey(plan, companyNameMap);
+      if (!stockDisplayRowsByKey.has(key)) stockDisplayRowsByKey.set(key, []);
+      const companyName = plan.companyId?.name || plan.companyName || plan.company?.name || "";
+      const shade = normalizeStockDisplayText(plan.coatingShade);
+      if (String(companyName).toUpperCase().includes("SHRENO") && !shade) {
+        stockDisplayRowsByKey.get(key).push(plan);
+      } else if (!stockDisplayGroupFilters.has(key)) {
+        stockDisplayGroupFilters.set(key, buildStockDisplayGroupFilter(plan));
+      }
+    }
+
+    if (stockDisplayGroupFilters.size > 0) {
+      const displayGroupPlans = await PrintingPlan.find({
+        $and: [
+          baseQuery,
+          { $or: Array.from(stockDisplayGroupFilters.values()) }
+        ]
+      })
+        .select('_id planDate bottleName brandName brandId companyId companyName coatingShade printingToBeDone textColor plainBottleStock stockSources')
+        .populate('brandId', 'name')
+        .sort({ planDate: -1, _id: -1 })
+        .lean();
+
+      for (const plan of displayGroupPlans) {
+        const key = getStockDisplayGroupKey(plan, companyNameMap);
+        if (stockDisplayGroupFilters.has(key)) stockDisplayRowsByKey.get(key).push(plan);
+      }
+    }
+
+    const stockDisplayValues = new Map();
+    for (const [key, groupRows] of stockDisplayRowsByKey) {
+      if (groupRows.length === 0) {
+        throw new Error(`Unable to resolve stock display group ${key}`);
+      }
+      groupRows.sort(compareStockDisplayRows);
+      const firstRow = groupRows[0];
+      const isPlainShade = (firstRow.coatingShade || "").trim().toUpperCase() === "PLAIN";
+      stockDisplayValues.set(
+        key,
+        isPlainShade ? await getLivePrintingStock(firstRow, stockCache) : firstRow.plainBottleStock
+      );
+    }
 
     // Augment items with group-identifying fields and computed values
     const augmentedItems = await Promise.all(items.map(async (plan) => {
       const isPlainShade = (plan.coatingShade || "").trim().toUpperCase() === "PLAIN";
+      const stockDisplayGroupKey = getStockDisplayGroupKey(plan, companyNameMap);
       const coatedStockAvailable = await getLivePrintingStock(plan, stockCache);
       const boxQty = boxQtyByAlias.get(String(plan.bottleName || "").trim().toUpperCase()) || Number(plan.boxQty) || 0;
       const calculations = getPrintingPlanCalculations({ ...plan, boxQty });
@@ -1865,6 +1981,7 @@ exports.getPlansPaginated = async (req, res) => {
         boxQty,
         noOfBoxes,
         plainBottleStock: isPlainShade ? coatedStockAvailable : plan.plainBottleStock,
+        plainBottleStockDisplay: stockDisplayValues.get(stockDisplayGroupKey) ?? null,
         coatedStockAvailable: coatedStockAvailable,
         dispatchBalance: plan.dispatchBalance,
         readyBoxes: plan.readyBoxes,

@@ -24,6 +24,18 @@ export const usePrintingPlanInfiniteScroll = (filters) => {
   const sentinelRef = useRef(null);
   const loadTimeoutRef = useRef(null);
 
+  const updateItem = useCallback((id, updates) => {
+    setItems(prev => prev.map(item => String(item._id) === String(id) ? { ...item, ...updates } : item));
+  }, []);
+
+  const removeItem = useCallback((id) => {
+    setItems(prev => {
+      const filtered = prev.filter(item => String(item._id) !== String(id));
+      loadedIdsRef.current.delete(String(id));
+      return filtered;
+    });
+  }, []);
+
   // Fetch totals independently (no timeout, no blocking other requests)
   const fetchTotals = useCallback(async () => {
     try {
@@ -158,8 +170,8 @@ export const usePrintingPlanInfiniteScroll = (filters) => {
       const pageData = await fetchPage(cursor, requestId);
 
       if (requestId === requestIdRef.current && pageData) {
-        const newItems = pageData.items.filter(item => !loadedIdsRef.current.has(item._id));
-        pageData.items.forEach(item => loadedIdsRef.current.add(item._id));
+        const newItems = pageData.items.filter(item => !loadedIdsRef.current.has(String(item._id)));
+        pageData.items.forEach(item => loadedIdsRef.current.add(String(item._id)));
 
         setItems(prev => [...prev, ...newItems]);
         setCursor(pageData.nextCursor);
@@ -209,6 +221,8 @@ export const usePrintingPlanInfiniteScroll = (filters) => {
     sentinelRef,
     resetAndLoad,
     loadNextPage,
-    retryLoad
+    retryLoad,
+    updateItem,
+    removeItem
   };
 };

@@ -13,6 +13,15 @@ const printingPlanSchema = new mongoose.Schema({
   sourceGroupId: {
     type: String
   },
+  groupId: {
+    type: String,
+    index: true,
+    default: null
+  },
+  rowOrder: {
+    type: Number,
+    default: 1
+  },
     bottleName: {
     // Adding this since it's the standard way we identify bottles in the UI alongside itemId
     type: String

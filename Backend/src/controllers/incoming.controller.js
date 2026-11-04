@@ -747,10 +747,7 @@ exports.createBottle = async (req, res) => {
           $set: { isDeleted: false },
           $addToSet: { bottleNames: normalizedName },
         };
-        if (
-          bottlePerBoxNum !== null &&
-          (masterBottle.bottlePerBox === null || masterBottle.bottlePerBox === undefined)
-        ) {
+        if (bottlePerBoxNum !== null && bottlePerBoxNum > 0) {
           bottleUpdate.$set.bottlePerBox = bottlePerBoxNum;
         }
         if (!masterBottle.bottleName) bottleUpdate.$set.bottleName = normalizedName;

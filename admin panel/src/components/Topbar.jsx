@@ -29,7 +29,7 @@ export default function Topbar({ collapsed, onToggle, onLogout }) {
           className="user-dropdown"
           onClick={() => setShowDropdown(!showDropdown)}
         >
-          <div className="topbar-avatar" style={{ width: 40, height: 40, borderRadius: '50%', overflow: 'hidden', flexShrink: 0 }}>
+          <div className="topbar-avatar" style={{ width: 40, height: 40, borderRadius: '50%', overflow: 'hidden', flexShrink: 0, background: 'transparent' }}>
             {imageUrl ? (
               <img
                 src={imageUrl}
@@ -49,16 +49,14 @@ export default function Topbar({ collapsed, onToggle, onLogout }) {
               style={{
                 width: '100%',
                 height: '100%',
-                background: 'linear-gradient(135deg, #6366f1, #8b5cf6)',
+                background: 'transparent',
                 display: imageUrl ? 'none' : 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                color: 'white',
-                fontWeight: 700,
-                fontSize: 16
+                padding: '4px'
               }}
             >
-              {displayName.charAt(0).toUpperCase()}
+              <img src="/favicon.svg" alt="Logo" style={{ height: '100%', width: '100%', objectFit: 'contain' }} />
             </div>
           </div>
           <span className="user-name-text">Hi, {displayName}</span>

@@ -2020,35 +2020,30 @@ export default function AddLacquerPlan() {
                                                   normalizeRollOn(b.plainBottleName || b.bottleName || '').trim() === normalizeRollOn(selectedBottleName || '').trim()
                                                 );
                                                 
-                                                // Check if selected bottle exists for current brand via BottleSpec
-                                                const bottleExistsForBrand = (bottleSpecs || []).some(bs => 
-                                                  (bs.brandId?._id || bs.brandId)?.toString() === gBrandId?.toString() &&
-                                                  (bs.bottleName || '').trim().toLowerCase() === selectedBottleName.trim().toLowerCase()
-                                                );
-
-                                                if (!bottleExistsForBrand && gBrandId) {
-                                                  // Bottle doesn't exist for this brand - show modal to create it
-                                                  setMissingPlainBottleData({
-                                                    bottleName: selectedBottleName,
-                                                    companyId: gCompanyId || '',
-                                                    brandId: gBrandId || '',
-                                                    companyName: companies.find(c => c._id === gCompanyId)?.name || '',
-                                                    brandName: brands.find(b => b._id === gBrandId)?.name || '',
-                                                    bottlePerBox: bottlePerBoxData?.bottlePerBox || '',
-                                                    printingTypeId: '',
-                                                    printingColorId: '',
-                                                    rowIndex: index,
-                                                    status: true
-                                                  });
-                                                  setShowMissingPlainBottleModal(true);
-                                                } else {
-                                                  // Bottle exists for brand or no brand selected - proceed normally
+                                                // If bottle exists in BottlePerBox master, it's valid - don't show the error modal
+                                                if (bottlePerBoxData) {
+                                                  // Bottle exists in master - proceed normally
                                                   handleRowChange(index, 'plainBottleId', selected.value);
                                                   
                                                   // Auto-populate boxQty if bottle has bottlePerBox value
                                                   if (bottlePerBoxData && bottlePerBoxData.bottlePerBox) {
                                                     handleRowChange(index, 'boxQty', bottlePerBoxData.bottlePerBox);
                                                   }
+                                                } else {
+                                                  // Bottle does NOT exist in master - show modal to create it
+                                                  setMissingPlainBottleData({
+                                                    bottleName: selectedBottleName,
+                                                    companyId: gCompanyId || '',
+                                                    brandId: gBrandId || '',
+                                                    companyName: companies.find(c => c._id === gCompanyId)?.name || '',
+                                                    brandName: brands.find(b => b._id === gBrandId)?.name || '',
+                                                    bottlePerBox: '',
+                                                    printingTypeId: '',
+                                                    printingColorId: '',
+                                                    rowIndex: index,
+                                                    status: true
+                                                  });
+                                                  setShowMissingPlainBottleModal(true);
                                                 }
                                               }
                                             }}

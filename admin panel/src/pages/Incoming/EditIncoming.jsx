@@ -516,16 +516,22 @@ export default function EditIncoming() {
       const res = await dispatch(parseChallan(files)).unwrap();
       const itemsToSet = (res.items || []).map(item => {
         const option = matchBottleOption(item, companyBottleOptions, bottlePerBoxes);
-        let defaultQty = 1;
-        const foundBox = option && bottlePerBoxes?.find(b => String(b._id) === option.value);
-        if (foundBox && foundBox.bottlePerBox != null && foundBox.bottlePerBox > 0) {
-          defaultQty = foundBox.bottlePerBox;
+        let defaultBox = item.box || '';
+        let defaultTotalQty = item.totalQty || '';
+        let defaultQty = item.qty || '';
+
+        if (!defaultQty && defaultBox && defaultTotalQty) {
+          defaultQty = parseFloat((Number(defaultTotalQty) / Number(defaultBox)).toFixed(2));
+        } else if (!defaultQty) {
+          const foundBox = option && bottlePerBoxes?.find(b => String(b._id) === option.value);
+          if (foundBox && foundBox.bottlePerBox != null && foundBox.bottlePerBox > 0) {
+            defaultQty = foundBox.bottlePerBox;
+          } else {
+            defaultQty = 1;
+          }
         }
 
         const matchIsShreno = formData.billToId === PO_REQUIRED_COMPANY.id || companies?.find(c => c._id === formData.billToId)?.name?.toLowerCase().includes('shreno');
-
-        let defaultBox;
-        let defaultTotalQty = '';
 
         if (matchIsShreno) {
           defaultBox = item.totalQty || item.box || '';
@@ -533,9 +539,6 @@ export default function EditIncoming() {
             defaultTotalQty = parseFloat((Number(defaultBox) * Number(defaultQty)).toFixed(2));
           }
         } else {
-          defaultTotalQty = item.totalQty || '';
-          defaultBox = item.box || '';
-
           if (defaultTotalQty && defaultQty > 0 && !defaultBox) {
             defaultBox = parseFloat((Number(defaultTotalQty) / Number(defaultQty)).toFixed(2));
           } else if (defaultBox && defaultQty > 0 && !defaultTotalQty) {
@@ -610,14 +613,20 @@ export default function EditIncoming() {
 
       const itemsToSet = (res.items || []).map(item => {
         const option = matchBottleOption(item, scannedBottleOptions, bottlePerBoxes);
-        let defaultQty = 1;
-        const foundBox = option && bottlePerBoxes?.find(b => String(b._id) === option.value);
-        if (foundBox && foundBox.bottlePerBox != null && foundBox.bottlePerBox > 0) {
-          defaultQty = foundBox.bottlePerBox;
-        }
+        let defaultBox = item.box || '';
+        let defaultTotalQty = item.totalQty || '';
+        let defaultQty = item.qty || '';
 
-        let defaultBox;
-        let defaultTotalQty = '';
+        if (!defaultQty && defaultBox && defaultTotalQty) {
+          defaultQty = parseFloat((Number(defaultTotalQty) / Number(defaultBox)).toFixed(2));
+        } else if (!defaultQty) {
+          const foundBox = option && bottlePerBoxes?.find(b => String(b._id) === option.value);
+          if (foundBox && foundBox.bottlePerBox != null && foundBox.bottlePerBox > 0) {
+            defaultQty = foundBox.bottlePerBox;
+          } else {
+            defaultQty = 1;
+          }
+        }
 
         if (matchIsShreno) {
           defaultBox = item.totalQty || item.box || '';
@@ -625,9 +634,6 @@ export default function EditIncoming() {
             defaultTotalQty = parseFloat((Number(defaultBox) * Number(defaultQty)).toFixed(2));
           }
         } else {
-          defaultTotalQty = item.totalQty || '';
-          defaultBox = item.box || '';
-
           if (defaultTotalQty && defaultQty > 0 && !defaultBox) {
             defaultBox = parseFloat((Number(defaultTotalQty) / Number(defaultQty)).toFixed(2));
           } else if (defaultBox && defaultQty > 0 && !defaultTotalQty) {
@@ -652,9 +658,15 @@ export default function EditIncoming() {
         
         res.unmatchedItems.forEach(uItem => {
           let uBox = matchIsShreno ? (uItem.totalQty || uItem.box || 1) : (uItem.box || 1);
-          let uQty = uItem.qty || 1;
+          let uQty = uItem.qty || '';
           let uTotalQty = matchIsShreno ? '' : (uItem.totalQty || '');
           
+          if (!uQty && uBox && uTotalQty) {
+            uQty = parseFloat((Number(uTotalQty) / Number(uBox)).toFixed(2));
+          } else if (!uQty) {
+            uQty = 1;
+          }
+
           if (!matchIsShreno && !uTotalQty && uBox) {
             uTotalQty = parseFloat((Number(uBox) * Number(uQty)).toFixed(2));
           } else if (matchIsShreno && !uTotalQty && uBox) {

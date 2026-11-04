@@ -65,6 +65,10 @@ export default function CompanySummary() {
   const packingRequestIdRef = useRef(0);
   const packingLoadedIdsRef = useRef(new Set());
 
+  // Live Stock state (for PLAIN coating shade only)
+  const [liveStockTotals, setLiveStockTotals] = useState(null);
+  const [liveStockLoading, setLiveStockLoading] = useState(false);
+
   // IntersectionObserver sentinels
   const incomingSentinelRef = useRef(null);
   const dispatchSentinelRef = useRef(null);
@@ -477,6 +481,40 @@ export default function CompanySummary() {
       loadSectionStart('packing');
     }
   }, [fromDate, toDate, searchFilter, loadSectionStart, isShreno, selectedBottleId]);
+
+  // ========== Fetch Live Stock for selected bottle (PLAIN coating shade) ==========
+
+  useEffect(() => {
+    if (!selectedBottleId || selectedBottleId === 'all') return;
+
+    let isMounted = true;
+    const fetchLiveStock = async () => {
+      setLiveStockLoading(true);
+      try {
+        const res = await api.get('/summary/live-stock', {
+          params: {
+            companyId,
+            bottleId: selectedBottleId,
+            fromDate,
+            toDate
+          }
+        });
+        if (isMounted) {
+          setLiveStockTotals(res.data?.data || null);
+        }
+      } catch (err) {
+        console.error('Failed to load live stock:', err);
+        if (isMounted) {
+          setLiveStockTotals(null);
+        }
+      } finally {
+        if (isMounted) setLiveStockLoading(false);
+      }
+    };
+
+    fetchLiveStock();
+    return () => { isMounted = false; };
+  }, [companyId, selectedBottleId, fromDate, toDate]);
 
   const handleBottleChange = (newBottleId) => {
     setSelectedBottleId(newBottleId);
@@ -907,6 +945,22 @@ export default function CompanySummary() {
                 {formatNum((incomingTotals?.totalBoxes || 0) - (dispatchTotals?.totalBoxes || 0))} {labels.boxes} net
               </div>
             </div>
+
+            {selectedBottleId !== 'all' && (
+              <div className="summary-kpi-card theme-incoming">
+                <div className="kpi-title">Live Stock</div>
+                <div className="kpi-val">
+                  {liveStockLoading ? (
+                    <div className="spinner-border spinner-border-sm mt-2" />
+                  ) : (
+                    formatNum(liveStockTotals?.totalUsed || 0)
+                  )}
+                </div>
+                <div className="kpi-subtext">
+                  {formatNum(liveStockTotals?.totalBoxes || 0)} boxes in use
+                </div>
+              </div>
+            )}
 
             {isShreno && (
               <div className="summary-kpi-card theme-shreno">

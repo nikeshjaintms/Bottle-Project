@@ -14,6 +14,9 @@ router.get("/incoming-totals", auth, checkAbility("read", "summary"), summaryCon
 router.get("/dispatch-totals", auth, checkAbility("read", "summary"), summaryController.getDispatchTotals);
 router.get("/shreno-incoming-totals", auth, checkAbility("read", "summary"), summaryController.getShrenoIncomingTotals);
 
+// Live Stock endpoint (for PLAIN coating shade usage in Lacquer and Printing Plans)
+router.get("/live-stock", auth, checkAbility("read", "summary"), summaryController.getLiveStock);
+
 // Read-only Summary endpoints (existing)
 router.get("/companies", auth, checkAbility("read", "summary"), summaryController.getSummaryCompanies);
 router.get("/bottles", auth, checkAbility("read", "summary"), summaryController.getSummaryBottles);

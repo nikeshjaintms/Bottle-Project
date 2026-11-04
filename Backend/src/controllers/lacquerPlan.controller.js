@@ -12,11 +12,186 @@ const Brand = require("../models/Brand");
 const Variant = require("../models/Variant");
 const mongoose = require("mongoose");
 const { decodeCursor, encodeCursor, parseLimit } = require("../utils/keyset-pagination");
+const {
+  buildLacquerPrintingIdentity,
+  getLacquerPrintingDayRange,
+  normalizeLacquerPrintingId,
+  shouldCreateLacquerPrintingRow
+} = require("../utils/lacquerPrintingIdentity");
+
+let mongoTransactionSupportPromise;
+const supportsMongoTransactions = () => {
+  if (!mongoTransactionSupportPromise) {
+    mongoTransactionSupportPromise = (async () => {
+      try {
+        if (!mongoose.connection.db) {
+          throw new Error("MongoDB connection is not ready");
+        }
+        const hello = await mongoose.connection.db.admin().command({ hello: 1 });
+        const supported = Boolean(hello.setName) || hello.msg === "isdbgrid";
+        console.info(`[MongoDB] Transaction support: ${supported ? "enabled" : "disabled"}`);
+        return supported;
+      } catch (error) {
+        console.warn(`[MongoDB] Transaction support detection failed; using compensation: ${error.message}`);
+        return false;
+      }
+    })();
+  }
+  return mongoTransactionSupportPromise;
+};
+
+mongoose.connection.on("connected", () => {
+  void supportsMongoTransactions();
+});
+if (mongoose.connection.readyState === 1) {
+  void supportsMongoTransactions();
+}
+
+const withMongoTransaction = async operation => {
+  if (!(await supportsMongoTransactions())) {
+    return operation(null);
+  }
+  const session = await mongoose.startSession();
+  try {
+    let result;
+    await session.withTransaction(async () => {
+      result = await operation(session);
+    });
+    return result;
+  } finally {
+    await session.endSession();
+  }
+};
+
+const withLacquerPrintingCompensation = async (plans, operation) => {
+  if (await supportsMongoTransactions()) {
+    return withMongoTransaction(operation);
+  }
+
+  const planValues = plans.map(plan =>
+    typeof plan.toObject === "function" ? plan.toObject() : plan
+  );
+  const planIds = [...new Map(
+    planValues
+      .filter(plan => plan?._id)
+      .map(plan => [normalizeLacquerPrintingId(plan._id), plan._id])
+  ).values()];
+  const lacquerSnapshots = planIds.length
+    ? await LacquerPlan.find({ _id: { $in: planIds } }).lean()
+    : [];
+  const printingSnapshots = new Map();
+  const addPrintingSnapshots = rows => {
+    for (const row of rows) {
+      printingSnapshots.set(normalizeLacquerPrintingId(row._id), row);
+    }
+  };
+
+  if (planIds.length) {
+    addPrintingSnapshots(await PrintingPlan.find({ lacquerPlanId: { $in: planIds } }).lean());
+  }
+  for (const plan of planValues) {
+    if (!plan?._id || !plan.planDate || !plan.companyId || !plan.brandId) continue;
+    const identity = await buildLacquerPrintingIdentity(plan);
+    if (!identity) continue;
+    const { start, end } = getLacquerPrintingDayRange(plan.planDate);
+    const candidates = await PrintingPlan.find({
+      planDate: { $gte: start, $lte: end },
+      companyId: plan.companyId,
+      brandId: plan.brandId,
+      isDeleted: { $ne: true },
+      lacquerPlanId: null
+    }).lean();
+    for (const candidate of candidates) {
+      if (await buildLacquerPrintingIdentity(candidate) === identity) {
+        addPrintingSnapshots([candidate]);
+      }
+    }
+  }
+
+  try {
+    return await operation(null);
+  } catch (error) {
+    const compensationFailures = [];
+    const snapshotPrintingIds = [...printingSnapshots.values()].map(row => row._id);
+    try {
+      if (planIds.length) {
+        await PrintingPlan.collection.deleteMany({
+          lacquerPlanId: { $in: planIds },
+          _id: { $nin: snapshotPrintingIds }
+        });
+      }
+    } catch (compensationError) {
+      compensationFailures.push({ ids: planIds.map(normalizeLacquerPrintingId), error: compensationError });
+    }
+
+    for (const snapshot of printingSnapshots.values()) {
+      try {
+        await PrintingPlan.collection.replaceOne(
+          { _id: snapshot._id },
+          snapshot,
+          { upsert: true }
+        );
+      } catch (compensationError) {
+        compensationFailures.push({ ids: [normalizeLacquerPrintingId(snapshot._id)], error: compensationError });
+      }
+    }
+
+    const lacquerSnapshotIds = new Set(lacquerSnapshots.map(plan => normalizeLacquerPrintingId(plan._id)));
+    for (const id of planIds) {
+      const idString = normalizeLacquerPrintingId(id);
+      try {
+        const snapshot = lacquerSnapshots.find(plan => normalizeLacquerPrintingId(plan._id) === idString);
+        if (snapshot) {
+          await LacquerPlan.collection.replaceOne({ _id: snapshot._id }, snapshot, { upsert: true });
+        } else if (!lacquerSnapshotIds.has(idString)) {
+          await LacquerPlan.collection.deleteOne({ _id: id });
+        }
+      } catch (compensationError) {
+        compensationFailures.push({ ids: [idString], error: compensationError });
+      }
+    }
+
+    for (const failure of compensationFailures) {
+      console.error(
+        `[Lacquer/Printing compensation failed] document ids: ${failure.ids.join(", ")};`,
+        failure.error
+      );
+    }
+    if (compensationFailures.length > 0) {
+      throw new Error(
+        `${error.message}. Compensation also failed for ${compensationFailures.map(failure => failure.ids.join(", ")).join("; ")}.`
+      );
+    }
+    throw error;
+  }
+};
+
+const isPrintingSyncProcess = plan =>
+  String(plan?.process || "").trim().toUpperCase() === "C+P";
+
+const needsPrintingSyncTransaction = async plan => {
+  if (isPrintingSyncProcess(plan)) return true;
+  if (!plan?._id) return false;
+  return Boolean(await PrintingPlan.exists({
+    lacquerPlanId: plan._id,
+    isDeleted: false
+  }));
+};
+
+const savePlanWithPrintingSync = async (plan, userId) => {
+  if (!(await needsPrintingSyncTransaction(plan))) {
+    await plan.save();
+    return null;
+  }
+  return withLacquerPrintingCompensation([plan], async session => {
+    await plan.save(session ? { session } : undefined);
+    return syncPrintingPlanForLacquerPlan(plan, userId, { session });
+  });
+};
 
 // 30-second cache for totals
 const lacquerTotalsCache = new Map();
 const LACQUER_TOTALS_CACHE_TTL = 30000;
-const { isPrintingProcess } = require("../utils/processRouting");
 const {
   detectGujaratiHeaders,
   buildColumnMapFromGujarati,
@@ -461,45 +636,80 @@ const validatePlanCompanyBottleVariant = async (planData, isUpdate = false, exis
   }
 };
 
-// Helper to auto-create and synchronize PrintingPlan 1-to-1 with a LacquerPlan row
-const syncPrintingPlanForLacquerPlan = async (plan, userId = null) => {
-  if (!plan) return null;
+const findMatchingPrintingPlan = async (plan, session = null) => {
+  if (!plan?.planDate || !plan?.companyId || !plan?.brandId) return null;
 
-  // Sibling rows and soft-removed rows must never create Printing rows
-  if (plan.isSibling) {
-    return null;
+  const { start, end } = getLacquerPrintingDayRange(plan.planDate);
+  const baseQuery = {
+    planDate: { $gte: start, $lte: end },
+    companyId: plan.companyId,
+    brandId: plan.brandId,
+    isDeleted: { $ne: true }
+  };
+
+  const candidateQuery = PrintingPlan.find(baseQuery).sort({ createdAt: 1, _id: 1 });
+  if (session) candidateQuery.session(session);
+
+  const candidates = await candidateQuery.lean();
+  const targetIdentity = await buildLacquerPrintingIdentity(
+    {
+      ...(typeof plan.toObject === 'function' ? plan.toObject() : plan),
+      variantName: plan.variantName || plan.printingVariant || plan.printingToBeDone || "",
+      coatingShade: plan.coatingShade || plan.colour || ""
+    },
+    session
+  );
+  if (!targetIdentity) return null;
+
+  for (const candidate of candidates) {
+    if (candidate?._id && candidate._id.toString() === String(plan._id || "")) continue;
+    if (await buildLacquerPrintingIdentity(candidate, session) === targetIdentity) {
+      return candidate;
+    }
   }
 
-  // Rule: C is excluded from Printing Plan. C+P, C+F, P, F are included.
-  // If plan is deleted, soft-removed, closed, or process does not qualify for printing, soft-delete linked PrintingPlan
-  if (plan.isDeleted || plan.isSoftRemoved || plan.isClosed || plan.productionStatus === 'CLOSED' || !isPrintingProcess(plan.process)) {
+  return null;
+};
+
+// Helper to auto-create and synchronize PrintingPlan 1-to-1 with a LacquerPlan row
+const syncPrintingPlanForLacquerPlan = async (plan, userId = null, { session = null } = {}) => {
+  if (!plan) return null;
+  if (plan.isSibling || plan.isSoftRemoved) return null;
+
+  if (plan.isDeleted || plan.isClosed || plan.productionStatus === 'CLOSED' ||
+      String(plan.process || '').trim().toUpperCase() !== 'C+P') {
     if (plan._id) {
       await PrintingPlan.updateMany(
         { lacquerPlanId: plan._id, isDeleted: false },
-        { $set: { isDeleted: true } }
+        { $set: { isDeleted: true } },
+        session ? { session } : {}
       );
     }
     return null;
   }
 
-  // Qualifying process (C+P, C+F, P, F, PRINTING, BOTH)
   let pToBeDone = plan.variantName || "";
   let tColor = "";
   if (plan.variantId) {
-    const variant = await Variant.findOne({ _id: plan.variantId, isDeleted: { $ne: true } });
+    let variantQuery = Variant.findOne({ _id: plan.variantId, isDeleted: { $ne: true } });
+    if (session) variantQuery = variantQuery.session(session);
+    const variant = await variantQuery;
     if (variant) {
       pToBeDone = variant.variantName || pToBeDone;
       tColor = variant.detectedTextColor || "";
     }
   }
 
-  // Resolve BottleSpec (itemId)
-  let spec = await BottleSpec.findOne({ bottleName: plan.bottleName, isDeleted: false });
+  let specQuery = BottleSpec.findOne({ bottleName: plan.bottleName, isDeleted: false });
+  if (session) specQuery = specQuery.session(session);
+  let spec = await specQuery;
   if (!spec && plan.brandId) {
-    spec = await BottleSpec.findOne({ bottleName: plan.bottleName, brandId: plan.brandId, isDeleted: false });
+    let brandSpecQuery = BottleSpec.findOne({ bottleName: plan.bottleName, brandId: plan.brandId, isDeleted: false });
+    if (session) brandSpecQuery = brandSpecQuery.session(session);
+    spec = await brandSpecQuery;
   }
   if (!spec) {
-    const selectedPlainBottle = await BottlePerBox.findOne({
+    let plainBottleQuery = BottlePerBox.findOne({
       $or: [
         { plainBottleName: plan.bottleName.trim() },
         { bottleName: plan.bottleName.trim() },
@@ -507,39 +717,65 @@ const syncPrintingPlanForLacquerPlan = async (plan, userId = null) => {
       ],
       isDeleted: false
     });
-    if (selectedPlainBottle && Array.isArray(selectedPlainBottle.bottleNames) && selectedPlainBottle.bottleNames.length > 0) {
-      spec = await BottleSpec.findOne({
+    if (session) plainBottleQuery = plainBottleQuery.session(session);
+    const selectedPlainBottle = await plainBottleQuery;
+    if (selectedPlainBottle?.bottleNames?.length > 0) {
+      let selectedSpecQuery = BottleSpec.findOne({
         bottleName: { $in: selectedPlainBottle.bottleNames },
         brandId: plan.brandId,
         isDeleted: false
       });
+      if (session) selectedSpecQuery = selectedSpecQuery.session(session);
+      spec = await selectedSpecQuery;
     }
   }
 
   const shade = plan.coatingShade || plan.colour || "";
-  const plainStock = (plan.process === 'P')
+  const plainStock = plan.process === 'P'
     ? await computeLivePlainStock(plan.bottleName, plan.companyId, plan.planDate)
     : (plan.coatingCompletedQty ?? plan.coatedQty ?? 0);
+  const planData = typeof plan.toObject === 'function' ? plan.toObject() : plan;
+  const targetIdentity = await buildLacquerPrintingIdentity({
+    ...planData,
+    variantName: pToBeDone,
+    coatingShade: shade
+  }, session);
 
-  // Find linked PrintingPlan for this specific lacquerPlanId (including soft-deleted to restore)
-  let existingPlan = await PrintingPlan.findOne({ lacquerPlanId: plan._id });
-  if (!existingPlan && plan.planDate) {
-    const startOfDay = new Date(plan.planDate);
-    startOfDay.setUTCHours(0, 0, 0, 0);
-    const endOfDay = new Date(plan.planDate);
-    endOfDay.setUTCHours(23, 59, 59, 999);
-    existingPlan = await PrintingPlan.findOne({
-      planDate: { $gte: startOfDay, $lte: endOfDay },
+  let linkedQuery = PrintingPlan.findOne({ lacquerPlanId: plan._id, isDeleted: { $ne: true } });
+  if (session) linkedQuery = linkedQuery.session(session);
+  let existingPlan = await linkedQuery;
+  let adoptedCandidateCount = 0;
+  let leftUnlinkedCandidateCount = 0;
+
+  if (!existingPlan && plan.planDate && targetIdentity) {
+    const matchingCandidates = [];
+    const { start, end } = getLacquerPrintingDayRange(plan.planDate);
+    let candidatesQuery = PrintingPlan.find({
+      planDate: { $gte: start, $lte: end },
       companyId: plan.companyId,
       brandId: plan.brandId,
-      bottleName: { $regex: new RegExp("^" + (plan.bottleName || '').trim() + "$", "i") },
-      $or: [
-        { printingToBeDone: pToBeDone },
-        { coatingShade: shade }
-      ],
-      lacquerPlanId: { $in: [null, undefined] }
-    });
-    if (existingPlan) {
+      isDeleted: { $ne: true }
+    }).sort({ createdAt: 1, _id: 1 });
+    if (session) candidatesQuery = candidatesQuery.session(session);
+    const candidates = await candidatesQuery;
+
+    for (const candidate of candidates) {
+      if (candidate?._id && String(candidate._id) === String(plan._id || "")) continue;
+      const candidateIdentity = await buildLacquerPrintingIdentity(candidate, session);
+      if (candidateIdentity === targetIdentity) {
+        matchingCandidates.push(candidate);
+      }
+    }
+
+    matchingCandidates.sort((left, right) =>
+      new Date(left.createdAt || 0) - new Date(right.createdAt || 0) ||
+      normalizeLacquerPrintingId(left._id).localeCompare(normalizeLacquerPrintingId(right._id))
+    );
+
+    if (matchingCandidates.length > 0) {
+      existingPlan = matchingCandidates[0];
+      adoptedCandidateCount = 1;
+      leftUnlinkedCandidateCount = matchingCandidates.length - 1;
       existingPlan.lacquerPlanId = plan._id;
     }
   }
@@ -553,62 +789,74 @@ const syncPrintingPlanForLacquerPlan = async (plan, userId = null) => {
     existingPlan.coatingShade = shade;
     existingPlan.printingToBeDone = pToBeDone || existingPlan.printingToBeDone || "";
     existingPlan.printingVariant = pToBeDone || existingPlan.printingVariant || "";
-    if (tColor) existingPlan.textColor = tColor;
     existingPlan.plainBottleStock = plainStock;
-    existingPlan.balanceToMake = (Number(existingPlan.producedQty) || 0) - (Number(plan.orderQty) || 0);
     existingPlan.process = plan.process;
     existingPlan.orderQty = plan.orderQty;
     if (plan.boxQty !== undefined) existingPlan.boxQty = plan.boxQty;
-    if (plan.noOfBoxes !== undefined) existingPlan.noOfBoxes = plan.noOfBoxes;
-    existingPlan.status = plan.status !== false;
+    if (Number(existingPlan.boxQty) > 0) {
+      existingPlan.noOfBoxes = Math.ceil((Number(plan.orderQty) || 0) / Number(existingPlan.boxQty));
+    }
     if (plan.remarks !== undefined) existingPlan.remarks = plan.remarks;
     if (spec) existingPlan.itemId = spec._id;
+    const readyEntriesQty = (existingPlan.qtyEntries || [])
+      .filter(entry => !entry.isDeleted && entry.subType === "ready")
+      .reduce((sum, entry) => sum + (Number(entry.qty) || 0), 0);
+    const producedQtyInitial = existingPlan.producedQtyInitial !== null && existingPlan.producedQtyInitial !== undefined
+      ? Number(existingPlan.producedQtyInitial)
+      : Math.max(0, (Number(existingPlan.producedQty) || 0) - readyEntriesQty);
+    existingPlan.balanceToMake = producedQtyInitial + readyEntriesQty - (Number(plan.orderQty) || 0);
     existingPlan.isDeleted = false;
-    await existingPlan.save();
-    return existingPlan;
-  } else {
-    const created = await PrintingPlan.create({
-      lacquerPlanId: plan._id,
-      planDate: plan.planDate,
-      bottleName: plan.bottleName,
-      itemId: spec ? spec._id : undefined,
-      companyId: plan.companyId,
-      brandId: plan.brandId,
-      brandName: plan.brandName,
-      coatingShade: shade,
-      printingToBeDone: pToBeDone,
-      printingVariant: pToBeDone,
-      textColor: tColor,
-      plainBottleStock: plainStock,
-      balanceToMake: (0 - (Number(plan.orderQty) || 0)),
-      producedQty: 0,
-      process: plan.process,
+    await existingPlan.save(session ? { session } : undefined);
+    return { plan: existingPlan, adoptedCandidateCount, leftUnlinkedCandidateCount };
+  }
+
+  // Previous-day imports receive their Printing row from the separate Printing import.
+  if (!shouldCreateLacquerPrintingRow(plan, existingPlan)) {
+    return { plan: null, adoptedCandidateCount: 0, leftUnlinkedCandidateCount: 0 };
+  }
+
+  const created = new PrintingPlan({
+    lacquerPlanId: plan._id,
+    planDate: plan.planDate,
+    bottleName: plan.bottleName,
+    itemId: spec ? spec._id : undefined,
+    companyId: plan.companyId,
+    brandId: plan.brandId,
+    brandName: plan.brandName,
+    coatingShade: shade,
+    printingToBeDone: pToBeDone,
+    printingVariant: pToBeDone,
+    textColor: tColor,
+    plainBottleStock: plainStock,
+    balanceToMake: 0 - (Number(plan.orderQty) || 0),
+    producedQty: 0,
+    process: plan.process,
+    orderQty: plan.orderQty,
+    boxQty: plan.boxQty,
+    noOfBoxes: plan.noOfBoxes,
+    status: plan.status !== false,
+    remarks: plan.remarks,
+    isDeleted: false,
+    isEditedAfterImport: false,
+    originalImportedValues: {
       orderQty: plan.orderQty,
+      producedQty: 0,
+      balanceToMake: 0,
       boxQty: plan.boxQty,
       noOfBoxes: plan.noOfBoxes,
-      status: plan.status !== false,
+      dispatchBalance: 0,
+      soldQty: 0,
+      readyBoxes: 0,
+      plainBottleStock: plainStock,
       remarks: plan.remarks,
-      isDeleted: false,
-      isEditedAfterImport: false,
-      originalImportedValues: {
-        orderQty: plan.orderQty,
-        producedQty: 0,
-        balanceToMake: 0,
-        boxQty: plan.boxQty,
-        noOfBoxes: plan.noOfBoxes,
-        dispatchBalance: 0,
-        soldQty: 0,
-        readyBoxes: 0,
-        plainBottleStock: plainStock,
-        remarks: plan.remarks,
-        printingToBeDone: pToBeDone,
-        printingVariant: "",
-        textColor: tColor,
-        coatingShade: shade
-      }
-    });
-    return created;
-  }
+      printingToBeDone: pToBeDone,
+      printingVariant: "",
+      textColor: tColor,
+      coatingShade: shade
+    }
+  });
+  await created.save(session ? { session } : undefined);
+  return { plan: created, adoptedCandidateCount, leftUnlinkedCandidateCount };
 };
 
 const createPrintingPlanIfApplicable = syncPrintingPlanForLacquerPlan;
@@ -1243,11 +1491,24 @@ exports.createPlan = async (req, res) => {
         item.balanceToMake = Number(c) - Number(o);
         item.status = (Number(o) > 0 && Number(c) >= Number(o));
       }
-      const plans = await LacquerPlan.insertMany(req.body);
+      let plans;
+      const printingSyncResults = [];
+      if (req.body.some(isPrintingSyncProcess)) {
+        const lacquerDocs = req.body.map(item => new LacquerPlan(item));
+        await withLacquerPrintingCompensation(lacquerDocs, async session => {
+          plans = await LacquerPlan.insertMany(
+            lacquerDocs,
+            session ? { session } : undefined
+          );
+          for (const plan of plans) {
+            printingSyncResults.push(await createPrintingPlanIfApplicable(plan, req.user?._id, { session }));
+          }
+        });
+      } else {
+        plans = await LacquerPlan.insertMany(req.body);
+      }
       for (const plan of plans) {
         await syncLacquerPlanStockDeduction(plan, plan.coatingCompletedQty ?? plan.coatedQty, req.user?._id);
-        await createPrintingPlanIfApplicable(plan);
-
 
         await replayStockAllocations(
           plan.bottleName,
@@ -1274,7 +1535,17 @@ exports.createPlan = async (req, res) => {
         await syncSameDayPlansPlainStock(bottleName, companyId, planDate, req.user?._id);
       }
 
-      return res.status(201).json({ success: true, data: plans });
+      return res.status(201).json({
+        success: true,
+        data: plans,
+        printingSync: printingSyncResults
+          .filter(Boolean)
+          .filter(result => result.leftUnlinkedCandidateCount > 0)
+          .map(result => ({
+            adoptedPrintingPlanId: result.plan._id,
+            leftUnlinkedCandidateCount: result.leftUnlinkedCandidateCount
+          }))
+      });
     } else {
       await validatePlanCompanyBottleVariant(req.body, false);
 
@@ -1333,9 +1604,8 @@ exports.createPlan = async (req, res) => {
       req.body.status = (Number(o) > 0 && Number(c) >= Number(o));
 
       const plan = new LacquerPlan(req.body);
-      await plan.save();
+      const printingSyncResult = await savePlanWithPrintingSync(plan, req.user?._id);
       await syncLacquerPlanStockDeduction(plan, plan.coatingCompletedQty ?? plan.coatedQty, req.user?._id);
-      await createPrintingPlanIfApplicable(plan);
 
       // Auto-send to Ready To Dispatch if completed process C row
       const { syncLacquerPlanReadyToDispatch } = require('./readyToDispatch.controller');
@@ -1356,7 +1626,16 @@ exports.createPlan = async (req, res) => {
       }
 
       const freshPlan = await LacquerPlan.findById(plan._id);
-      return res.status(201).json({ success: true, data: freshPlan });
+      return res.status(201).json({
+        success: true,
+        data: freshPlan,
+        printingSync: printingSyncResult?.leftUnlinkedCandidateCount > 0
+          ? {
+            adoptedPrintingPlanId: printingSyncResult.plan._id,
+            leftUnlinkedCandidateCount: printingSyncResult.leftUnlinkedCandidateCount
+          }
+          : undefined
+      });
     }
   } catch (error) {
     res.status(400).json({ success: false, message: error.message });
@@ -3447,18 +3726,14 @@ exports.updatePlan = async (req, res) => {
 
     // Handle groupKey and rowSeq
     const oldGroupKey = existingPlan.groupKey;
+    let renumberOldGroup = false;
     if (oldGroupKey && targetGroupKey && targetGroupKey !== oldGroupKey) {
       // Row moved to a new group: assign next rowSeq in new group
       const newGroupExisting = await LacquerPlan.find({ groupKey: targetGroupKey, isDeleted: false, _id: { $ne: existingPlan._id } }).sort({ rowSeq: 1 });
       const nextSeq = newGroupExisting.length > 0 ? Math.max(...newGroupExisting.map(p => p.rowSeq || 0)) + 1 : 1;
       updateData.groupKey = targetGroupKey;
       updateData.rowSeq = nextSeq;
-
-      // Renumber old group remaining rows
-      const oldGroupRemaining = await LacquerPlan.find({ groupKey: oldGroupKey, isDeleted: false, _id: { $ne: existingPlan._id } }).sort({ rowSeq: 1 });
-      for (let i = 0; i < oldGroupRemaining.length; i++) {
-        await LacquerPlan.findByIdAndUpdate(oldGroupRemaining[i]._id, { rowSeq: i + 1 });
-      }
+      renumberOldGroup = true;
     } else {
       updateData.groupKey = targetGroupKey || existingPlan.groupKey;
       if (req.body.rowSeq !== undefined) {
@@ -3599,23 +3874,56 @@ exports.updatePlan = async (req, res) => {
       updateData.qtyEntries = newEntries;
     }
 
-    const plan = await LacquerPlan.findByIdAndUpdate(
-      req.params.id,
-      updateData,
-      { new: true, runValidators: true }
-    );
-
-    if (plan && newHistory) {
-      plan.orderHistory.push(newHistory);
-      await plan.save();
-    }
+    const updatedPlanData = { ...existingPlan.toObject(), ...updateData };
+    const transactionResult = await needsPrintingSyncTransaction(updatedPlanData)
+      ? await withLacquerPrintingCompensation([updatedPlanData], async session => {
+        let updatedPlan = await LacquerPlan.findByIdAndUpdate(
+          req.params.id,
+          updateData,
+          {
+            new: true,
+            runValidators: true,
+            ...(session ? { session } : {})
+          }
+        );
+        if (updatedPlan && newHistory) {
+          updatedPlan.orderHistory.push(newHistory);
+          await updatedPlan.save(session ? { session } : undefined);
+        }
+        if (!updatedPlan || updatedPlan.isDeleted) {
+          throw new Error("Plan not found");
+        }
+        const printingSyncResult = await syncPrintingPlanForLacquerPlan(
+          updatedPlan,
+          req.user?._id,
+          { session }
+        );
+        return { plan: updatedPlan, printingSyncResult };
+      })
+      : {
+        plan: await LacquerPlan.findByIdAndUpdate(
+          req.params.id,
+          updateData,
+          { new: true, runValidators: true }
+        ),
+        printingSyncResult: null
+      };
+    const plan = transactionResult.plan;
 
     if (!plan || plan.isDeleted) {
       return res.status(404).json({ success: false, message: "Plan not found" });
     }
 
-    // Sync 1-to-1 with linked PrintingPlan (handles adding, updating, or soft-deleting based on process)
-    await syncPrintingPlanForLacquerPlan(plan, req.user?._id);
+    if (renumberOldGroup) {
+      const oldGroupRemaining = await LacquerPlan.find({
+        groupKey: oldGroupKey,
+        isDeleted: false,
+        _id: { $ne: existingPlan._id }
+      }).sort({ rowSeq: 1 });
+      for (let i = 0; i < oldGroupRemaining.length; i++) {
+        await LacquerPlan.findByIdAndUpdate(oldGroupRemaining[i]._id, { rowSeq: i + 1 });
+      }
+    }
 
     // Sync live PlainBottleStock deduction if coatingCompletedQty or coatedQty is updated
     if (req.body.coatingCompletedQty !== undefined || req.body.coatedQty !== undefined) {
@@ -3647,7 +3955,16 @@ exports.updatePlan = async (req, res) => {
       await syncSameDayPlansPlainStock(oldBottleName, oldCompanyId, plan.planDate, req.user?._id);
     }
 
-    res.status(200).json({ success: true, data: plan });
+    res.status(200).json({
+      success: true,
+      data: plan,
+      printingSync: transactionResult.printingSyncResult?.leftUnlinkedCandidateCount > 0
+        ? {
+          adoptedPrintingPlanId: transactionResult.printingSyncResult.plan._id,
+          leftUnlinkedCandidateCount: transactionResult.printingSyncResult.leftUnlinkedCandidateCount
+        }
+        : undefined
+    });
   } catch (error) {
     res.status(400).json({ success: false, message: error.message });
   }
@@ -5481,17 +5798,20 @@ exports.addOrderQty = async (req, res) => {
     plan.isEditedAfterImport = true;
     plan.lastEditedAt = new Date();
 
-    await plan.save();
-
-    // Sync to Printing Plan
-    await syncPrintingPlanForLacquerPlan(plan, req.user?._id);
+    const printingSyncResult = await savePlanWithPrintingSync(plan, req.user?._id);
 
     // Refresh and return
     const updated = await LacquerPlan.findById(id);
     res.status(200).json({
       success: true,
       data: updated,
-      message: `Order quantity increased to ${newOrderQty}`
+      message: `Order quantity increased to ${newOrderQty}`,
+      printingSync: printingSyncResult?.leftUnlinkedCandidateCount > 0
+        ? {
+          adoptedPrintingPlanId: printingSyncResult.plan._id,
+          leftUnlinkedCandidateCount: printingSyncResult.leftUnlinkedCandidateCount
+        }
+        : undefined
     });
   } catch (error) {
     console.error('Error in addOrderQty:', error);
@@ -5716,7 +6036,7 @@ exports.addCoatedQty = async (req, res) => {
       freshPlan.isEditedAfterImport = true;
       freshPlan.lastEditedAt = new Date();
 
-      await freshPlan.save();
+      const printingSyncResult = await savePlanWithPrintingSync(freshPlan, req.user?._id);
 
       // Replay allocations and stock deduction
       await replayStockAllocations(
@@ -5727,9 +6047,6 @@ exports.addCoatedQty = async (req, res) => {
       );
       await recomputePlainStock(plainBottleName, companyId, req.user?._id);
       await syncSameDayPlansPlainStock(plainBottleName, companyId, freshPlan.planDate, req.user?._id);
-
-      // Sync Printing Plan if applicable (C+P rows)
-      await syncPrintingPlanForLacquerPlan(freshPlan, req.user?._id);
 
       // Auto-send to Ready To Dispatch if row is completed and is process C
       if (isCompleted && freshPlan.process === 'C' && !freshPlan.readyToDispatch) {
@@ -5743,7 +6060,13 @@ exports.addCoatedQty = async (req, res) => {
       res.status(200).json({
         success: true,
         data: updated,
-        message: `Coating quantity updated to ${newCoatedQty}`
+        message: `Coating quantity updated to ${newCoatedQty}`,
+        printingSync: printingSyncResult?.leftUnlinkedCandidateCount > 0
+          ? {
+            adoptedPrintingPlanId: printingSyncResult.plan._id,
+            leftUnlinkedCandidateCount: printingSyncResult.leftUnlinkedCandidateCount
+          }
+          : undefined
       });
     } catch (error) {
       releasePoolLock(lockKey);
@@ -5834,7 +6157,7 @@ exports.deleteQtyEntry = async (req, res) => {
       qty: q
     }));
 
-    await plan.save();
+    await savePlanWithPrintingSync(plan, req.user?._id);
 
     await replayStockAllocations(
       plan.bottleName,
@@ -5846,9 +6169,6 @@ exports.deleteQtyEntry = async (req, res) => {
     // Recompute pool stock on this and later dates
     await recomputePlainStock(plan.bottleName, plan.companyId, req.user?._id);
     await syncSameDayPlansPlainStock(plan.bottleName, plan.companyId, plan.planDate, req.user?._id);
-
-    // Sync to Printing Plan
-    await syncPrintingPlanForLacquerPlan(plan, req.user?._id);
 
     // Refresh and return
     const updated = await LacquerPlan.findById(id);

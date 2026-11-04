@@ -15,6 +15,10 @@ dist-ssr
 # Local API base URL (environment-specific)
 Baseurl.js
 
+# Kiro IDE
+.kiro/
+kiro/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

@@ -14,8 +14,7 @@ import Select from 'react-select';
 import ImportExcelModal from './ImportExcelModal';
 import { usePrintingPlanLanguage } from '../../hooks/usePrintingPlanLanguage';
 import { usePrintingPlanInfiniteScroll } from '../../hooks/usePrintingPlanInfiniteScroll';
-import { sortPrintingPlans } from '../../utils/printingPlanSort';
-import { buildContiguousGroups, buildMultipleContiguousGroups } from '../../utils/tableGrouping';
+import { buildMultipleContiguousGroups } from '../../utils/tableGrouping';
 import ZoomControl from '../../components/ZoomControl';
 import { downloadPrintingPlanExcel } from '../../utils/printingPlanExport';
 import { PrintingOrderQtyModal, PrintingReadyQtyModal } from '../../components/PrintingQuantityModals';
@@ -241,12 +240,22 @@ export default function PrintingPlan() {
       showCancelButton: true,
       confirmButtonColor: '#e91e63',
       confirmButtonText: 'Yes, delete it!'
-    }).then((result) => {
-      if (result.isConfirmed) {
-        dispatch(deletePrintingPlan(id)).then(() => {
-          dispatch(fetchPrintingPlans({ date: selectedDate }));
-          Swal.fire('Deleted!', 'Plan has been deleted.', 'success');
-        });
+    }).then(async (result) => {
+      if (!result.isConfirmed) return;
+
+      try {
+        const action = await dispatch(deletePrintingPlan(id));
+        if (!deletePrintingPlan.fulfilled.match(action)) {
+          const msg = action.payload || 'Failed to delete plan';
+          Swal.fire('Delete failed', msg, 'error');
+          return;
+        }
+
+        infiniteScroll.removeItem(id);
+        await infiniteScroll.resetAndLoad();
+        Swal.fire('Deleted!', 'Plan has been deleted.', 'success');
+      } catch (error) {
+        Swal.fire('Delete failed', error?.message || 'Failed to delete plan', 'error');
       }
     });
   };
@@ -575,6 +584,11 @@ export default function PrintingPlan() {
         if (!confirmResult.isConfirmed) return;
       } else {
         // Row is already completed (printed >= order)
+        // Calculate ready boxes and loose qty for sendable amount
+        const bottlePerBox = Number(plan.boxQty) || 0;
+        const sendableReadyBoxes = bottlePerBox > 0 ? Math.floor(sendable / bottlePerBox) : 0;
+        const sendableLooseQty = bottlePerBox > 0 ? sendable - (sendableReadyBoxes * bottlePerBox) : sendable;
+
         const confirmResult = await Swal.fire({
           title: 'Send to Ready To Dispatch',
           html: `
@@ -585,6 +599,10 @@ export default function PrintingPlan() {
               <span>Printed: <strong>${printed}</strong></span>
               <span>Already Sent: <strong>${alreadySent}</strong></span>
               <span class="text-success">Sending: <strong>${sendable}</strong></span>
+            </div>
+            <div class="d-flex justify-content-between p-2 rounded bg-light border mt-2" style="font-size: 13px;">
+              <span>Ready Boxes: <strong>${sendableReadyBoxes}</strong></span>
+              <span>Loose: <strong>${sendableLooseQty}</strong></span>
             </div>
           </div>
         `,
@@ -811,7 +829,7 @@ export default function PrintingPlan() {
           <h5 className="text-center py-3 bg-light border-top border-bottom text-uppercase fw-bold text-dark tracking-wide mb-0" style={{ letterSpacing: '2px' }}>
             {compName}
           </h5>
-          {renderDailyTable(groupedByCompany[compName].sort(sortPrintingPlans), showDate, startSrNo)}
+          {renderDailyTable(groupedByCompany[compName], showDate, startSrNo)}
         </div>
       )
     });
@@ -840,12 +858,9 @@ export default function PrintingPlan() {
         { idKey: '_cPrinting', keySelector: r => isShreno ? `nogroup_${getRowStableId(r)}` : `${getBoundary(r)}_${(r.plainBottle || r.bottleName || '').trim().toUpperCase()}_${r.coatingShade}_${r.printingToBeDone}` },
         { idKey: '_cTextColor', keySelector: r => isShreno ? `nogroup_${getRowStableId(r)}` : `${getBoundary(r)}_${(r.plainBottle || r.bottleName || '').trim().toUpperCase()}_${r.coatingShade}_${r.printingToBeDone}_${r.textColor}` },
         { idKey: '_cStock', keySelector: r => {
-             const bName = (r.plainBottle || r.bottleName || '').trim().toUpperCase();
              const shade = (r.coatingShade || '').trim().toUpperCase();
-             if (isShreno) {
-                 return shade ? `${getBoundary(r)}_${bName}_${shade}` : `nogroup_${getRowStableId(r)}`;
-             }
-             // Plain/Coloured bottle stock groups per (bottle, Coating Shade) combination
+             if (shade !== 'PLAIN') return `nogroup_${getRowStableId(r)}`;
+             const bName = (r.plainBottle || r.bottleName || '').trim().toUpperCase();
              return `${getBoundary(r)}_${bName}_${shade}`;
         }},
         { idKey: '_cBoxQty', keySelector: r => `${getBoundary(r)}_${(r.plainBottle || r.bottleName || '').trim().toUpperCase()}` }
@@ -978,8 +993,7 @@ export default function PrintingPlan() {
                 <span className="badge bg-soft-secondary text-secondary px-2 py-1" style={{ fontSize: 11 }}>{plan.textColor || '-'}</span>
               ))}
               
-              {renderGroupedTd('_cStock', (
-                (() => {
+              {renderGroupedTd('_cStock', (() => {
                   const isPlain = (plan.coatingShade || '').trim().toUpperCase() === 'PLAIN';
                   const allocs = Array.isArray(plan.stockAllocation) ? plan.stockAllocation : [];
                   const suppliers = (companies || []).filter(c => c.isStockSupplier).map(c => c._id.toString());
@@ -997,7 +1011,7 @@ export default function PrintingPlan() {
 
                   return (
                     <>
-                      <div>{plan.plainBottleStock !== null && plan.plainBottleStock !== undefined && plan.plainBottleStock !== '' ? plan.plainBottleStock : ''}</div>
+                      <div>{plan.plainBottleStockDisplay ?? plan.plainBottleStock ?? ''}</div>
                       {showBadge && (
                         <span
                           className="badge bg-soft-info text-info border border-info border-opacity-25 px-1 py-0 mt-1 d-inline-block"
@@ -1014,8 +1028,7 @@ export default function PrintingPlan() {
                       )}
                     </>
                   );
-                })()
-              ))}
+                })())}
               
               <td
                 className={`py-3 text-center fw-bold align-middle ${plan.plainStockWarning?.hasWarning ? 'bg-warning' : ''}`}

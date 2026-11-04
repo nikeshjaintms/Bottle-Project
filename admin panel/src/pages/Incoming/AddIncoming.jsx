@@ -62,11 +62,11 @@ const getCleanScannedBottleName = (value) => String(value || '')
   .trim()
   .replace(/\s+/g, ' ')
   .replace(/^of\b\s*/i, '')
-  .replace(/\bPkgs\s+Glass\s+Bottles\b/gi, '')
-  .replace(/\bGlass\s+Bottles\b/gi, '')
+  .replace(/\b(?:No\.\s*of\s*Pkgs\.?|No\.\s*of\s*Boxes\.?|of\s+Pkgs\.?|Pkgs?|Boxes?)\b/gi, '')
+  .replace(/\b(?:Glass\s+Bottles?|Bottles?|\(?\s*\d{6,8}\s*\)?)\b/gi, '')
   .replace(/\s+/g, ' ')
   .trim()
-  .replace(/(\d)([a-z])/gi, '$1 $2')
+  .replace(/(\d+)\s*([a-z]+)/gi, '$1 $2')
   .toUpperCase();
 
 const escapeHtml = (value) => String(value || '')
@@ -466,7 +466,16 @@ export default function AddIncoming() {
     setPlainBottleDialog({ rowIds, position: 0, index, scannedText });
     setPlainBottleDialogTab('create');
     setPlainBottleName(cleanedName);
-    setPlainBottlePerBox(Number.isInteger(Number(firstItem.qty)) && Number(firstItem.qty) > 0 ? String(firstItem.qty) : '');
+    const itemQty = Number(firstItem.qty);
+    const itemBox = Number(firstItem.box);
+    const itemTotal = Number(firstItem.totalQty);
+    let initialPerBox = '';
+    if (Number.isInteger(itemQty) && itemQty > 0) {
+      initialPerBox = String(itemQty);
+    } else if (itemBox > 0 && itemTotal > 0) {
+      initialPerBox = String(Math.round(itemTotal / itemBox));
+    }
+    setPlainBottlePerBox(initialPerBox);
     setPlainBottleSelection(matchingOption || null);
     setPlainBottleDialogError('');
   }, []);
@@ -644,7 +653,16 @@ export default function AddIncoming() {
     setPlainBottleDialog({ rowIds, position: nextPosition, index: nextRowIndex, scannedText });
     setPlainBottleDialogTab('create');
     setPlainBottleName(cleanedName);
-    setPlainBottlePerBox(Number.isInteger(Number(nextItem.qty)) && Number(nextItem.qty) > 0 ? String(nextItem.qty) : '');
+    const nextQty = Number(nextItem.qty);
+    const nextBox = Number(nextItem.box);
+    const nextTotal = Number(nextItem.totalQty);
+    let nextPerBox = '';
+    if (Number.isInteger(nextQty) && nextQty > 0) {
+      nextPerBox = String(nextQty);
+    } else if (nextBox > 0 && nextTotal > 0) {
+      nextPerBox = String(Math.round(nextTotal / nextBox));
+    }
+    setPlainBottlePerBox(nextPerBox);
     setPlainBottleSelection(matchingOption || null);
     setPlainBottleDialogError('');
   };
@@ -663,9 +681,9 @@ export default function AddIncoming() {
   const applyBottleToScannedRow = (bottle, fallbackBottlePerBox, rowIndex, fallbackName) => {
     const bottleId = String(bottle._id || bottle.id || '');
     const bottleLabel = bottle.plainBottleName || bottle.bottleName || bottle.name || fallbackName || '';
-    const bottlePerBox = Number(bottle.bottlePerBox) > 0
-      ? Number(bottle.bottlePerBox)
-      : Number(fallbackBottlePerBox) > 0 ? Number(fallbackBottlePerBox) : '';
+    const userBottlePerBox = Number(fallbackBottlePerBox) > 0 ? Number(fallbackBottlePerBox) : null;
+    const masterBottlePerBox = Number(bottle.bottlePerBox) > 0 ? Number(bottle.bottlePerBox) : null;
+    const bottlePerBox = userBottlePerBox || masterBottlePerBox || '';
 
     const nextItems = itemsRef.current.map((item, index) => {
       if (index !== rowIndex) return item;
@@ -680,10 +698,10 @@ export default function AddIncoming() {
       const totalQty = Number(nextItem.totalQty) || 0;
       const boxes = Number(nextItem.box) || 0;
       const qty = Number(nextItem.qty) || 0;
-      if (totalQty > 0 && qty > 0) {
-        nextItem.box = parseFloat((totalQty / qty).toFixed(2));
-      } else if (boxes > 0 && qty > 0) {
+      if (boxes > 0 && qty > 0) {
         nextItem.totalQty = parseFloat((boxes * qty).toFixed(2));
+      } else if (totalQty > 0 && qty > 0) {
+        nextItem.box = parseFloat((totalQty / qty).toFixed(2));
       }
       return nextItem;
     });
@@ -976,14 +994,21 @@ export default function AddIncoming() {
 
       const itemsToSet = (res.items || []).map(item => {
         const option = matchBottleOption(item, scannedBottleOptions, bottlePerBoxes);
-        let defaultQty = 1;
-        const foundBox = option && bottlePerBoxes?.find(b => String(b._id) === option.value);
-        if (foundBox && foundBox.bottlePerBox != null && foundBox.bottlePerBox > 0) {
-          defaultQty = foundBox.bottlePerBox;
-        }
+        let defaultBox = item.box || '';
+        let defaultTotalQty = item.totalQty || '';
+        let defaultQty = item.qty || '';
 
-        let defaultBox;
-        let defaultTotalQty = '';
+        // Dynamic derivation of Qty/Box if not explicitly set
+        if (!defaultQty && defaultBox && defaultTotalQty) {
+          defaultQty = parseFloat((Number(defaultTotalQty) / Number(defaultBox)).toFixed(2));
+        } else if (!defaultQty) {
+          const foundBox = option && bottlePerBoxes?.find(b => String(b._id) === option.value);
+          if (foundBox && foundBox.bottlePerBox != null && foundBox.bottlePerBox > 0) {
+            defaultQty = foundBox.bottlePerBox;
+          } else {
+            defaultQty = 1;
+          }
+        }
 
         if (matchIsShreno) {
           defaultBox = item.totalQty || item.box || '';
@@ -991,9 +1016,6 @@ export default function AddIncoming() {
             defaultTotalQty = parseFloat((Number(defaultBox) * Number(defaultQty)).toFixed(2));
           }
         } else {
-          defaultTotalQty = item.totalQty || '';
-          defaultBox = item.box || '';
-
           if (defaultTotalQty && defaultQty > 0 && !defaultBox) {
             defaultBox = parseFloat((Number(defaultTotalQty) / Number(defaultQty)).toFixed(2));
           } else if (defaultBox && defaultQty > 0 && !defaultTotalQty) {
@@ -1004,9 +1026,9 @@ export default function AddIncoming() {
         return {
           bottleId: option?.value || '',
           bottleLabel: option?.label || '',
-          bottleHint: option ? '' : getScannedBottleHint(item, bottlePerBoxes),
+          bottleHint: option ? '' : getCleanScannedBottleName(getScannedBottleHint(item, bottlePerBoxes)),
           scanModeRow: true,
-          scanBottleText: getScannedBottleHint(item, bottlePerBoxes),
+          scanBottleText: getCleanScannedBottleName(getScannedBottleHint(item, bottlePerBoxes)),
           scanUserResolved: false,
           scanRowId: `scan-${++nextScanRowId.current}`,
           box: defaultBox,
@@ -1023,16 +1045,30 @@ export default function AddIncoming() {
         const unmatchedNames = filteredUnmatchedItems.map(i => i.suggestedName).join(', ');
         warningText = `<br/><br/><b style='color:#e63946;'>Warning:</b> Found ${filteredUnmatchedItems.length} item(s) on the invoice that do not match any bottle in the database: ${unmatchedNames}.`;
         filteredUnmatchedItems.forEach((item) => {
+          let uBox = item.box || '';
+          let uTotalQty = item.totalQty || '';
+          let uQty = item.qty || '';
+          if (!uQty && uBox && uTotalQty) {
+            uQty = parseFloat((Number(uTotalQty) / Number(uBox)).toFixed(2));
+          } else if (!uQty) {
+            uQty = 1;
+          }
+          if (uBox && uQty > 0 && !uTotalQty) {
+            uTotalQty = parseFloat((Number(uBox) * Number(uQty)).toFixed(2));
+          } else if (uTotalQty && uQty > 0 && !uBox) {
+            uBox = parseFloat((Number(uTotalQty) / Number(uQty)).toFixed(2));
+          }
+
           itemsToSet.push({
             bottleId: '',
-            bottleHint: getScannedBottleHint(item, bottlePerBoxes),
+            bottleHint: getCleanScannedBottleName(getScannedBottleHint(item, bottlePerBoxes)),
             scanModeRow: true,
-            scanBottleText: getScannedBottleHint(item, bottlePerBoxes),
+            scanBottleText: getCleanScannedBottleName(getScannedBottleHint(item, bottlePerBoxes)),
             scanUserResolved: false,
             scanRowId: `scan-${++nextScanRowId.current}`,
-            box: item.box || '',
-            qty: item.qty || 1,
-            totalQty: item.totalQty || '',
+            box: uBox,
+            qty: uQty,
+            totalQty: uTotalQty,
           });
         });
       }

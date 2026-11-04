@@ -4,3 +4,7 @@ uploads/
 material-dashboard-react-main/
 src/assets/
 public/assets/
+
+# Kiro IDE
+.kiro/
+kiro/

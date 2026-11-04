@@ -246,7 +246,8 @@ exports.getIncomingPaginated = async (req, res) => {
           bottleName: resolved.bottleName,
           box: Number(item.box) || 0,
           qty: Number(item.qty) || 0,
-          totalQty: totalQty
+          totalQty: totalQty,
+          isImported: Boolean(inc.isImported)
         });
 
         // Stop if we have enough items
@@ -370,7 +371,8 @@ exports.getDispatchPaginated = async (req, res) => {
           bottleName: resolved.bottleName,
           box: Number(item.box) || 0,
           qty: Number(item.qty) || 0,
-          totalQty: totalQty
+          totalQty: totalQty,
+          isImported: Boolean(disp.isImported)
         });
 
         if (processedItems.length >= parsedLimit) {
@@ -470,7 +472,8 @@ exports.getShrenoIncomingPaginated = async (req, res) => {
           poNo: inc.poNo || "-",
           bottleId: resolved.bottleId,
           bottleName: resolved.bottleName,
-          quantity: Number(item.quantity) || 0
+          quantity: Number(item.quantity) || 0,
+          isImported: Boolean(inc.isImported)
         });
 
         if (processedItems.length >= parsedLimit) {
@@ -1359,6 +1362,131 @@ exports.getSummaryLogs = async (req, res) => {
       }
     });
   } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+
+/**
+ * Get Live Stock for a specific bottle - shows how much plain bottle is used in Lacquer Plan and Printing Plan
+ * Only counts PLAIN coating shade usages
+ */
+exports.getLiveStock = async (req, res) => {
+  try {
+    const { companyId, bottleId, fromDate, toDate } = req.query;
+    
+    if (!companyId || !bottleId) {
+      return res.status(400).json({ success: false, message: "companyId and bottleId are required" });
+    }
+
+    const LacquerPlan = require("../models/LacquerPlan");
+    const PrintingPlan = require("../models/PrintingPlan");
+    const BottlePerBox = require("../models/BottlePerBox");
+
+    // Get bottle details for matching
+    const bp = await BottlePerBox.findById(bottleId).lean();
+    if (!bp) {
+      return res.status(200).json({
+        success: true,
+        data: {
+          totalUsed: 0,
+          totalBoxes: 0,
+          bottleId,
+          companyId
+        }
+      });
+    }
+
+    // Build date filter if provided
+    const dateFilter = {};
+    if (fromDate) {
+      const from = new Date(fromDate);
+      from.setHours(0, 0, 0, 0);
+      dateFilter.$gte = from;
+    }
+    if (toDate) {
+      const to = new Date(toDate);
+      to.setHours(23, 59, 59, 999);
+      dateFilter.$lte = to;
+    }
+
+    // Build bottle name regex for matching
+    const bottleNames = [
+      bp.bottleName,
+      bp.plainBottleName,
+      ...(bp.bottleNames || [])
+    ].filter(Boolean);
+    
+    const bottleRegexes = bottleNames.map(name => 
+      new RegExp("^" + String(name).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + "$", "i")
+    );
+
+    // Query 1: Lacquer Plans for PLAIN coating shade
+    const lacquerQuery = {
+      isDeleted: { $ne: true },
+      coatingShade: { $regex: /^PLAIN$/i },
+      companyId: new mongoose.Types.ObjectId(companyId),
+      $or: [
+        { bottleName: { $in: bottleRegexes } },
+        { plainBottle: { $in: bottleRegexes } }
+      ]
+    };
+    if (Object.keys(dateFilter).length > 0) {
+      lacquerQuery.planDate = dateFilter;
+    }
+
+    const lacquerPlans = await LacquerPlan.find(lacquerQuery).lean();
+    
+    // Sum coatedQty from Lacquer plans (use coatingCompletedQty as fallback)
+    let lacquerTotal = 0;
+    let lacquerBoxes = 0;
+    for (const plan of lacquerPlans) {
+      lacquerTotal += Number(plan.coatingCompletedQty) || Number(plan.coatedQty) || 0;
+      lacquerBoxes += Number(plan.noOfBoxes) || 0;
+    }
+
+    // Query 2: Printing Plans for PLAIN coating shade
+    const printingQuery = {
+      isDeleted: { $ne: true },
+      coatingShade: { $regex: /^PLAIN$/i },
+      companyId: new mongoose.Types.ObjectId(companyId),
+      $or: [
+        { bottleName: { $in: bottleRegexes } },
+        { plainBottle: { $in: bottleRegexes } }
+      ]
+    };
+    if (Object.keys(dateFilter).length > 0) {
+      printingQuery.planDate = dateFilter;
+    }
+
+    const printingPlans = await PrintingPlan.find(printingQuery).lean();
+    
+    // Sum producedQty from Printing plans
+    let printingTotal = 0;
+    let printingBoxes = 0;
+    for (const plan of printingPlans) {
+      printingTotal += Number(plan.producedQty) || 0;
+      printingBoxes += Number(plan.noOfBoxes) || 0;
+    }
+
+    const totalUsed = lacquerTotal + printingTotal;
+    const totalBoxes = lacquerBoxes + printingBoxes;
+
+    res.status(200).json({
+      success: true,
+      data: {
+        totalUsed,
+        totalBoxes,
+        lacquerTotal,
+        lacquerBoxes,
+        printingTotal,
+        printingBoxes,
+        bottleId,
+        companyId
+      }
+    });
+  } catch (error) {
+    console.error("Error fetching live stock:", error);
     res.status(500).json({ success: false, message: error.message });
   }
 };

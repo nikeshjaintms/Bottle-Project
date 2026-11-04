@@ -674,6 +674,11 @@ export default function LacquerPlan() {
         if (!confirmResult.isConfirmed) return;
       } else {
         // Row is already completed (coated >= order)
+        // Calculate ready boxes and loose qty for sendable amount
+        const bottlePerBox = Number(plan.boxQty) || 0;
+        const sendableReadyBoxes = bottlePerBox > 0 ? Math.floor(sendable / bottlePerBox) : 0;
+        const sendableLooseQty = bottlePerBox > 0 ? sendable - (sendableReadyBoxes * bottlePerBox) : sendable;
+
         const confirmResult = await Swal.fire({
           title: 'Send to Ready To Dispatch',
           html: `
@@ -684,6 +689,10 @@ export default function LacquerPlan() {
               <span>Coated: <strong>${coated}</strong></span>
               <span>Already Sent: <strong>${alreadySent}</strong></span>
               <span class="text-success">Sending: <strong>${sendable}</strong></span>
+            </div>
+            <div class="d-flex justify-content-between p-2 rounded bg-light border mt-2" style="font-size: 13px;">
+              <span>Ready Boxes: <strong>${sendableReadyBoxes}</strong></span>
+              <span>Loose: <strong>${sendableLooseQty}</strong></span>
             </div>
           </div>
         `,

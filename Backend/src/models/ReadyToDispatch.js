@@ -44,6 +44,13 @@ const variantLineSchema = new mongoose.Schema({
     min: 0,
   },
   
+  readyBoxes: {
+    type: Number,
+    required: false,
+    default: 0,
+    min: 0,
+  },
+  
   producedQty: {
     type: Number,
     required: false,

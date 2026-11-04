@@ -1982,6 +1982,7 @@ exports.syncLacquerPlanReadyToDispatch = async (planDocOrId) => {
         existingLine.totalWeight = (boxWeight !== null && boxWeight > 0 && existingLine.noOfBoxes > 0)
           ? parseFloat((existingLine.noOfBoxes * boxWeight).toFixed(3))
           : null;
+        existingLine.readyBoxes = (existingLine.readyBoxes || 0) + addedBoxes;
         variantLineId = existingLine._id;
       } else {
         let group = sheet.groups.find(
@@ -2013,6 +2014,7 @@ exports.syncLacquerPlanReadyToDispatch = async (planDocOrId) => {
           producedQty: addedProduced,
           weight: boxWeight,
           totalWeight: addedWeight,
+          readyBoxes: addedBoxes,
         });
       }
 
