@@ -220,6 +220,26 @@ function extractChallanNumbersNearText(
     found = true;
   }
 
+  // Look for explicit package and per-box packaging counts in textChunk if not found
+  if (!box || !qty || box === totalQty) {
+    const pkgMatch = textChunk.match(/(?:package|pkg|box|ctn|carton)[s\s]*(?:issue[es]*|no[.\s]*|count[s\s]*)?[:\s]*(\d+(?:\.\d+)?)/i);
+    const contentMatch = textChunk.match(/(?:average\s*content|pcs\s*per\s*(?:box|package|pkg|ctn)|qty\s*per\s*(?:box|package|pkg|ctn)|per\s*(?:box|package|pkg|ctn))[\s\w:]*?(\d+(?:\.\d+)?)/i);
+    const parsedPkg = pkgMatch ? Math.round(parseFloat(pkgMatch[1])) : 0;
+    const parsedContent = contentMatch ? Math.round(parseFloat(contentMatch[1])) : 0;
+    if (parsedPkg > 0 && parsedContent > 0) {
+      box = parsedPkg;
+      qty = parsedContent;
+      if (!totalQty) totalQty = box * qty;
+      found = true;
+    } else if (parsedPkg > 0 && (!box || box === totalQty)) {
+      box = parsedPkg;
+      if (totalQty > 0) qty = parseFloat((totalQty / box).toFixed(2));
+    } else if (parsedContent > 0 && !qty) {
+      qty = parsedContent;
+      if (totalQty > 0 && !box) box = parseFloat((totalQty / qty).toFixed(2));
+    }
+  }
+
   // Calculate or adjust qty (qty per box)
   if (box > 0 && totalQty > 0) {
     qty = parseFloat((totalQty / box).toFixed(2));
@@ -378,8 +398,8 @@ function groupWordsIntoRows(words, tolerance) {
     let matchedRow = rows.find(r => Math.abs(r.y - w.y) < tolerance);
     if (matchedRow) {
       matchedRow.words.push(w);
-      // Cap the drift to 20% so it can handle gentle skew without absorbing tall multi-line cells
-      matchedRow.y = matchedRow.y * 0.8 + w.y * 0.2;
+      // Cap the drift to 15% so it can handle gentle skew without absorbing tall multi-line cells
+      matchedRow.y = matchedRow.y * 0.85 + w.y * 0.15;
     } else {
       rows.push({ y: w.y, words: [w] });
     }
@@ -478,7 +498,7 @@ function parseChallanData(ocrResult, companies, bottlePerBoxes) {
       const heights = words.map(w => w.height).filter(h => typeof h === 'number' && !isNaN(h) && h > 0).sort((a, b) => a - b);
       if (heights.length > 0) {
         const medianHeight = heights[Math.floor(heights.length / 2)];
-        tolerance = Math.max(12, medianHeight * 0.6);
+        tolerance = Math.max(7, Math.min(12, medianHeight * 0.65));
       }
     }
     rows = groupWordsIntoRows(words, tolerance);
@@ -717,6 +737,7 @@ function parseChallanData(ocrResult, companies, bottlePerBoxes) {
   let boxColX = -1;
   let boxColRightBound = Infinity;
   let descColX = -1;
+  let hsnColX = -1;
   let qtyColumnX = -1;
   let qtyColumnRightBound = Infinity;
   let rateColumnX = -1;
@@ -748,7 +769,8 @@ function parseChallanData(ocrResult, companies, bottlePerBoxes) {
       const prevW = allHeaderWords[wIdx - 1];
       const nextW = allHeaderWords[wIdx + 1];
 
-      if (/(^si$|^sl$)/i.test(w.text) && slNoColX === -1) slNoColX = w.x;
+      if (/(^sr$|^si$|^sl$)/i.test(w.text) && slNoColX === -1) slNoColX = w.x;
+      if (/hsn/i.test(w.text) && hsnColX === -1) hsnColX = w.x;
       if (/(box(es)?|pkgs?|packages?|cartons?|ctns?|case(s)?)/i.test(w.text) && boxColX === -1) {
         hasBoxHeader = true;
         boxColX = w.x;
@@ -964,43 +986,62 @@ function parseChallanData(ocrResult, companies, bottlePerBoxes) {
     }
 
     if (!matched) {
-      if (/^(total|taxable|amount|tax\s*amount|short|excess|declaration|terms|company|bank|pan|authorised|gstin|state|consignee|buyer|invoice|e-way|delivery|bill)/i.test(line)) {
-        continue;
-      }
+      if (isTableEnd(line)) break;
 
+      const hasItemSignal = hasSerialNo(row) || /\b\d+\s*(?:ml|gm|kg|ltr|l|g)\b/i.test(line);
       const normalizedSkipLine = normalizeSkipText(line);
-      let shouldSkipRow = false;
-      
-      if (skipPhrases.some(phrase => normalizedSkipLine.includes(phrase))) {
-        shouldSkipRow = true;
-      } else {
-        const rowWordsArr = normalizedSkipLine.split(' ');
-        for (const phrase of skipPhrases) {
-          const phraseWords = phrase.split(' ');
-          const phraseLen = phraseWords.length;
-          if (phraseLen > 0 && rowWordsArr.length >= phraseLen) {
-            for (let k = 0; k <= rowWordsArr.length - phraseLen; k++) {
-              const windowChunk = rowWordsArr.slice(k, k + phraseLen).join(' ');
-              if (stringSimilarity.compareTwoStrings(windowChunk, phrase) > 0.8) {
+
+      if (!hasItemSignal) {
+        let shouldSkipRow = false;
+        if (skipPhrases.some(phrase => normalizedSkipLine.includes(phrase))) {
+          shouldSkipRow = true;
+        } else {
+          const rowWordsArr = normalizedSkipLine.split(' ');
+          for (const phrase of skipPhrases) {
+            const phraseWords = phrase.split(' ');
+            const phraseLen = phraseWords.length;
+            if (phraseLen > 0 && rowWordsArr.length >= phraseLen) {
+              for (let k = 0; k <= rowWordsArr.length - phraseLen; k++) {
+                const windowChunk = rowWordsArr.slice(k, k + phraseLen).join(' ');
+                if (stringSimilarity.compareTwoStrings(windowChunk, phrase) > 0.8) {
+                  shouldSkipRow = true;
+                  break;
+                }
+              }
+            } else if (phraseLen > 0 && rowWordsArr.length > 0) {
+              if (stringSimilarity.compareTwoStrings(normalizedSkipLine, phrase) > 0.8) {
                 shouldSkipRow = true;
-                break;
               }
             }
-          } else if (phraseLen > 0 && rowWordsArr.length > 0) {
-            if (stringSimilarity.compareTwoStrings(normalizedSkipLine, phrase) > 0.8) {
-              shouldSkipRow = true;
-            }
+            if (shouldSkipRow) break;
           }
-          if (shouldSkipRow) break;
+        }
+        if (shouldSkipRow) continue;
+      }
+
+      let itemStartIdx = i;
+      let itemEndIdx = i;
+
+      if (!hasSerialNo(rows[i])) {
+        for (let j = i - 1; j >= Math.max(0, i - 3); j--) {
+          if (headerRowEndIdx !== -1 && j <= headerRowEndIdx) break;
+          const prevLine = rowStrings[j];
+          if (isTableEnd(prevLine)) break;
+          itemStartIdx = j;
+          if (hasSerialNo(rows[j])) break;
         }
       }
 
-      if (shouldSkipRow) continue;
+      for (let j = i + 1; j < Math.min(rows.length, i + 5); j++) {
+        const nextLine = rowStrings[j];
+        if (isTableEnd(nextLine)) break;
+        if (hasSerialNo(rows[j])) break;
+        itemEndIdx = j;
+      }
 
       let combinedString = "";
       let combinedWords = [];
-      const startIdx = Math.max(0, i - 1);
-      for (let j = startIdx; j < Math.min(i + 3, rows.length); j++) {
+      for (let j = itemStartIdx; j <= itemEndIdx; j++) {
         combinedString += " " + rowStrings[j];
         combinedWords = combinedWords.concat(rows[j].words);
       }
@@ -1020,30 +1061,91 @@ function parseChallanData(ocrResult, companies, bottlePerBoxes) {
         slNoColX
       );
 
-      if (financials.mathMatched && financials.totalQty > 0) {
-        const alreadyInItems = items.some(it => it.totalQty === financials.totalQty && it.box === financials.box);
-        if (alreadyInItems) continue;
+      let finalBox = financials.box;
+      let finalQty = financials.qty;
+      let finalTotal = financials.totalQty;
 
-        const looksLikeItem = /\b(kg|g|l|ml|pcs|ltr|gm|pieces|boxes|nos?|no\.|bags|ton|mt|ctn|cartons?|car|set)\b/i.test(line) || financials.mathMatched;
-        const looksLikeJunk = /\b(p\.?o\.?\s*no|lorry|lr\s*no|vehicle|gstin|state code|cin|ship to|invoice to|eb52|average|certification|tower|senapati|issuee|challan|mode of transportation|time of issue|challan date|job-work)\b/i.test(line);
-        
-        if (looksLikeItem && !looksLikeJunk) {
-          let nameGuess = combinedString
-            .replace(/\b\d+(?:\.\d+)?\b/g, '')
-            .replace(/\b(no\s*of\s*pkgs?|pkgs?|glass\s*bottles?|bottles?|boxes?|ctn|cartons?|pieces|pcs|kg|g|l|ltr|gm|nos?|no\.|bags|ton|mt|car|set|cgst|sgst|igst|total|tax|rate|sust|cust)\b/ig, '')
-            .replace(/(\d+)([a-zA-Z])/g, '$1 $2')
-            .replace(/[^\w\s-]/g, '')
-            .replace(/\s+/g, ' ')
-            .trim();
+      const contentMatch = combinedString.match(/(?:average\s*content|pcs\s*per\s*(?:box|package|pkg|ctn)|qty\s*per\s*(?:box|package|pkg|ctn)|per\s*(?:box|package|pkg|ctn))[\s\w:]*?(\d+(?:\.\d+)?)/i);
+      const issueMatch = combinedString.match(/(?:package|pkg|box|ctn|carton)?[\s\w]*issue[es]*\s*[:\s]*(\d+(?:\.\d+)?)/i);
+      const pkgMatch = combinedString.match(/(?:package|pkg|box|carton)[s\s]*(?:no[.\s]*|count[s\s]*)?[:\s]*(\d+(?:\.\d+)?)/i);
+
+      const parsedContent = contentMatch ? Math.round(parseFloat(contentMatch[1])) : 0;
+      const parsedIssue = issueMatch ? Math.round(parseFloat(issueMatch[1])) : (pkgMatch ? Math.round(parseFloat(pkgMatch[1])) : 0);
+
+      if (parsedIssue > 0 && parsedContent > 0) {
+        finalBox = parsedIssue;
+        finalQty = parsedContent;
+        if (!finalTotal) finalTotal = finalBox * finalQty;
+      } else if (parsedContent > 0 && finalTotal > 0) {
+        finalQty = parsedContent;
+        finalBox = Math.round(finalTotal / parsedContent);
+      } else if (parsedIssue > 0 && (!finalBox || finalBox === finalTotal)) {
+        finalBox = parsedIssue;
+        if (finalTotal > 0) finalQty = parseFloat((finalTotal / finalBox).toFixed(2));
+      } else if (parsedContent > 0 && !finalQty) {
+        finalQty = parsedContent;
+        if (finalTotal > 0 && !finalBox) finalBox = parseFloat((finalTotal / finalQty).toFixed(2));
+      }
+
+      const descBoundLeft = slNoColX !== -1 ? slNoColX + 15 : 0;
+      const descBoundRight = Math.min(
+        hsnColX !== -1 ? hsnColX - 10 : Infinity,
+        qtyColumnX !== -1 ? qtyColumnX - 25 : Infinity,
+        rateColumnX !== -1 ? rateColumnX - 25 : Infinity,
+        amountColumnX !== -1 ? amountColumnX - 25 : Infinity,
+        450
+      );
+
+      // Check item rows in order for description words
+      let nameGuess = "";
+      for (let j = itemStartIdx; j <= itemEndIdx; j++) {
+        const lineDescWords = rows[j].words.filter(w => w.x >= descBoundLeft && w.x < descBoundRight);
+        const lineDescText = lineDescWords.map(w => w.text).join(' ');
+        if (/\b\d+\s*(?:ml|gm|kg|ltr|l|g)\b/i.test(lineDescText)) {
+          nameGuess = lineDescText;
+          break;
+        }
+      }
+
+      if (!nameGuess) {
+        const descCandidateWords = combinedWords.filter(w => w.x >= descBoundLeft && w.x < descBoundRight);
+        nameGuess = descCandidateWords.map(w => w.text).join(' ');
+      }
+
+      nameGuess = nameGuess
+        .replace(/\bproduct\s*code\s*[:\s]*\S+/gi, '')
+        .replace(/\bcode\s*[:\s]*\S+/gi, '')
+        .replace(/\bno\.?\s*description\s*of\s*package\s*issue[es]*\s*[:\s]*[\d.]+/gi, '')
+        .replace(/\baverage\s*content\s*in\s*(?:pcs|nos)\s*[:\s]*[\d.]+/gi, '')
+        .replace(/\b(?:package|pkg|box|ctn|carton)[s\s]*(?:issue[es]*|no[.\s]*|count[s\s]*)?[:\s]*[\d.]+/gi, '')
+        .replace(/\b(?:average\s*content|pcs\s*per\s*(?:box|package|pkg|ctn)|qty\s*per\s*(?:box|package|pkg|ctn))[\s\w:]*?[\d.]+/gi, '')
+        .replace(/\([^)]*\)/g, '')
+        .replace(/\bproduct\s*description\b/gi, '')
+        .replace(/\bdescription\s*of\s*goods\b/gi, '')
+        .replace(/\bproduct\b/gi, '')
+        .replace(/\b(?:cgst|sgst|igst|utgst|tgst|tax|taxable|rate|amount|value|discount|net\s*value|total\s*value|hsn|sac)\b/gi, '')
+        .replace(/[^\w\s-]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+      const volMatch = nameGuess.match(/\b\d+\s*(?:ml|gm|kg|ltr|l|g)\s+[a-z0-9\s-]+/i);
+      if (volMatch) {
+        nameGuess = volMatch[0].trim();
+      }
+
+      if (finalTotal > 0 || (finalBox > 0 && finalQty > 0)) {
+        const alreadyInItems = items.some(it => it.totalQty === finalTotal && it.box === finalBox);
+        if (!alreadyInItems) {
           unmatchedItems.push({
             suggestedName: nameGuess || "Unknown Item",
-            box: financials.box,
-            qty: financials.qty || 1,
-            totalQty: financials.totalQty,
+            box: finalBox || 1,
+            qty: finalQty || 1,
+            totalQty: finalTotal,
             textLine: combinedString.trim() || line
           });
         }
       }
+      i = itemEndIdx;
     }
   }
 

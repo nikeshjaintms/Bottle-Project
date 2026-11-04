@@ -114,6 +114,23 @@ const getPrintingQuantityState = (plan) => {
   };
 };
 
+const getReadyBoxFields = (row) => {
+  const bottlePerBox = Number(row.boxQty);
+  if (!Number.isFinite(bottlePerBox) || bottlePerBox <= 0) {
+    return { readyBoxes: null, looseQty: null, showLooseQty: false };
+  }
+
+  const printedQty = Number(row.producedQty ?? row.coatingCompletedQty ?? row.readyQty ?? 0);
+  const readyBoxes = Math.floor(printedQty / bottlePerBox);
+  const looseQty = printedQty - (readyBoxes * bottlePerBox);
+
+  return {
+    readyBoxes,
+    looseQty,
+    showLooseQty: printedQty !== 0
+  };
+};
+
 const getPrintingPlanCalculations = (plan) => {
   const quantityState = getPrintingQuantityState(plan);
   const orderQty = quantityState.orderQty;
@@ -264,9 +281,11 @@ const serializePrintingPlan = async (plan) => {
   const coatedStockAvailable = await getLivePrintingStock(rawPlan, stockCache);
   const plainBottleStock = isPlain ? coatedStockAvailable : rawPlan.plainBottleStock;
   const stockWarnings = isPlain ? await getPlainStockWarnings([rawPlan], stockCache) : new Map();
+  const readyBoxFields = getReadyBoxFields({ ...rawPlan, boxQty, producedQty: calculations.producedQty });
   return {
     ...rawPlan,
     ...calculations,
+    ...readyBoxFields,
     readyRejectionQty: (rawPlan.qtyEntries || [])
       .filter(entry => !entry.isDeleted && entry.subType === "ready")
       .reduce((sum, entry) => sum + (Number(entry.rejectionQty) || 0), 0),
@@ -467,10 +486,12 @@ const addPrintingQtyEntry = async (req, res, subType) => {
     }
 
     const calculations = getPrintingPlanCalculations(plan);
+    const readyBoxFields = getReadyBoxFields({ ...plan, boxQty: Number(plan.boxQty) || 0, producedQty: calculations.producedQty });
     plan.orderQty = calculations.orderQty;
     plan.producedQty = calculations.producedQty;
     plan.balanceToMake = calculations.balanceToMake;
     plan.noOfBoxes = calculations.noOfBoxes;
+    plan.readyBoxes = readyBoxFields.readyBoxes;
     if (isPlain) plan.appliedStockDeduction = calculations.producedQty;
     plan.isEditedAfterImport = true;
     plan.lastEditedAt = new Date();
@@ -1778,7 +1799,6 @@ exports.getPlansPaginated = async (req, res) => {
     // Use aggregate pipeline for efficiency
     const pipeline = [
       { $match: query },
-      { $sort: { companyName: 1, bottleName: 1, coatingShade: 1, printingToBeDone: 1, textColor: 1, planDate: -1, _id: -1 } },
       {
         $lookup: {
           from: 'brands',
@@ -1788,6 +1808,13 @@ exports.getPlansPaginated = async (req, res) => {
         }
       },
       { $unwind: { path: '$brandDoc', preserveNullAndEmptyArrays: true } },
+      {
+        $addFields: {
+          brandSortName: {
+            $ifNull: ['$brandDoc.name', '$brandName']
+          }
+        }
+      },
       {
         $lookup: {
           from: 'companies',
@@ -1808,6 +1835,36 @@ exports.getPlansPaginated = async (req, res) => {
       { $unwind: { path: '$companyDoc', preserveNullAndEmptyArrays: true } },
       {
         $lookup: {
+          from: 'companies',
+          let: { cName: '$companyName' },
+          pipeline: [
+            {
+              $match: {
+                $expr: {
+                  $and: [
+                    { $ne: ['$isDeleted', true] },
+                    { $ne: [{ $type: '$cName' }, 'missing'] },
+                    { $ne: ['$cName', null] },
+                    { $eq: [{ $toLower: { $trim: { input: '$name' } } }, { $toLower: { $trim: { input: '$cName' } } }] }
+                  ]
+                }
+              }
+            }
+          ],
+          as: 'nameCompanyDoc'
+        }
+      },
+      { $unwind: { path: '$nameCompanyDoc', preserveNullAndEmptyArrays: true } },
+      {
+        $addFields: {
+          company: { $ifNull: ['$companyDoc', { $ifNull: ['$nameCompanyDoc', '$brandCompanyDoc'] }] },
+          companyName: { $ifNull: ['$companyDoc.name', { $ifNull: ['$nameCompanyDoc.name', { $ifNull: ['$brandCompanyDoc.name', { $ifNull: ['$companyName', 'Unassigned'] }] }] }] },
+          canonicalCompanyId: { $ifNull: ['$companyDoc._id', { $ifNull: ['$nameCompanyDoc._id', '$brandCompanyDoc._id'] }] }
+        }
+      },
+      { $sort: { companyName: 1, bottleName: 1, brandSortName: 1, coatingShade: 1, printingToBeDone: 1, textColor: 1, planDate: -1, _id: -1 } },
+      {
+        $lookup: {
           from: 'bottlespecs',
           localField: 'itemId',
           foreignField: '_id',
@@ -1821,6 +1878,7 @@ exports.getPlansPaginated = async (req, res) => {
           planDate: 1,
           bottleName: 1,
           brandName: 1,
+          brandSortName: 1,
           coatingShade: 1,
           printingToBeDone: 1,
           printingVariant: 1,
@@ -1844,10 +1902,11 @@ exports.getPlansPaginated = async (req, res) => {
           remarks: 1,
           soldQty: 1,
           companyId: {
-            _id: '$companyDoc._id',
-            name: '$companyDoc.name'
+            _id: '$company._id',
+            name: '$company.name'
           },
           companyName: 1,
+          canonicalCompanyId: 1,
           lacquerPlanId: 1,
           itemId: 1,
           plainBottleName: 1,
@@ -1962,6 +2021,10 @@ exports.getPlansPaginated = async (req, res) => {
         }
       }
 
+      const companyIdValue = (plan.companyId?._id || plan.companyId || plan.companyId || plan.brandId?.companyId?._id || plan.brandId?.company?._id || 'UNASSIGNED').toString();
+      const resolvedCompanyName = plan.companyName || plan.companyId?.name || plan.company?.name || plan.brandId?.companyId?.name || plan.brandId?.company?.name || companyNameMap.get(companyIdValue) || 'Unassigned';
+      const readyBoxFields = getReadyBoxFields({ ...plan, boxQty, producedQty });
+
       return {
         _id: plan._id,
         planDate: plan.planDate,
@@ -1984,9 +2047,13 @@ exports.getPlansPaginated = async (req, res) => {
         plainBottleStockDisplay: stockDisplayValues.get(stockDisplayGroupKey) ?? null,
         coatedStockAvailable: coatedStockAvailable,
         dispatchBalance: plan.dispatchBalance,
-        readyBoxes: plan.readyBoxes,
+        readyBoxes: readyBoxFields.readyBoxes,
+        looseQty: readyBoxFields.looseQty,
+        showLooseQty: readyBoxFields.showLooseQty,
         remarks: plan.remarks,
         companyId: plan.companyId,
+        companyName: resolvedCompanyName,
+        canonicalCompanyId: companyIdValue,
         lacquerPlanId: plan.lacquerPlanId,
         stockSources: plan.stockSources || [],
         stockAllocation: plan.stockAllocation || [],

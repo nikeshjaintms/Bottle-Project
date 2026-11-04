@@ -83,20 +83,24 @@ const filterNoiseItems = (items) => {
   return items.filter(item => {
     const text = (item.suggestedName || '').trim().toUpperCase();
     
+    // If it has a volume/capacity pattern (e.g. "100 ML", "50 ML", "500 GM"), it's an item/bottle
+    const hasVolume = /\b\d+\s*(?:ML|GM|KG|LTR|L|G)\b/i.test(text);
+
     // Skip items that are too long (likely invoice headers/metadata)
     if (text.length > 100) return false;
     
-    // Skip items with common invoice/document keywords
-    const noisePatterns = [
-      /GSTN|GST|INVOICE|CHALLAN|DATE|PO\s*-|BILL|ADDRESS|PHONE|EMAIL|TAX|SECTION|ACT/,
-      /LIMITED|PVT|COMPANY|DELIVERY|TRANSPORT|SIGNATURE|AUTHORIZED|DUPLICATE|TRANSPORTER/i
-    ];
-    
-    if (noisePatterns.some(pattern => pattern.test(text))) return false;
+    // Skip items with common invoice/document keywords only if no volume is present
+    if (!hasVolume) {
+      const noisePatterns = [
+        /\b(?:GSTN|GST|INVOICE|CHALLAN|DATE|PO|BILL|ADDRESS|PHONE|EMAIL|TAX|SECTION|ACT)\b/i,
+        /\b(?:LIMITED|PVT|COMPANY|DELIVERY|TRANSPORT|SIGNATURE|AUTHORIZED|DUPLICATE|TRANSPORTER)\b/i
+      ];
+      if (noisePatterns.some(pattern => pattern.test(text))) return false;
+    }
     
     // Skip if it's mostly numbers and special characters
     const alphanumericRatio = (text.match(/[A-Z0-9]/g) || []).length / text.length;
-    if (alphanumericRatio < 0.5) return false;
+    if (alphanumericRatio < 0.4) return false;
     
     // Skip very short entries (likely noise)
     if (text.length < 3) return false;
@@ -959,7 +963,7 @@ export default function AddIncoming() {
         .map((item, index) => ({ item, index: firstAddedIndex + index }))
         .filter(({ item }) => item.scanModeRow && !item.bottleId && item.scanBottleText);
       if (unmatchedRows.length) {
-        if (formData.billToId) showPlainBottleWarning(unmatchedRows, formData.billToId);
+        openPlainBottleQueue(unmatchedRows);
       } else {
         Swal.fire({ icon: 'success', title: 'Invoice Parsed', text: 'Appended ' + itemsToSet.length + ' items from new document.' });
       }
@@ -1095,9 +1099,9 @@ export default function AddIncoming() {
         const unresolvedRows = itemsToSet
           .map((item, index) => ({ item, index }))
           .filter(({ item }) => item.scanModeRow && !item.bottleId && item.scanBottleText);
-        if (unresolvedRows.length && scannedCompanyId) {
-          showPlainBottleWarning(unresolvedRows, scannedCompanyId, res.billToName);
-        } else if (unresolvedRows.length === 0) {
+        if (unresolvedRows.length) {
+          openPlainBottleQueue(unresolvedRows);
+        } else {
           Swal.fire({
             icon: missingFields.length > 0 ? 'warning' : 'success',
             title: missingFields.length > 0 ? 'Partial Match / Missing Fields' : 'Invoice Parsed',

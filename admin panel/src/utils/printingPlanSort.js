@@ -40,6 +40,11 @@ export function sortPrintingPlans(a, b) {
       return a.excelRowNumber - b.excelRowNumber;
   }
 
+  const companyA = (a.companyId?.name || a.companyName || a.company?.name || '').trim();
+  const companyB = (b.companyId?.name || b.companyName || b.company?.name || '').trim();
+  const companyCompare = companyA.localeCompare(companyB, undefined, { numeric: true, sensitivity: 'base' });
+  if (companyCompare !== 0) return companyCompare;
+
   // 1. Plain Bottle (Group all variants belonging to the same plain bottle together)
   const bottleA = a.plainBottle || a.bottleName;
   const bottleB = b.plainBottle || b.bottleName;

@@ -1374,7 +1374,7 @@ exports.getSummaryLogs = async (req, res) => {
 exports.getLiveStock = async (req, res) => {
   try {
     const { companyId, bottleId, fromDate, toDate } = req.query;
-    
+
     if (!companyId || !bottleId) {
       return res.status(400).json({ success: false, message: "companyId and bottleId are required" });
     }
@@ -1383,8 +1383,11 @@ exports.getLiveStock = async (req, res) => {
     const PrintingPlan = require("../models/PrintingPlan");
     const BottlePerBox = require("../models/BottlePerBox");
 
-    // Get bottle details for matching
-    const bp = await BottlePerBox.findById(bottleId).lean();
+    const validBottleId = String(bottleId || '').trim();
+    const bp = mongoose.Types.ObjectId.isValid(validBottleId)
+      ? await BottlePerBox.findById(validBottleId).lean()
+      : null;
+
     if (!bp) {
       return res.status(200).json({
         success: true,
@@ -1397,7 +1400,6 @@ exports.getLiveStock = async (req, res) => {
       });
     }
 
-    // Build date filter if provided
     const dateFilter = {};
     if (fromDate) {
       const from = new Date(fromDate);
@@ -1410,63 +1412,90 @@ exports.getLiveStock = async (req, res) => {
       dateFilter.$lte = to;
     }
 
-    // Build bottle name regex for matching
     const bottleNames = [
       bp.bottleName,
       bp.plainBottleName,
       ...(bp.bottleNames || [])
     ].filter(Boolean);
-    
-    const bottleRegexes = bottleNames.map(name => 
+
+    const bottleRegexes = bottleNames.map(name =>
       new RegExp("^" + String(name).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + "$", "i")
     );
 
-    // Query 1: Lacquer Plans for PLAIN coating shade
+    const companyObjectId = mongoose.Types.ObjectId.isValid(companyId)
+      ? new mongoose.Types.ObjectId(companyId)
+      : null;
+
+    if (!companyObjectId) {
+      return res.status(200).json({
+        success: true,
+        data: {
+          totalUsed: 0,
+          totalBoxes: 0,
+          bottleId,
+          companyId
+        }
+      });
+    }
+
+    const normalizedBottleNames = new Set(
+      bottleNames
+        .map(name => normalizeBottleForMatching(name))
+        .filter(Boolean)
+    );
+
+    const isPlainShade = (value) => String(value || '').trim().toUpperCase() === 'PLAIN';
+    const matchesBottle = (plan) => {
+      if (!plan) return false;
+      const planBottleId = plan.plainBottleId || plan.itemId;
+      if (planBottleId && String(planBottleId) === String(bp._id)) return true;
+
+      const candidateNames = [
+        plan.bottleName,
+        plan.plainBottleName,
+        plan.plainBottle,
+        plan.bottle,
+        plan.bottleNameRaw,
+        plan.plainBottleId && plan.plainBottleName
+      ].filter(Boolean);
+
+      return candidateNames.some(name => normalizedBottleNames.has(normalizeBottleForMatching(name)));
+    };
+
     const lacquerQuery = {
       isDeleted: { $ne: true },
-      coatingShade: { $regex: /^PLAIN$/i },
-      companyId: new mongoose.Types.ObjectId(companyId),
-      $or: [
-        { bottleName: { $in: bottleRegexes } },
-        { plainBottle: { $in: bottleRegexes } }
-      ]
+      companyId: companyObjectId
     };
     if (Object.keys(dateFilter).length > 0) {
       lacquerQuery.planDate = dateFilter;
     }
 
-    const lacquerPlans = await LacquerPlan.find(lacquerQuery).lean();
-    
-    // Sum coatedQty from Lacquer plans (use coatingCompletedQty as fallback)
-    let lacquerTotal = 0;
-    let lacquerBoxes = 0;
-    for (const plan of lacquerPlans) {
-      lacquerTotal += Number(plan.coatingCompletedQty) || Number(plan.coatedQty) || 0;
-      lacquerBoxes += Number(plan.noOfBoxes) || 0;
-    }
-
-    // Query 2: Printing Plans for PLAIN coating shade
     const printingQuery = {
       isDeleted: { $ne: true },
-      coatingShade: { $regex: /^PLAIN$/i },
-      companyId: new mongoose.Types.ObjectId(companyId),
-      $or: [
-        { bottleName: { $in: bottleRegexes } },
-        { plainBottle: { $in: bottleRegexes } }
-      ]
+      companyId: companyObjectId
     };
     if (Object.keys(dateFilter).length > 0) {
       printingQuery.planDate = dateFilter;
     }
 
+    const lacquerPlans = await LacquerPlan.find(lacquerQuery).lean();
+    let lacquerTotal = 0;
+    let lacquerBoxes = 0;
+    for (const plan of lacquerPlans) {
+      if (!isPlainShade(plan.coatingShade ?? plan.colour)) continue;
+      if (!matchesBottle(plan)) continue;
+      lacquerTotal += Number(plan.coatingCompletedQty ?? plan.coatedQty ?? 0);
+      lacquerBoxes += Number(plan.noOfBoxes || 0);
+    }
+
     const printingPlans = await PrintingPlan.find(printingQuery).lean();
-    
-    // Sum producedQty from Printing plans
     let printingTotal = 0;
     let printingBoxes = 0;
     for (const plan of printingPlans) {
-      printingTotal += Number(plan.producedQty) || 0;
-      printingBoxes += Number(plan.noOfBoxes) || 0;
+      if (!isPlainShade(plan.coatingShade ?? plan.colour)) continue;
+      if (!matchesBottle(plan)) continue;
+      printingTotal += Number(plan.producedQty || 0);
+      printingBoxes += Number(plan.noOfBoxes || 0);
     }
 
     const totalUsed = lacquerTotal + printingTotal;

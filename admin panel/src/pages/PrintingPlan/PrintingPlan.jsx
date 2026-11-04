@@ -815,31 +815,39 @@ export default function PrintingPlan() {
     }
     const groupedByCompany = {};
     planList.forEach(plan => {
-      const compName = plan.companyId?.name || plan.brandId?.companyId?.name || plan.brandId?.company?.name || plan.company?.name || plan.companyName || 'Unidentified Company';
-      if (!groupedByCompany[compName]) groupedByCompany[compName] = [];
-      groupedByCompany[compName].push(plan);
+      const compId = (plan.canonicalCompanyId || plan.companyId?._id || plan.companyId || plan.brandId?.companyId?._id || plan.brandId?.company?._id || plan.company?._id || 'UNASSIGNED').toString();
+      const compName = plan.companyName || plan.companyId?.name || plan.company?.name || plan.brandId?.companyId?.name || plan.brandId?.company?.name || (compId === 'UNASSIGNED' ? 'UNASSIGNED' : 'Unassigned');
+      if (!groupedByCompany[compId]) {
+        groupedByCompany[compId] = { id: compId, name: compId === 'UNASSIGNED' ? 'UNASSIGNED' : (compName || 'Unassigned'), plans: [] };
+      }
+      groupedByCompany[compId].plans.push(plan);
     });
 
+    const sortedCompIds = Object.keys(groupedByCompany).sort((a, b) =>
+      groupedByCompany[a].name.localeCompare(groupedByCompany[b].name, undefined, { numeric: true, sensitivity: 'base' })
+    );
+
     let currentSrNo = 0;
-    return Object.keys(groupedByCompany).map(compName => {
+    return sortedCompIds.map(compId => {
+      const groupData = groupedByCompany[compId];
       const startSrNo = currentSrNo;
-      currentSrNo += groupedByCompany[compName].length;
+      currentSrNo += groupData.plans.length;
       return (
-        <div key={compName} className="mb-4">
+        <div key={groupData.id} className="mb-4">
           <h5 className="text-center py-3 bg-light border-top border-bottom text-uppercase fw-bold text-dark tracking-wide mb-0" style={{ letterSpacing: '2px' }}>
-            {compName}
+            {groupData.name}
           </h5>
-          {renderDailyTable(groupedByCompany[compName], showDate, startSrNo)}
+          {renderDailyTable(groupData.plans, showDate, startSrNo)}
         </div>
-      )
+      );
     });
   };
 
   const renderDailyTable = (planList, showDate = false, startSrNo = 0) => {
     
-    const isShreno = planList.length > 0 && (planList[0].companyId?.name || planList[0].company?.name || planList[0].companyName || '').toUpperCase().includes('SHRENO');
+    const isShreno = planList.length > 0 && (planList[0].companyName || planList[0].companyId?.name || planList[0].company?.name || '').toUpperCase().includes('SHRENO');
     
-    const getBoundary = (r) => `${r.companyId?._id || r.companyId || r.companyName || r.company}_${r.planDate}`;
+    const getBoundary = (r) => `${r.canonicalCompanyId || r.companyId?._id || r.companyId || r.companyName || r.company || 'UNASSIGNED'}_${r.planDate}`;
     
     // Use a stable ID for non-grouped SHRENO columns instead of Math.random()
     const getRowStableId = (r) => r._id || `temp-${r.excelRowNumber || r.srNo || Math.floor(Math.random() * 1000000)}`;
@@ -900,9 +908,9 @@ export default function PrintingPlan() {
             <th className="py-3 text-uppercase fw-bolder text-center" style={{ fontSize: '15px', backgroundColor: 'var(--accent)', color: 'white' }}>{labels.balanceToMake}</th>
             <th className="py-3 text-uppercase fw-bolder text-center" style={{ fontSize: '15px', backgroundColor: 'var(--accent)', color: 'white' }}>{labels.bottlePerBox}</th>
             <th className="py-3 text-uppercase fw-bolder text-center" style={{ fontSize: '15px', backgroundColor: 'var(--accent)', color: 'white' }}>{labels.noOfOrderBoxes}</th>
+            <th className="py-3 text-uppercase fw-bolder text-center" style={{ fontSize: '15px', backgroundColor: 'var(--accent)', color: 'white' }}>{labels.readyBoxes}</th>
             <th className="py-3 text-uppercase fw-bolder text-center" style={{ fontSize: '15px', backgroundColor: 'var(--accent)', color: 'white' }}>{labels.balanceToBeDispatched}</th>
             <th className="py-3 text-uppercase fw-bolder text-center" style={{ fontSize: '15px', backgroundColor: 'var(--accent)', color: 'white' }}>{labels.soldQty}</th>
-            <th className="py-3 text-uppercase fw-bolder text-center" style={{ fontSize: '15px', backgroundColor: 'var(--accent)', color: 'white' }}>{labels.readyBoxes}</th>
             {shrenoComponentHeaders.map((comp, idx) => (
                 <th key={`comp_th_${idx}`} className="py-3 text-uppercase fw-bolder text-center" style={{ fontSize: '15px', backgroundColor: 'var(--accent)', color: 'white' }}>{comp}</th>
             ))}
@@ -1064,9 +1072,14 @@ export default function PrintingPlan() {
               {renderGroupedTd('_cBoxQty', plan.boxQty !== null && plan.boxQty !== undefined && plan.boxQty > 0 ? plan.boxQty : '-')}
               
               <td className="py-3 text-center align-middle">{plan.noOfBoxes !== null && plan.noOfBoxes !== undefined ? plan.noOfBoxes : '-'}</td>
+              <td className="py-3 text-center align-middle">
+                {plan.readyBoxes !== null && plan.readyBoxes !== undefined ? plan.readyBoxes : '—'}
+                {plan.showLooseQty && plan.looseQty !== null && plan.looseQty !== undefined && (
+                  <div className="small text-muted">Loose: {plan.looseQty}</div>
+                )}
+              </td>
               <td className="py-3 text-center align-middle">{plan.dispatchBalance !== null && plan.dispatchBalance !== undefined ? plan.dispatchBalance : 0}</td>
               <td className="py-3 text-center align-middle">{plan.soldQty !== null && plan.soldQty !== undefined ? plan.soldQty : 0}</td>
-              <td className="py-3 text-center align-middle">{plan.readyBoxes !== null && plan.readyBoxes !== undefined ? plan.readyBoxes : '-'}</td>
               
               {shrenoComponentHeaders.map((comp, idx) => {
                   const compData = plan.components?.find(c => (c.itemType || c.componentType) === comp);
@@ -1161,15 +1174,6 @@ export default function PrintingPlan() {
             </tr>
           )}
 
-          {/* No more records row */}
-          {!infiniteScroll.hasMore && infiniteScroll.items.length > 0 && !infiniteScroll.loading && !infiniteScroll.error && (
-            <tr>
-              <td colSpan={showDate ? "20" : "19"} className="text-center py-4 text-muted">
-                <i className="bi bi-check-circle me-2" />
-                No more records
-              </td>
-            </tr>
-          )}
         </tbody>
       </table>
     );

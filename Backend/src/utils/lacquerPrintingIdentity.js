@@ -92,7 +92,12 @@ const buildLacquerPrintingIdentity = async (plan, session = null) => {
     plan.printingVariant
   ].map(normalizeLacquerPrintingText).find(Boolean) || "";
   const variantIds = variantName ? [] : await resolveVariantIds(plan, session);
-  const variantIdentity = variantName || variantIds.join(",");
+  const shadeKey = normalizeLacquerPrintingText(
+    Array.isArray(plan.coatingShade)
+      ? plan.coatingShade.join(",")
+      : (plan.coatingShade || plan.colour || "")
+  );
+  const variantIdentity = variantName || variantIds.join(",") || shadeKey;
   if (!canonicalBottle || !variantIdentity) return null;
 
   return [
@@ -101,7 +106,7 @@ const buildLacquerPrintingIdentity = async (plan, session = null) => {
     brandId,
     normalizeLacquerPrintingText(canonicalBottle),
     variantIdentity,
-    normalizeLacquerPrintingText(plan.coatingShade) || normalizeLacquerPrintingText(plan.colour)
+    shadeKey
   ].join("|");
 };
 

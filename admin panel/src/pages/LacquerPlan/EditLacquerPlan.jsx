@@ -975,37 +975,57 @@ export default function EditLacquerPlan() {
     }
 
     if (field === 'colour') {
-      const shadeVal = (value || '').trim().toLowerCase();
-      if (shadeVal && (currentRow.bottleName || currentRow.plainBottle)) {
-        const curBottleUpper = (currentRow.plainBottle || currentRow.bottleName || '').trim().toUpperCase();
-        const selectedBottle = (bottlePerBoxes || []).find(b =>
-          (b.plainBottleName || b.bottleName || '').trim().toLowerCase() === curBottleUpper.toLowerCase()
-        );
-        const groupedNames = new Set([curBottleUpper]);
-        if (selectedBottle) {
-          const names = (Array.isArray(selectedBottle.bottleNames) && selectedBottle.bottleNames.length > 0)
-            ? selectedBottle.bottleNames
-            : [selectedBottle.bottleName || selectedBottle.plainBottleName].filter(Boolean);
-          names.forEach(n => groupedNames.add(n.trim().toUpperCase()));
+      const companyName = (companies || []).find(c => (c._id || c)?.toString() === (currentRow.companyId?._id || currentRow.companyId)?.toString())?.name || '';
+      const isShrenoRow = companyName.toLowerCase().includes('shreno');
+      const selectedShades = Array.isArray(value)
+        ? value.map(v => String(v).trim()).filter(Boolean)
+        : (typeof value === 'string' ? [value.trim()].filter(Boolean) : []);
+
+      currentRow.colourSelection = selectedShades;
+      if (isShrenoRow && Array.isArray(value)) {
+        const orderedShades = [...new Set(selectedShades)];
+        const nextRows = [...rows];
+        if (orderedShades.length === 0) {
+          nextRows[index] = { ...nextRows[index], colour: '', colourSelection: [] };
+          setRows(nextRows);
+          return;
         }
 
-        const matchingVar = (variants || []).find(v => {
-          if (!v.variantName) return false;
-          if ((v.coatingShade || '').trim().toLowerCase() !== shadeVal) return false;
-          const spec = (bottleSpecs || []).find(bs => bs._id?.toString() === (v.bottleSpecId?._id || v.bottleSpecId)?.toString());
-          if (!spec) return false;
-          if (currentRow.brandId) {
-            const vBrandId = (spec.brandId?._id || spec.brandId)?.toString();
-            if (vBrandId && vBrandId !== currentRow.brandId.toString()) return false;
-          }
-          const specBName = (spec.bottleName || '').trim().toUpperCase();
-          return groupedNames.has(specBName);
-        });
+        const firstShade = orderedShades[0];
+        nextRows[index] = { ...nextRows[index], colour: firstShade, colourSelection: [firstShade], variantId: [] };
 
-        if (matchingVar) {
-          currentRow.variantId = [matchingVar._id];
-        }
+        const extraRows = orderedShades.slice(1).map((shade) => ({
+          ...nextRows[index],
+          colour: shade,
+          colourSelection: [shade],
+          variantId: [],
+          orderQty: nextRows[index].orderQty || '',
+          noOfBoxes: nextRows[index].noOfBoxes || '',
+          coatedQty: nextRows[index].coatedQty || '',
+          balanceToMake: nextRows[index].balanceToMake || '',
+          dispatchBalance: nextRows[index].dispatchBalance || 0,
+          soldQty: nextRows[index].soldQty || 0,
+          remarks: nextRows[index].remarks || '',
+          sectionId: nextRows[index].sectionId,
+          companyId: nextRows[index].companyId,
+          brandId: nextRows[index].brandId,
+          bottleName: nextRows[index].bottleName,
+          plainBottle: nextRows[index].plainBottle,
+          plainBottleId: nextRows[index].plainBottleId,
+          process: nextRows[index].process,
+          boxQty: nextRows[index].boxQty,
+          plainStock: nextRows[index].plainStock,
+          readyBoxes: nextRows[index].readyBoxes || '',
+          coatingShade: shade,
+        }));
+
+        nextRows.splice(index + 1, 0, ...extraRows);
+        setRows(nextRows);
+        return;
       }
+
+      currentRow.variantId = [];
+      currentRow.colour = selectedShades[0] || '';
 
       if (currentRow.bottleName && currentRow.brandId) {
         try {
@@ -2324,24 +2344,39 @@ export default function EditLacquerPlan() {
                                        )}
                                      </td>
                                     <td className="align-middle">
-                                      <CreatableSelect
-                                        options={uniqueCoatingShades}
-                                        value={row.colour ? { value: row.colour, label: row.colour } : null}
-                                        onChange={(selected) => {
-                                           handleRowChange(index, 'colour', selected ? selected.value : '');
-                                        }}
-                                        placeholder="Shade..."
-                                        isClearable
-                                        required
-                                        menuPortalTarget={document.body}
-                                        styles={{ menuPortal: base => ({ ...base, zIndex: 9999 }) }}
-                                        isValidNewOption={(inputValue, selectValue, selectOptions) => {
-                                          if (!inputValue) return false;
-                                          const lowerInput = inputValue.trim().toLowerCase();
-                                          return !selectOptions.some(opt => opt.label.toLowerCase().includes(lowerInput));
-                                        }}
-                                        formatCreateLabel={(inputValue) => `Create "${inputValue}"`}
-                                      />
+                                      {(() => {
+                                        const companyName = (companies || []).find(c => (c._id || c)?.toString() === (row.companyId?._id || row.companyId)?.toString())?.name || '';
+                                        const isShrenoShadeRow = companyName.toLowerCase().includes('shreno');
+                                        const shadeValue = isShrenoShadeRow
+                                          ? (Array.isArray(row.colourSelection) ? row.colourSelection : (row.colour ? [row.colour] : [])).map(s => ({ value: s, label: s }))
+                                          : (row.colour ? [{ value: row.colour, label: row.colour }] : []);
+
+                                        return (
+                                          <CreatableSelect
+                                            isMulti={isShrenoShadeRow}
+                                            options={uniqueCoatingShades}
+                                            value={isShrenoShadeRow ? shadeValue : (shadeValue[0] || null)}
+                                            onChange={(selected) => {
+                                              if (isShrenoShadeRow) {
+                                                handleRowChange(index, 'colour', selected ? selected.map(s => s.value) : []);
+                                                return;
+                                              }
+                                              handleRowChange(index, 'colour', selected ? selected.value : '');
+                                            }}
+                                            placeholder={isShrenoShadeRow ? 'Shades...' : 'Shade...'}
+                                            isClearable
+                                            required
+                                            menuPortalTarget={document.body}
+                                            styles={{ menuPortal: base => ({ ...base, zIndex: 9999 }) }}
+                                            isValidNewOption={(inputValue, selectValue, selectOptions) => {
+                                              if (!inputValue) return false;
+                                              const lowerInput = inputValue.trim().toLowerCase();
+                                              return !selectOptions.some(opt => opt.label.toLowerCase().includes(lowerInput));
+                                            }}
+                                            formatCreateLabel={(inputValue) => `Create "${inputValue}"`}
+                                          />
+                                        );
+                                      })()}
                                     </td>
                                     <td className="align-middle">
                                       <select className="form-select form-select-sm shadow-none" value={row.process} onChange={(e) => handleRowChange(index, 'process', e.target.value)} required>

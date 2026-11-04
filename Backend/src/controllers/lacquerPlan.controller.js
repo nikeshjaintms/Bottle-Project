@@ -12,6 +12,7 @@ const Brand = require("../models/Brand");
 const Variant = require("../models/Variant");
 const mongoose = require("mongoose");
 const { decodeCursor, encodeCursor, parseLimit } = require("../utils/keyset-pagination");
+const { isPrintingProcess } = require("../utils/processRouting");
 const {
   buildLacquerPrintingIdentity,
   getLacquerPrintingDayRange,
@@ -166,8 +167,7 @@ const withLacquerPrintingCompensation = async (plans, operation) => {
   }
 };
 
-const isPrintingSyncProcess = plan =>
-  String(plan?.process || "").trim().toUpperCase() === "C+P";
+const isPrintingSyncProcess = plan => isPrintingProcess(plan?.process);
 
 const needsPrintingSyncTransaction = async plan => {
   if (isPrintingSyncProcess(plan)) return true;
@@ -677,7 +677,7 @@ const syncPrintingPlanForLacquerPlan = async (plan, userId = null, { session = n
   if (plan.isSibling || plan.isSoftRemoved) return null;
 
   if (plan.isDeleted || plan.isClosed || plan.productionStatus === 'CLOSED' ||
-      String(plan.process || '').trim().toUpperCase() !== 'C+P') {
+      !isPrintingProcess(plan.process)) {
     if (plan._id) {
       await PrintingPlan.updateMany(
         { lacquerPlanId: plan._id, isDeleted: false },

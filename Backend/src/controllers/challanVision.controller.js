@@ -16,6 +16,7 @@ exports.parseChallan = async (req, res) => {
       deliveryNumber: null,
       documentDate: null,
       billToId: null,
+      billToName: null,
       poNo: null,
       poDate: null,
       items: [],
@@ -54,6 +55,7 @@ exports.parseChallan = async (req, res) => {
       if (parsedData.deliveryNumber && !finalData.deliveryNumber) finalData.deliveryNumber = parsedData.deliveryNumber;
       if (parsedData.documentDate && !finalData.documentDate) finalData.documentDate = parsedData.documentDate;
       if (parsedData.billToId && !finalData.billToId) finalData.billToId = parsedData.billToId;
+      if (parsedData.billToName && !finalData.billToName) finalData.billToName = parsedData.billToName;
       if (parsedData.poNo && !finalData.poNo) finalData.poNo = parsedData.poNo;
       if (parsedData.poDate && !finalData.poDate) finalData.poDate = parsedData.poDate;
       

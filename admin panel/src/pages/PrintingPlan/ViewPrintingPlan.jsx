@@ -120,9 +120,9 @@ export default function ViewPrintingPlan() {
                     <th className="small text-muted text-center align-middle" style={{width: '9%'}}>{labels.balanceToMake}</th>
                     <th className="small text-muted text-center align-middle" style={{width: '6%'}}>{labels.bottlePerBox}</th>
                     <th className="small text-muted text-center align-middle" style={{width: '6%'}}>{labels.noOfOrderBoxes}</th>
+                    <th className="small text-muted text-center align-middle" style={{width: '6%'}}>{labels.readyBoxes}</th>
                     <th className="small text-muted text-center align-middle" style={{width: '9%'}}>{labels.balanceToBeDispatched}</th>
                     <th className="small text-muted text-center align-middle" style={{width: '5%'}}>{labels.soldQty}</th>
-                    <th className="small text-muted text-center align-middle" style={{width: '6%'}}>{labels.readyBoxes}</th>
                     {(currentPlan.componentHeadersList || []).map((headerName, hIdx) => (
                       <th key={`comp_th_${hIdx}`} className="small text-primary text-center align-middle bg-primary-subtle" style={{ width: '6%', minWidth: '95px' }}>
                         {headerName}
@@ -169,13 +169,13 @@ export default function ViewPrintingPlan() {
                       <input type="text" className="form-control form-control-sm shadow-none bg-light text-center" disabled value={currentPlan.noOfBoxes || '0'} />
                     </td>
                     <td>
+                      <input type="text" className="form-control form-control-sm shadow-none bg-light text-center" disabled value={currentPlan.readyBoxes || '0'} />
+                    </td>
+                    <td>
                       <input type="text" className="form-control form-control-sm shadow-none bg-light text-center" disabled value={currentPlan.dispatchBalance || '0'} />
                     </td>
                     <td>
                       <input type="text" className="form-control form-control-sm shadow-none bg-light text-center" disabled value={currentPlan.soldQty || '0'} />
-                    </td>
-                    <td>
-                      <input type="text" className="form-control form-control-sm shadow-none bg-light text-center" disabled value={currentPlan.readyBoxes || '0'} />
                     </td>
                     {(currentPlan.componentHeadersList || []).map((headerName, hIdx) => {
                       const compData = currentPlan.components?.find(c => c.itemType === headerName || c.componentType === headerName);

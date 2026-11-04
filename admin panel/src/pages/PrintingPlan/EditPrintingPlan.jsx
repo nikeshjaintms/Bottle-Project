@@ -495,6 +495,61 @@ export default function EditPrintingPlan() {
     const currentRow = newBlock.items[itemIndex];
     currentRow[field] = value;
 
+    if (field === 'coatingShade') {
+      const isShrenoCompany = (companyOptions.find(o => o.value === newBlock.companyId)?.label || '').toLowerCase().includes('shreno');
+      const selectedShades = Array.isArray(value)
+        ? value.map(v => String(v).trim()).filter(Boolean)
+        : (typeof value === 'string' ? [value.trim()].filter(Boolean) : []);
+
+      if (isShrenoCompany && Array.isArray(value)) {
+        const orderedShades = [...new Set(selectedShades)];
+        if (orderedShades.length === 0) {
+          currentRow.coatingShade = '';
+          currentRow.printingToBeDone = '';
+          currentRow.textColor = '';
+          setBlock(newBlock);
+          return;
+        }
+
+        const baseRow = {
+          ...currentRow,
+          coatingShade: orderedShades[0],
+          printingToBeDone: '',
+          textColor: '',
+          orderQty: currentRow.orderQty || '',
+          producedQty: currentRow.producedQty || 0,
+          balanceToMake: currentRow.balanceToMake || 0,
+          dispatchBalance: currentRow.dispatchBalance || 0,
+          soldQty: currentRow.soldQty || 0,
+          noOfBoxes: currentRow.noOfBoxes || '',
+          readyBoxes: currentRow.readyBoxes || '',
+          remarks: currentRow.remarks || '',
+          sharedGroupId: currentRow.sharedGroupId || 'grp_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5),
+        };
+
+        const rowsToInsert = orderedShades.map((shade, index) => ({
+          ...baseRow,
+          coatingShade: shade,
+          printingToBeDone: '',
+          textColor: '',
+          orderQty: index === 0 ? baseRow.orderQty : '',
+          producedQty: index === 0 ? baseRow.producedQty : 0,
+          balanceToMake: index === 0 ? baseRow.balanceToMake : 0,
+          dispatchBalance: index === 0 ? baseRow.dispatchBalance : 0,
+          soldQty: index === 0 ? baseRow.soldQty : 0,
+          noOfBoxes: index === 0 ? baseRow.noOfBoxes : '',
+          readyBoxes: index === 0 ? baseRow.readyBoxes : '',
+          remarks: index === 0 ? baseRow.remarks : ''
+        }));
+
+        newBlock.items.splice(itemIndex, 1, ...rowsToInsert);
+        setBlock(newBlock);
+        return;
+      }
+
+      currentRow.coatingShade = selectedShades[0] || '';
+    }
+
     if (field === 'plainBottle' || field === 'bottleName') {
       const selectedPlain = (value || '').trim();
       currentRow.plainBottle = selectedPlain;
@@ -1329,9 +1384,9 @@ export default function EditPrintingPlan() {
                           <th className="small text-muted text-center align-middle" style={{ width: '9%' }}>{labels.balanceToMake}</th>
                           <th className="small text-muted text-center align-middle" style={{ width: '6%' }}>{labels.bottlePerBox}</th>
                           <th className="small text-muted text-center align-middle" style={{ width: '6%' }}>{labels.noOfOrderBoxes}</th>
+                          <th className="small text-muted text-center align-middle" style={{ width: '6%' }}>{labels.readyBoxes}</th>
                           <th className="small text-muted text-center align-middle" style={{ width: '9%' }}>{labels.balanceToBeDispatched}</th>
                           <th className="small text-muted text-center align-middle" style={{ width: '5%' }}>{labels.soldQty}</th>
-                          <th className="small text-muted text-center align-middle" style={{ width: '6%' }}>{labels.readyBoxes}</th>
                           {isShrenoCompany && getOrderedHeaders(block.selectedItemTypeOptions, sortedActiveItemTypes).map((headerName, hIdx) => (
                             <th key={`comp_th_${hIdx}`} className="small text-primary text-center align-middle bg-primary-subtle" style={{ width: '6%', minWidth: '95px' }}>
                               {headerName}
@@ -1634,31 +1689,45 @@ export default function EditPrintingPlan() {
                               </td>
                               {renderShadeGroupCell && (
                               <td rowSpan={shadeRowSpan} className="align-middle" style={{ backgroundColor: (isGrouped && shadeRowSpan > 1) ? '#f8f9fa' : 'inherit' }}>
-                                <CreatableSelect
-                                  options={uniqueCoatingShades}
-                                  value={item.coatingShade ? { value: item.coatingShade, label: item.coatingShade } : null}
-                                  onChange={(selected) => {
-                                    if (isGrouped && shadeRowSpan > 1) {
-                                      const updatedBlock = { ...block };
-                                      for (let i = itemIndex; i < itemIndex + shadeRowSpan; i++) {
-                                        updatedBlock.items[i].coatingShade = selected ? selected.value : '';
-                                      }
-                                      setBlock(updatedBlock);
-                                    }
-                                    handleItemChange(itemIndex, 'coatingShade', selected?.value || '');
-                                  }}
-                                  placeholder="Shade..."
-                                  isClearable
-                                  required
-                                  menuPortalTarget={document.body}
-                                  styles={{ menuPortal: base => ({ ...base, zIndex: 9999 }) }}
-                                  isValidNewOption={(inputValue, selectValue, selectOptions) => {
-                                    if (!inputValue) return false;
-                                    const lowerInput = inputValue.trim().toLowerCase();
-                                    return !selectOptions.some(opt => opt.label.toLowerCase().includes(lowerInput));
-                                  }}
-                                  formatCreateLabel={(inputValue) => `Create "${inputValue.toUpperCase()}"`}
-                                />
+                                {(() => {
+                                  const isShrenoShade = (companyOptions.find(o => o.value === block.companyId)?.label || '').toLowerCase().includes('shreno');
+                                  const shadeValue = isShrenoShade
+                                    ? (Array.isArray(item.coatingShade) ? item.coatingShade : (item.coatingShade ? [item.coatingShade] : [])).map(s => ({ value: s, label: s }))
+                                    : (item.coatingShade ? [{ value: item.coatingShade, label: item.coatingShade }] : []);
+
+                                  return (
+                                    <CreatableSelect
+                                      isMulti={isShrenoShade}
+                                      options={uniqueCoatingShades}
+                                      value={isShrenoShade ? shadeValue : (shadeValue[0] || null)}
+                                      onChange={(selected) => {
+                                        if (isShrenoShade) {
+                                          handleItemChange(itemIndex, 'coatingShade', selected ? selected.map(s => s.value) : []);
+                                          return;
+                                        }
+                                        if (isGrouped && shadeRowSpan > 1) {
+                                          const updatedBlock = { ...block };
+                                          for (let i = itemIndex; i < itemIndex + shadeRowSpan; i++) {
+                                            updatedBlock.items[i].coatingShade = selected ? selected.value : '';
+                                          }
+                                          setBlock(updatedBlock);
+                                        }
+                                        handleItemChange(itemIndex, 'coatingShade', selected?.value || '');
+                                      }}
+                                      placeholder={isShrenoShade ? 'Shades...' : 'Shade...'}
+                                      isClearable
+                                      required
+                                      menuPortalTarget={document.body}
+                                      styles={{ menuPortal: base => ({ ...base, zIndex: 9999 }) }}
+                                      isValidNewOption={(inputValue, selectValue, selectOptions) => {
+                                        if (!inputValue) return false;
+                                        const lowerInput = inputValue.trim().toLowerCase();
+                                        return !selectOptions.some(opt => opt.label.toLowerCase().includes(lowerInput));
+                                      }}
+                                      formatCreateLabel={(inputValue) => `Create "${inputValue.toUpperCase()}"`}
+                                    />
+                                  );
+                                })()}
                               </td>
                               )}
                               <td className="align-middle">
@@ -1840,13 +1909,18 @@ export default function EditPrintingPlan() {
                                 <input type="number" className="form-control form-control-sm shadow-none text-center" value={item.noOfBoxes} readOnly min="0" />
                               </td>
                               <td>
+                                <input type="number" className="form-control form-control-sm shadow-none text-center" value={item.readyBoxes} onChange={(e) => handleItemChange(itemIndex, 'readyBoxes', e.target.value)} min="0" />
+                                {Number(item.boxQty) > 0 && (
+                                  <div className="small text-muted mt-1">
+                                    Loose: {Math.max(0, (Number(item.producedQty) || 0) - ((Number(item.readyBoxes) || 0) * Number(item.boxQty))) }
+                                  </div>
+                                )}
+                              </td>
+                              <td>
                                 <input type="number" className="form-control form-control-sm shadow-none text-center" value={item.dispatchBalance} onChange={(e) => handleItemChange(itemIndex, 'dispatchBalance', e.target.value)} min="0" />
                               </td>
                               <td>
                                 <input type="number" className="form-control form-control-sm shadow-none text-center" value={item.soldQty} onChange={(e) => handleItemChange(itemIndex, 'soldQty', e.target.value)} min="0" />
-                              </td>
-                              <td>
-                                <input type="number" className="form-control form-control-sm shadow-none text-center" value={item.readyBoxes} onChange={(e) => handleItemChange(itemIndex, 'readyBoxes', e.target.value)} min="0" />
                               </td>
                               {isShrenoCompany && getOrderedHeaders(block.selectedItemTypeOptions, sortedActiveItemTypes).map((headerName, hIdx) => (
                                 <td key={`comp_td_${hIdx}`} className="text-center align-middle">

@@ -29,6 +29,23 @@ const getEntryDateTime = date => {
 
 const sourceId = source => (source?.companyId?._id || source?.companyId || source?._id || source)?.toString();
 
+const getReadyBoxFields = row => {
+  const bottlePerBox = Number(row.boxQty);
+  if (!Number.isFinite(bottlePerBox) || bottlePerBox <= 0) {
+    return { readyBoxes: null, looseQty: null, showLooseQty: false };
+  }
+
+  const printedQty = Number(row.producedQty ?? row.coatingCompletedQty ?? row.readyQty ?? 0);
+  const readyBoxes = Math.floor(printedQty / bottlePerBox);
+  const looseQty = printedQty - (readyBoxes * bottlePerBox);
+
+  return {
+    readyBoxes,
+    looseQty,
+    showLooseQty: printedQty !== 0
+  };
+};
+
 const sourceSplitSuggestion = (quantity, sources, currentAllocation) => {
   let remaining = Math.max(0, Number(quantity) || 0);
   const ownId = sources.find(source => source.isOwnCompany)?.companyId;
@@ -335,6 +352,14 @@ function PrintingQuantityModal({ show, plan, subType, onClose, onSave }) {
                       <small className="text-muted d-block">
                         Balance to make = {nextQty} − {currentOrder} = <strong>{nextBalance}</strong>
                       </small>
+                      {boxSize > 0 && (() => {
+                        const readyBoxSummary = getReadyBoxFields({ boxQty: boxSize, producedQty: nextQty });
+                        return (
+                          <small className="text-muted d-block">
+                            Ready Boxes = <strong>{readyBoxSummary.readyBoxes ?? 0}</strong> · Loose = <strong>{readyBoxSummary.looseQty ?? 0}</strong>
+                          </small>
+                        );
+                      })()}
                       {plainPlan && (
                         <small className="text-muted d-block">
                           Plain Stock = {stockBeforePlan} − {nextQty} = <strong className={plainStockAfterUpdate < 0 ? 'text-danger' : 'text-success'}>{plainStockAfterUpdate}</strong>
