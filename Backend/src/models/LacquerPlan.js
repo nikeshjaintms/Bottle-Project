@@ -123,7 +123,7 @@ const lacquerPlanSchema = new mongoose.Schema({
     index: true,
     default: null
   },
-  
+
   groupId: {
     type: String,
     index: true,
@@ -195,7 +195,7 @@ const lacquerPlanSchema = new mongoose.Schema({
     min: 0
   },
   // Quantity entries history for Order Qty and Coating Completed Qty additions
-    qtyEntries: [{
+  qtyEntries: [{
     type: {
       type: String
     },
@@ -367,5 +367,6 @@ lacquerPlanSchema.index({ companyId: 1, isDeleted: 1, bottleName: 1 });
 lacquerPlanSchema.index({ companyId: 1, planDate: -1, isDeleted: 1 });
 lacquerPlanSchema.index({ coatingShade: 1, isDeleted: 1 });
 lacquerPlanSchema.index({ planDate: 1, isDeleted: 1, isArchived: 1, isSoftRemoved: 1 });
+
 
 module.exports = mongoose.model("LacquerPlan", lacquerPlanSchema);

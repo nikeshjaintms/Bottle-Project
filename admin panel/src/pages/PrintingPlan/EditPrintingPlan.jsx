@@ -198,7 +198,7 @@ export default function EditPrintingPlan() {
         groupPlans = location.state.editGroup;
       } else {
         // Fallback if accessed without state (e.g., direct URL)
-        const idArray = id.split(',');
+        const idArray = (id || '').split(',').map(s => s.trim()).filter(Boolean);
         try {
           const promises = idArray.map(singleId => API.get(`/printing-plan/${singleId}`));
           const results = await Promise.all(promises);
@@ -287,18 +287,27 @@ export default function EditPrintingPlan() {
         });
 
         // For PLAIN shade rows on load, fetch live plain stock & supplier sources info
+        const commonPlanDate = groupPlans[0]?.planDate
+          ? (new Date(groupPlans[0].planDate).toISOString().split('T')[0])
+          : planDate;
+        const normalizedCompanyId = (companyId?._id || companyId)?.toString() || undefined;
+
         items.forEach(async (it, idx) => {
           const isPlain = (it.coatingShade || '').trim().toUpperCase() === 'PLAIN';
           if (isPlain && it.bottleName) {
             try {
-              const pSources = it.stockSources || (companyId ? [companyId] : []);
+              const pSources = (it.stockSources && it.stockSources.length > 0)
+                ? it.stockSources
+                : (normalizedCompanyId ? [normalizedCompanyId] : []);
+              const sourcesStr = pSources.map(s => (s?._id || s)?.toString()).filter(Boolean).join(',');
+
               const lRes = await API.get('/printing-plan/stats/computed', {
                 params: {
                   bottleName: it.bottleName,
-                  companyId: companyId,
+                  companyId: normalizedCompanyId,
                   coatingShade: it.coatingShade,
-                  planDate: groupPlans[0].planDate || undefined,
-                  stockSources: pSources.join(','),
+                  planDate: commonPlanDate || undefined,
+                  stockSources: sourcesStr,
                   excludePlanIds: it._id || id,
                   orderQty: it.orderQty,
                   readyQty: it.producedQty,
@@ -320,14 +329,19 @@ export default function EditPrintingPlan() {
 
             if (!it.plainBottleStock || it.plainBottleStock === 0) {
               try {
+                const pSources = (it.stockSources && it.stockSources.length > 0)
+                  ? it.stockSources
+                  : (normalizedCompanyId ? [normalizedCompanyId] : []);
+                const sourcesStr = pSources.map(s => (s?._id || s)?.toString()).filter(Boolean).join(',');
+
                 const res = await API.get('/printing-plan/stats/computed', {
                   params: {
                     bottleName: it.bottleName,
-                    brandId: it.brandId || brandId,
+                    brandId: (it.brandId?._id || it.brandId || brandId)?.toString() || undefined,
                     coatingShade: 'PLAIN',
-                    companyId: companyId,
-                    planDate: plan.planDate,
-                    stockSources: (it.stockSources || []).join(','),
+                    companyId: normalizedCompanyId,
+                    planDate: commonPlanDate || undefined,
+                    stockSources: sourcesStr,
                     excludePlanIds: it._id || id,
                     orderQty: it.orderQty,
                     readyQty: it.producedQty,
@@ -742,7 +756,7 @@ export default function EditPrintingPlan() {
           row: currentRow,
           companyId: newBlock.companyId,
           brandId: currentRow.brandId || newBlock.brandId,
-          planDate: newBlock.planDate,
+          planDate: planDate,
           excludePlanIds: currentRow._id || id
         });
         if (calculationRequests.current.get(requestKey) !== requestId) return;
@@ -974,7 +988,7 @@ export default function EditPrintingPlan() {
         params: {
           bottleName: curBottle,
           companyId: block.companyId,
-          planDate: block.planDate,
+          planDate: planDate,
           stockSources: updatedSources.join(','),
           excludePlanIds: currentItem._id || id,
           orderQty: currentItem.orderQty,

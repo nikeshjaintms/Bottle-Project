@@ -119,6 +119,12 @@ export default function AddLacquerPlan() {
   const stockWarningRequestId = useRef(0);
 
   useEffect(() => {
+    if (!planDate || !rows || rows.length === 0) {
+      setStockWarnings({});
+      setStockWarningPreviewError(false);
+      return;
+    }
+
     const requestId = ++stockWarningRequestId.current;
     const controller = new AbortController();
     const timeout = setTimeout(async () => {

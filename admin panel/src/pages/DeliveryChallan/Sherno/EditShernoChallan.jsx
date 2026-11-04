@@ -9,6 +9,7 @@ import { fetchCompanies } from '../../../redux/slices/companySlice';
 import API from '../../../services/api';
 import Swal from 'sweetalert2';
 import ChallanProductSelector from '../ChallanProductSelector';
+import { setChallanVariantLine, withTrailingEmptyVariantLine } from '../challanVariantLines';
 
 async function submitChallanWithMaterialCodeConfirmation({ payload, submit, onReject }) {
   let response = await submit(payload);
@@ -252,10 +253,9 @@ export default function EditShernoChallan() {
         }
       });
 
-      setSpecGroups(
-        loadedGroups.length > 0
-          ? loadedGroups
-          : [
+      const groupsWithEmptyVariantLine = loadedGroups.length > 0
+        ? loadedGroups
+        : [
               {
                 id: 'grp_1',
                 plainBottle: '',
@@ -278,8 +278,11 @@ export default function EditShernoChallan() {
                   },
                 ],
               },
-            ]
-      );
+            ];
+      setSpecGroups(groupsWithEmptyVariantLine.map((group) => ({
+        ...group,
+        variantLines: withTrailingEmptyVariantLine(group.variantLines),
+      })));
 
       // Load addresses & specs for this company
       if (cId) {
@@ -421,17 +424,22 @@ export default function EditShernoChallan() {
   const handleVariantSelect = (gIdx, lineIdx, selectedVariant) => {
     const updated = [...specGroups];
     const group = updated[gIdx];
-    const line = group.variantLines[lineIdx];
-    const variantId = selectedVariant?.variantId || '';
-    line.variantId = variantId;
-    const foundVariant = selectedVariant;
-    if (foundVariant) {
-      line.description = foundVariant.variantName || foundVariant.name || '';
-    } else if (!variantId) {
-      line.description = '';
-    }
-    line.materialCode = foundVariant?.materialCode || '';
-    line.materialCodeDirty = true;
+    group.variantLines = setChallanVariantLine(group.variantLines, lineIdx, selectedVariant, (line, variant) => ({
+      ...line,
+      variantId: variant?.variantId || '',
+      materialCode: variant?.materialCode || '',
+      materialCodeDirty: true,
+      description: variant ? (variant.variantName || variant.name || '') : '',
+    }));
+    setSpecGroups(updated);
+  };
+
+  const handleGroupUnitChange = (gIdx, unit) => {
+    const updated = [...specGroups];
+    updated[gIdx].variantLines = updated[gIdx].variantLines.map((line) => {
+      const nextLine = { ...line, unit };
+      return { ...nextLine, ...calculateItemTotal(nextLine) };
+    });
     setSpecGroups(updated);
   };
 
@@ -452,27 +460,6 @@ export default function EditShernoChallan() {
       line.boxCount = boxCount;
     }
 
-    setSpecGroups(updated);
-  };
-
-  const addLineToSpecGroup = (gIdx) => {
-    const updated = [...specGroups];
-    const group = updated[gIdx];
-    const defaultUnit = group.variantLines[0]?.unit || findUnitPerBox(group.title) || '';
-    group.variantLines.push({
-      id: 'line_' + Math.random().toString(36).substr(2, 9),
-      variantId: '',
-      materialCode: '',
-      description: '',
-      box: '',
-      fullBox: '',
-      looseBox: '1',
-      looseQty: '',
-      unit: defaultUnit,
-      total: '',
-      boxCount: 0,
-      remarks: '',
-    });
     setSpecGroups(updated);
   };
 
@@ -976,9 +963,10 @@ export default function EditShernoChallan() {
                 </thead>
                 <tbody>
                   {specGroups.map((group, gIdx) => {
-                    const numLines = group.variantLines.length;
+                    const variantLines = withTrailingEmptyVariantLine(group.variantLines);
+                    const numLines = variantLines.length;
 
-                    return group.variantLines.map((line, lIdx) => (
+                    return variantLines.map((line, lIdx) => (
                       <tr key={line.id || `${gIdx}-${lIdx}`}>
                         {lIdx === 0 && (
                           <td
@@ -1034,7 +1022,6 @@ export default function EditShernoChallan() {
                           />
                         </td>
 
-                        {/* Variant selection per item line */}
                         <td>
                           <ChallanProductSelector
                             level="variant"
@@ -1056,7 +1043,7 @@ export default function EditShernoChallan() {
                             onChange={(e) =>
                               handleVariantLineChange(gIdx, lIdx, 'description', e.target.value)
                             }
-                            required
+                            required={Boolean(line.variantId)}
                             style={{ height: 38, fontSize: 13, borderRadius: 8 }}
                           />
                         </td>
@@ -1100,21 +1087,20 @@ export default function EditShernoChallan() {
                           </div>
                         </td>
 
-                        {/* Unit */}
-                        <td>
-                          <input
-                            type="number"
-                            className="form-control text-center font-monospace"
-                            placeholder="64"
-                            value={line.unit}
-                            onChange={(e) =>
-                              handleVariantLineChange(gIdx, lIdx, 'unit', e.target.value)
-                            }
-                            title="BottlePerBox (e.g. 64)"
-                            required
-                            style={{ height: 38, fontSize: 13, borderRadius: 8 }}
-                          />
-                        </td>
+                        {lIdx === 0 && (
+                          <td rowSpan={numLines}>
+                            <input
+                              type="number"
+                              className="form-control text-center font-monospace"
+                              placeholder="64"
+                              value={line.unit}
+                              onChange={(e) => handleGroupUnitChange(gIdx, e.target.value)}
+                              title="BottlePerBox for this plain bottle group"
+                              required
+                              style={{ height: 38, fontSize: 13, borderRadius: 8 }}
+                            />
+                          </td>
+                        )}
 
                         {/* Total Qty */}
                         <td>
@@ -1134,6 +1120,7 @@ export default function EditShernoChallan() {
                             type="button"
                             className="btn btn-sm btn-outline-danger border-0 rounded-3 shadow-none p-2"
                             onClick={() => removeVariantLine(gIdx, lIdx)}
+                            disabled={!line.variantId && !line.description}
                             title="Remove this line"
                           >
                             <i className="bi bi-trash fs-6" />

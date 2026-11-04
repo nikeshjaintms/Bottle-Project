@@ -11,6 +11,7 @@ const PlainBottleStock = require("../models/PlainBottleStock");
 const { recomputePlainStock, computeLivePlainStock, replayStockAllocations, validateStockBeforeSave, validateStockAllocation, getBottleSourcesInfo } = require("../utils/stockRecompute");
 const { isPrintingProcess } = require("../utils/processRouting");
 const { decodeCursor, encodeCursor, buildKeysetQuery, parseLimit } = require("../utils/keyset-pagination");
+const { buildLacquerPrintingIdentity, getLacquerPrintingDayRange } = require("../utils/lacquerPrintingIdentity");
 
 const normalizeStockDisplayText = value => String(value || "").replace(/\s+/g, " ").trim().toUpperCase();
 
@@ -328,10 +329,61 @@ const allocateReturnedPrintingQty = (quantity, allocations) => {
 };
 
 const updateLinkedLacquerOrder = async (plan, orderQty, session) => {
-  if (!plan.lacquerPlanId) return;
-  let lacquerFind = LacquerPlan.findById(plan.lacquerPlanId);
-  if (session) lacquerFind = lacquerFind.session(session);
-  const lacquerPlan = await lacquerFind;
+  let lacquerPlan = null;
+  if (plan.lacquerPlanId) {
+    let lacquerFind = LacquerPlan.findById(plan.lacquerPlanId);
+    if (session) lacquerFind = lacquerFind.session(session);
+    lacquerPlan = await lacquerFind;
+  } else if (plan.planDate && plan.companyId && plan.brandId) {
+    const identity = await buildLacquerPrintingIdentity(plan, session);
+    if (identity) {
+      const { start, end } = getLacquerPrintingDayRange(plan.planDate);
+      let candidatesQuery = LacquerPlan.find({
+        planDate: { $gte: start, $lte: end },
+        companyId: plan.companyId,
+        brandId: plan.brandId,
+        isDeleted: { $ne: true },
+        isArchived: { $ne: true },
+        isSoftRemoved: { $ne: true },
+        isSibling: { $ne: true }
+      });
+      if (session) candidatesQuery = candidatesQuery.session(session);
+      const candidates = await candidatesQuery;
+      const matches = [];
+      for (const candidate of candidates) {
+        if (isPrintingProcess(candidate.process) &&
+            await buildLacquerPrintingIdentity(candidate, session) === identity) {
+          matches.push(candidate);
+        }
+      }
+
+      if (matches.length > 0) {
+        let linkedPlansQuery = PrintingPlan.find({
+          lacquerPlanId: { $in: matches.map(candidate => candidate._id) },
+          _id: { $ne: plan._id },
+          isDeleted: { $ne: true }
+        }).select("lacquerPlanId");
+        if (session) linkedPlansQuery = linkedPlansQuery.session(session);
+        const alreadyLinkedIds = new Set(
+          (await linkedPlansQuery.lean()).map(linkedPlan => linkedPlan.lacquerPlanId.toString())
+        );
+        for (let index = matches.length - 1; index >= 0; index -= 1) {
+          if (alreadyLinkedIds.has(matches[index]._id.toString())) matches.splice(index, 1);
+        }
+      }
+
+      if (matches.length > 1) {
+        const error = new Error("Cannot sync Printing Order Qty because multiple matching Lacquer Plans were found.");
+        error.statusCode = 409;
+        throw error;
+      }
+      if (matches.length === 1) {
+        lacquerPlan = matches[0];
+        plan.lacquerPlanId = lacquerPlan._id;
+        await plan.save(session ? { session } : undefined);
+      }
+    }
+  }
   if (!lacquerPlan || lacquerPlan.isDeleted) return;
   const coatedQty = Number(lacquerPlan.coatingCompletedQty ?? lacquerPlan.coatedQty) || 0;
   const activeOrderEntries = (lacquerPlan.qtyEntries || [])
@@ -536,14 +588,16 @@ const findPlainBottleStockDoc = async (bottleName, companyId = null) => {
 //   - Σ Printing Ready qty of non-PLAIN rows with same coatingShade (date ≤ D)
 const calculateCoatedStock = async (coatingShade, companyId, planDate = null, excludePrintingPlanId = null, session = null) => {
   if (!coatingShade || coatingShade.trim().toUpperCase() === 'PLAIN') return 0;
+  const cidStr = (companyId?._id || companyId)?.toString().trim();
+  if (!cidStr || !mongoose.Types.ObjectId.isValid(cidStr)) return 0;
   
   // 1. Sum Lacquer Coating Completed for this shade
   const lacquerQuery = {
-    companyId: companyId,
+    companyId: cidStr,
     isDeleted: false,
     coatingShade: { $regex: new RegExp("^" + coatingShade.trim() + "$", "i") }
   };
-  if (planDate) {
+  if (planDate && !isNaN(new Date(planDate).getTime())) {
     const endOfDay = new Date(planDate);
     endOfDay.setUTCHours(23, 59, 59, 999);
     lacquerQuery.planDate = { $lte: endOfDay };
@@ -561,12 +615,15 @@ const calculateCoatedStock = async (coatingShade, companyId, planDate = null, ex
   
   // 2. Sum Printing Ready for this shade (non-deleted)
   const printingQuery = {
-    companyId: companyId,
+    companyId: cidStr,
     isDeleted: false,
     coatingShade: { $regex: new RegExp("^" + coatingShade.trim() + "$", "i") }
   };
-  if (excludePrintingPlanId) printingQuery._id = { $ne: excludePrintingPlanId };
-  if (planDate) {
+  const exIdStr = (excludePrintingPlanId?._id || excludePrintingPlanId)?.toString().trim();
+  if (exIdStr && mongoose.Types.ObjectId.isValid(exIdStr)) {
+    printingQuery._id = { $ne: new mongoose.Types.ObjectId(exIdStr) };
+  }
+  if (planDate && !isNaN(new Date(planDate).getTime())) {
     const endOfDay = new Date(planDate);
     endOfDay.setUTCHours(23, 59, 59, 999);
     printingQuery.planDate = { $lte: endOfDay };
@@ -585,12 +642,14 @@ const calculateCoatedStock = async (coatingShade, companyId, planDate = null, ex
 
 const getLivePrintingStock = (plan, stockCache) => {
   const isPlain = (plan.coatingShade || "").trim().toUpperCase() === "PLAIN";
-  const companyId = (plan.companyId?._id || plan.companyId)?.toString() || "";
-  const planDate = plan.planDate ? new Date(plan.planDate).toISOString().slice(0, 10) : "";
+  const rawCid = plan.companyId?._id || plan.companyId;
+  const companyId = rawCid && mongoose.Types.ObjectId.isValid(rawCid) ? rawCid.toString() : "";
+  const planDateObj = plan.planDate ? new Date(plan.planDate) : null;
+  const planDate = planDateObj && !isNaN(planDateObj.getTime()) ? planDateObj.toISOString().slice(0, 10) : "";
   const sources = [...new Set([
     companyId,
     ...(plan.stockSources || []).map(source => (source?._id || source)?.toString())
-  ].filter(Boolean))];
+  ].filter(id => id && mongoose.Types.ObjectId.isValid(id)))];
   const key = isPlain
     ? `plain|${companyId}|${String(plan.bottleName || "").trim().toUpperCase()}|${sources.join(",")}|${planDate}`
     : `coated|${companyId}|${String(plan.coatingShade || "").trim().toUpperCase()}|${planDate}`;
@@ -607,9 +666,15 @@ const getPlainStockWarnings = async (plans, stockCache) => {
   const plainPlans = plans.filter(plan => (plan.coatingShade || "").trim().toUpperCase() === "PLAIN");
   const groups = new Map();
   for (const plan of plainPlans) {
-    const companyId = (plan.companyId?._id || plan.companyId)?.toString() || "";
-    const day = new Date(plan.planDate).toISOString().slice(0, 10);
-    const key = `${companyId}|${String(plan.bottleName || "").trim().toUpperCase()}|${day}`;
+    const rawCid = plan.companyId?._id || plan.companyId;
+    const companyId = rawCid && mongoose.Types.ObjectId.isValid(rawCid) ? rawCid.toString() : "";
+    if (!companyId) continue;
+    const planDateObj = plan.planDate ? new Date(plan.planDate) : null;
+    if (!planDateObj || isNaN(planDateObj.getTime())) continue;
+    const day = planDateObj.toISOString().slice(0, 10);
+    const bottle = String(plan.bottleName || "").trim().toUpperCase();
+    if (!bottle) continue;
+    const key = `${companyId}|${bottle}|${day}`;
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(plan);
   }
@@ -617,11 +682,12 @@ const getPlainStockWarnings = async (plans, stockCache) => {
   const warnings = new Map();
   for (const [key, pageRows] of groups) {
     const [companyId, bottleName, day] = key.split("|");
+    if (!companyId || !mongoose.Types.ObjectId.isValid(companyId)) continue;
     const start = new Date(`${day}T00:00:00.000Z`);
     const end = new Date(`${day}T23:59:59.999Z`);
     const escapedBottleName = bottleName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const poolRows = await PrintingPlan.find({
-      companyId,
+      companyId: new mongoose.Types.ObjectId(companyId),
       isDeleted: false,
       coatingShade: { $regex: /^PLAIN$/i },
       planDate: { $gte: start, $lte: end },
@@ -1085,7 +1151,11 @@ exports.getPlans = async (req, res) => {
 // Get Plan by ID
 exports.getPlanById = async (req, res) => {
   try {
-    const plan = await PrintingPlan.findById(req.params.id)
+    const rawId = req.params.id ? req.params.id.split(',')[0].trim() : '';
+    if (!rawId || !mongoose.Types.ObjectId.isValid(rawId)) {
+      return res.status(404).json({ success: false, message: "Plan not found" });
+    }
+    const plan = await PrintingPlan.findById(rawId)
       .populate("brandId", "name")
       .populate("companyId", "name")
       .populate({
@@ -1383,11 +1453,14 @@ exports.getComputedStats = async (req, res) => {
     let allocationAvailable = 0;
     let producedQty = 0;
 
-    let effectiveCompanyId = companyId;
-    if (!effectiveCompanyId && brandId) {
+    let effectiveCompanyId = (companyId?._id || companyId)?.toString().trim() || null;
+    if (effectiveCompanyId && !mongoose.Types.ObjectId.isValid(effectiveCompanyId)) {
+      effectiveCompanyId = null;
+    }
+    if (!effectiveCompanyId && brandId && mongoose.Types.ObjectId.isValid(brandId)) {
       const bDoc = await Brand.findById(brandId);
       if (bDoc && bDoc.companyId) {
-        effectiveCompanyId = bDoc.companyId;
+        effectiveCompanyId = (bDoc.companyId?._id || bDoc.companyId)?.toString();
       }
     }
 
@@ -1468,7 +1541,7 @@ exports.getComputedStats = async (req, res) => {
       : null;
     const boxQty = Number(bottlePerBox?.bottlePerBox) || Number(boxQtyParam) || 0;
     let plainStockWarning = null;
-    if (isPlainShade && bottleName && effectiveCompanyId && orderQty > 0) {
+    if (isPlainShade && bottleName && effectiveCompanyId && mongoose.Types.ObjectId.isValid(effectiveCompanyId) && orderQty > 0) {
       const targetDate = planDate ? new Date(planDate) : new Date();
       const startOfDay = new Date(targetDate);
       startOfDay.setUTCHours(0, 0, 0, 0);

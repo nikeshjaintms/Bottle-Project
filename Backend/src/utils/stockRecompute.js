@@ -90,7 +90,7 @@ async function recomputePlainStock(bottleIdOrName, companyId = null, userId = nu
 
   // 1. Σ non-deleted Incoming (excluding imported records)
   const incomingQuery = {
-    isDeleted: false,
+    isDeleted: { $ne: true },
     isImported: { $ne: true },
     'items.bottleId': bp._id
   };
@@ -123,7 +123,7 @@ async function recomputePlainStock(bottleIdOrName, companyId = null, userId = nu
     });
   }
   const lacquerQuery = {
-    isDeleted: false,
+    isDeleted: { $ne: true },
     $and: andLacquer
   };
 
@@ -180,7 +180,7 @@ async function recomputePlainStock(bottleIdOrName, companyId = null, userId = nu
     });
   }
   const printingQuery = {
-    isDeleted: false,
+    isDeleted: { $ne: true },
     $and: andPrinting
   };
 
@@ -323,7 +323,7 @@ async function computeLivePlainStock(bottleIdOrName, companyIdOrSources = null, 
   async function computeSingleSource(srcObjectId, companyName) {
     // 1. Σ non-deleted Incoming (≤D, excluding imported records)
     const incomingQuery = {
-      isDeleted: false,
+      isDeleted: { $ne: true },
       isImported: { $ne: true },
       'items.bottleId': bp._id
     };
@@ -366,7 +366,7 @@ async function computeLivePlainStock(bottleIdOrName, companyIdOrSources = null, 
     if (startOfDay && endOfDay) {
       // Prior plans: < startOfDay
       const priorQuery = {
-        isDeleted: false,
+        isDeleted: { $ne: true },
         $and: [...andBase, { planDate: { $lt: startOfDay } }]
       };
       if (excludeIds.length > 0) priorQuery._id = { $nin: excludeIds };
@@ -393,7 +393,7 @@ async function computeLivePlainStock(bottleIdOrName, companyIdOrSources = null, 
 
       // Same-day plans: between startOfDay and endOfDay
       const sameDayQuery = {
-        isDeleted: false,
+        isDeleted: { $ne: true },
         $and: [...andBase, { planDate: { $gte: startOfDay, $lte: endOfDay } }]
       };
       if (excludeIds.length > 0) sameDayQuery._id = { $nin: excludeIds };
@@ -433,7 +433,7 @@ async function computeLivePlainStock(bottleIdOrName, companyIdOrSources = null, 
     } else {
       // All-time cumulative
       const allLacquerQuery = {
-        isDeleted: false,
+        isDeleted: { $ne: true },
         $and: [...andBase]
       };
       if (endOfDay) allLacquerQuery.$and.push({ planDate: { $lte: endOfDay } });
@@ -462,7 +462,7 @@ async function computeLivePlainStock(bottleIdOrName, companyIdOrSources = null, 
 
     // 3. Σ Ready of PLAIN printing rows (≤D)
     const printingQuery = {
-      isDeleted: false,
+      isDeleted: { $ne: true },
       coatingShade: { $regex: /^PLAIN$/i },
       $and: [...andBase]
     };

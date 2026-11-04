@@ -791,6 +791,10 @@ const syncPrintingPlanForLacquerPlan = async (plan, userId = null, { session = n
     existingPlan.printingVariant = pToBeDone || existingPlan.printingVariant || "";
     existingPlan.plainBottleStock = plainStock;
     existingPlan.process = plan.process;
+    const printingOrderEntriesQty = (existingPlan.qtyEntries || [])
+      .filter(entry => !entry.isDeleted && entry.subType === "order")
+      .reduce((sum, entry) => sum + (Number(entry.qty) || 0), 0);
+    existingPlan.orderQtyInitial = (Number(plan.orderQty) || 0) - printingOrderEntriesQty;
     existingPlan.orderQty = plan.orderQty;
     if (plan.boxQty !== undefined) existingPlan.boxQty = plan.boxQty;
     if (Number(existingPlan.boxQty) > 0) {
@@ -1010,7 +1014,7 @@ const calculatePoolStockWarnings = async (
       }).populate("brandId", "companyId").lean();
     })
   ]);
-  const companyIdsByName = new Map(companies.map(company => [company.name.trim().toLowerCase(), String(company._id)]));
+  const companyIdsByName = new Map(companies.map(company => [(company.name || "").trim().toLowerCase(), String(company._id)]));
   const companyIdsByBrand = new Map(brands.map(brand => [String(brand._id), String(brand.companyId)]));
   const canonicalBottleCache = new Map();
   const dateKeys = Array.from(dateStarts.keys());
@@ -1754,11 +1758,8 @@ exports.computeReadyActions = computeReadyActions;
 exports.previewPlanLayout = async (req, res) => {
   try {
     const { planDate, rows, excludePlanIds = [] } = req.body || {};
-    if (!planDate || !Array.isArray(rows)) {
-      return res.status(400).json({
-        success: false,
-        message: "planDate and rows are required."
-      });
+    if (!planDate || !Array.isArray(rows) || rows.length === 0) {
+      return res.status(200).json({ success: true, data: { rows: Array.isArray(rows) ? rows : [] } });
     }
 
     const draftRows = rows.map((row, index) => ({
@@ -1781,15 +1782,47 @@ exports.previewPlanLayout = async (req, res) => {
 // Get Plans
 exports.getPlans = async (req, res) => {
   try {
-    const { date, month, fromDate, toDate, search, companyId, brandId, page, limit, pagination = "false", bottleName } = req.query;
+    const { date, month, fromDate, toDate, search, companyId, brandId, page, limit, pagination = "false", bottleName, bottleId } = req.query;
     let query = { isDeleted: false, isArchived: { $ne: true }, isSoftRemoved: { $ne: true }, isSibling: { $ne: true } };
 
     if (brandId) {
       query.brandId = new mongoose.Types.ObjectId(brandId);
     }
 
+    if (bottleId) {
+      if (!mongoose.Types.ObjectId.isValid(bottleId)) {
+        return res.status(400).json({ success: false, message: "bottleId must be a valid bottle master id." });
+      }
+      const bottleMaster = await BottlePerBox.findOne({
+        _id: bottleId,
+        isDeleted: { $ne: true }
+      }).select("_id bottleName plainBottleName bottleNames").lean();
+      if (!bottleMaster) {
+        return res.status(404).json({ success: false, message: "Bottle not found." });
+      }
+      const bottleAliases = [...new Set([
+        bottleMaster.bottleName,
+        bottleMaster.plainBottleName,
+        ...(bottleMaster.bottleNames || [])
+      ].filter(Boolean))];
+      const bottleRegexes = bottleAliases.map(name =>
+        new RegExp(`^\\s*${escapeRegex(String(name).trim())}\\s*$`, "i")
+      );
+      query.$and = [
+        ...(query.$and || []),
+        {
+          $or: [
+            { plainBottleId: bottleMaster._id },
+            { bottleName: { $in: bottleRegexes } },
+            { plainBottle: { $in: bottleRegexes } },
+            { plainBottleName: { $in: bottleRegexes } }
+          ]
+        }
+      ];
+    }
+
     // Add bottleName filter to initial query
-    if (bottleName) {
+    if (bottleName && !bottleId) {
       query.bottleName = bottleName;
     }
 

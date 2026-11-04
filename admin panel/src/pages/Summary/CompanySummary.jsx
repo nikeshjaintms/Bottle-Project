@@ -490,20 +490,30 @@ export default function CompanySummary() {
     let isMounted = true;
     const fetchLiveStock = async () => {
       setLiveStockLoading(true);
+      setLiveStockTotals(null);
       try {
-        const res = await api.get('/summary/live-stock', {
+        const res = await api.get('/lacquer-plan', {
           params: {
             companyId,
             bottleId: selectedBottleId,
-            fromDate,
+            pagination: 'false',
             toDate
           }
         });
         if (isMounted) {
-          setLiveStockTotals(res.data?.data || null);
+          const plans = Array.isArray(res.data?.data) ? res.data.data : [];
+          const latestPlan = plans
+            .filter(plan => Number.isFinite(Number(plan.plainStock)))
+            .sort((left, right) => new Date(right.planDate || 0) - new Date(left.planDate || 0))[0];
+          const totalAvailable = latestPlan ? Number(latestPlan.plainStock) : 0;
+          const bottlePerBox = Number(latestPlan?.boxQty);
+          const availableBoxes = Number.isFinite(bottlePerBox) && bottlePerBox > 0
+            ? Math.max(0, Math.floor(totalAvailable / bottlePerBox))
+            : 0;
+          setLiveStockTotals({ totalAvailable, availableBoxes });
         }
       } catch (err) {
-        console.error('Failed to load live stock:', err);
+        console.error('Failed to load live plain stock from Lacquer Plan:', err);
         if (isMounted) {
           setLiveStockTotals(null);
         }
@@ -514,7 +524,7 @@ export default function CompanySummary() {
 
     fetchLiveStock();
     return () => { isMounted = false; };
-  }, [companyId, selectedBottleId, fromDate, toDate]);
+  }, [companyId, selectedBottleId, toDate]);
 
   const handleBottleChange = (newBottleId) => {
     setSelectedBottleId(newBottleId);
@@ -953,11 +963,11 @@ export default function CompanySummary() {
                   {liveStockLoading ? (
                     <div className="spinner-border spinner-border-sm mt-2" />
                   ) : (
-                    formatNum(liveStockTotals?.totalUsed || 0)
+                    formatNum(liveStockTotals?.totalAvailable || 0)
                   )}
                 </div>
                 <div className="kpi-subtext">
-                  {formatNum(liveStockTotals?.totalBoxes || 0)} boxes in use
+                  {formatNum(liveStockTotals?.availableBoxes || 0)} boxes available
                 </div>
               </div>
             )}

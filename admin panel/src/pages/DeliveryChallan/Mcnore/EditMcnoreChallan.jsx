@@ -9,6 +9,7 @@ import { fetchCompanies } from '../../../redux/slices/companySlice';
 import API from '../../../services/api';
 import Swal from 'sweetalert2';
 import ChallanProductSelector from '../ChallanProductSelector';
+import { setChallanVariantLine, withTrailingEmptyVariantLine } from '../challanVariantLines';
 
 async function submitChallanWithMaterialCodeConfirmation({ payload, submit, onReject }) {
   let response = await submit(payload);
@@ -250,7 +251,10 @@ export default function EditMcnoreChallan() {
             });
           }
 
-          setSpecGroups(groups);
+          setSpecGroups(groups.map((group) => ({
+            ...group,
+            variantLines: withTrailingEmptyVariantLine(group.variantLines),
+          })));
         }
       };
 
@@ -443,6 +447,37 @@ export default function EditMcnoreChallan() {
     setSpecGroups(newGroups);
   };
 
+  const handleGroupVariantSelection = (grpIdx, lineIdx, selectedVariant) => {
+    const newGroups = [...specGroups];
+    const group = newGroups[grpIdx];
+    group.variantLines = setChallanVariantLine(group.variantLines, lineIdx, selectedVariant, (line, variant) => ({
+      ...line,
+      variantId: variant?.variantId || '',
+      materialCode: variant?.materialCode || '',
+      description: variant?.name || '',
+    }));
+    setSpecGroups(newGroups);
+  };
+
+  const handleGroupUnitChange = (grpIdx, unit) => {
+    const newGroups = [...specGroups];
+    newGroups[grpIdx].variantLines = newGroups[grpIdx].variantLines.map((line) => ({
+      ...line,
+      unit,
+      ...recalculateLineTotals(
+        line.boxFormatType,
+        line.fullBox,
+        line.looseBox,
+        line.looseQty,
+        unit,
+        line.box,
+        line.rate,
+        line.jobWorkRate
+      ),
+    }));
+    setSpecGroups(newGroups);
+  };
+
   const addSpecGroup = () => {
     setSpecGroups([
       ...specGroups,
@@ -481,31 +516,6 @@ export default function EditMcnoreChallan() {
       return Swal.fire('Info', 'At least one Plain Bottle group is required.', 'info');
     }
     setSpecGroups(specGroups.filter((_, idx) => idx !== grpIdx));
-  };
-
-  const addVariantLine = (grpIdx) => {
-    const newGroups = [...specGroups];
-    const grp = newGroups[grpIdx];
-    const suggestedUnit = lookupUnitForBottle(grp.title);
-    grp.variantLines.push({
-      id: `line_${Date.now()}`,
-      variantId: '',
-      materialCode: '',
-      description: '',
-      boxFormatType: 'loose',
-      fullBox: '',
-      looseBox: '1',
-      looseQty: '',
-      box: '',
-      boxCount: 0,
-      unit: suggestedUnit,
-      total: '',
-      rate: '',
-      taxableValue: '',
-      jobWorkRate: '',
-      jobWorkTaxableValue: '',
-    });
-    setSpecGroups(newGroups);
   };
 
   const removeVariantLine = (grpIdx, lineIdx) => {
@@ -1203,7 +1213,7 @@ export default function EditMcnoreChallan() {
                         </tr>
                       </thead>
                       <tbody>
-                        {grp.variantLines.map((vl, lineIdx) => {
+                        {withTrailingEmptyVariantLine(grp.variantLines).map((vl, lineIdx, variantLines) => {
                           return (
                             <tr key={vl.id}>
                               {poMode === 'with_po' && (
@@ -1227,13 +1237,7 @@ export default function EditMcnoreChallan() {
                                   value={vl.variantId}
                                   legacyLabel={vl.description}
                                   onChange={(selected) =>
-                                    handleVariantLineChange(
-                                      grpIdx,
-                                      lineIdx,
-                                      'variantId',
-                                      selected?.variantId || '',
-                                      selected || null
-                                    )
+                                    handleGroupVariantSelection(grpIdx, lineIdx, selected)
                                   }
                                 />
                               </td>
@@ -1247,7 +1251,7 @@ export default function EditMcnoreChallan() {
                                   onChange={(e) =>
                                     handleVariantLineChange(grpIdx, lineIdx, 'description', e.target.value)
                                   }
-                                  required
+                                  required={Boolean(vl.variantId)}
                                 />
                               </td>
                               <td data-label="Boxes Calculation">
@@ -1285,17 +1289,17 @@ export default function EditMcnoreChallan() {
                                 </div>
                                 {vl.box && <div className="small text-muted mt-1">{vl.box}</div>}
                               </td>
-                              <td data-label="BottlePerBox">
-                                <input
-                                  type="number"
-                                  className="form-control form-control-sm text-center"
-                                  value={vl.unit}
-                                  onChange={(e) =>
-                                    handleVariantLineChange(grpIdx, lineIdx, 'unit', e.target.value)
-                                  }
-                                  placeholder="BottlePerBox"
-                                />
-                              </td>
+                              {lineIdx === 0 && (
+                                <td data-label="BottlePerBox" rowSpan={variantLines.length}>
+                                  <input
+                                    type="number"
+                                    className="form-control form-control-sm text-center"
+                                    value={vl.unit}
+                                    onChange={(e) => handleGroupUnitChange(grpIdx, e.target.value)}
+                                    placeholder="BottlePerBox"
+                                  />
+                                </td>
+                              )}
                               <td data-label="Total Qty">
                                 <input
                                   type="number"
@@ -1352,6 +1356,7 @@ export default function EditMcnoreChallan() {
                                   type="button"
                                   className="btn btn-sm btn-outline-danger border-0 rounded-3 shadow-none p-2"
                                   onClick={() => removeVariantLine(grpIdx, lineIdx)}
+                                  disabled={!vl.variantId && !vl.description}
                                   title="Delete line"
                                 >
                                   <i className="bi bi-trash fs-6" />
@@ -1364,13 +1369,6 @@ export default function EditMcnoreChallan() {
                     </table>
                   </div>
 
-                  <button
-                    type="button"
-                    className="btn btn-sm btn-light border text-primary"
-                    onClick={() => addVariantLine(grpIdx)}
-                  >
-                    <i className="bi bi-plus-lg me-1" /> Add Variant Line
-                  </button>
                 </div>
               );
             })}

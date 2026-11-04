@@ -93,6 +93,7 @@ export default function EditLacquerPlan() {
   const { plans } = useSelector((state) => state.lacquerPlans || { plans: [] });
   const [deletedIds, setDeletedIds] = useState([]);
   const [groupPlanIds, setGroupPlanIds] = useState([]);
+  const [isPlanLoading, setIsPlanLoading] = useState(true);
 
   const [planDate, setPlanDate] = useState('');
   const [openingStockMap, setOpeningStockMap] = useState({});
@@ -264,6 +265,12 @@ export default function EditLacquerPlan() {
   const stockWarningRequestId = useRef(0);
 
   useEffect(() => {
+    if (isPlanLoading || !planDate || !rows || rows.length === 0) {
+      setStockWarnings({});
+      setStockWarningPreviewError(false);
+      return;
+    }
+
     const requestId = ++stockWarningRequestId.current;
     const controller = new AbortController();
     const timeout = setTimeout(async () => {
@@ -292,7 +299,7 @@ export default function EditLacquerPlan() {
       clearTimeout(timeout);
       controller.abort();
     };
-  }, [planDate, rows, groupPlanIds, deletedIds, stockWarningRetryNonce]);
+  }, [isPlanLoading, planDate, rows, groupPlanIds, deletedIds, stockWarningRetryNonce]);
 
   const [showMissingSpecModal, setShowMissingSpecModal] = useState(false);
   const [missingSpecData, setMissingSpecData] = useState({
@@ -432,7 +439,13 @@ export default function EditLacquerPlan() {
         const res = await API.get(`/lacquer-plan/${firstId}`);
         if (res.data?.success && res.data.data) {
           const mainPlan = res.data.data;
-          const initialPlanDate = mainPlan.planDate ? new Date(mainPlan.planDate).toISOString().split('T')[0] : '';
+          let initialPlanDate = '';
+          if (mainPlan.planDate) {
+            const parsed = new Date(mainPlan.planDate);
+            if (!isNaN(parsed.getTime())) {
+              initialPlanDate = parsed.toISOString().split('T')[0];
+            }
+          }
           setPlanDate(initialPlanDate);
 
           const plansToLoad = (res.data.groupPlans && res.data.groupPlans.length > 0)
@@ -530,6 +543,8 @@ export default function EditLacquerPlan() {
         }
       } catch (err) {
         console.error("Failed to load plan group in EditLacquerPlan", err);
+      } finally {
+        setIsPlanLoading(false);
       }
     };
 

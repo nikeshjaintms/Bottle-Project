@@ -6,6 +6,7 @@ const Dispatch = require("../models/Dispatch");
 const BottlePerBox = require("../models/BottlePerBox");
 const BottleSpec = require("../models/Bottlespecs");
 const { matchBottleNameFromMaster, normalizeBottleForMatching } = require("../utils/bottleMatching");
+const { computeLivePlainStock } = require("../utils/stockRecompute");
 
 const SHRENO_COMPANY_ID = "6a17d6d3e933dc474615eb92";
 
@@ -1368,30 +1369,27 @@ exports.getSummaryLogs = async (req, res) => {
 
 
 /**
- * Get Live Stock for a specific bottle - shows how much plain bottle is used in Lacquer Plan and Printing Plan
- * Only counts PLAIN coating shade usages
+ * Get the live plain-bottle stock remaining for a company and bottle.
  */
 exports.getLiveStock = async (req, res) => {
   try {
-    const { companyId, bottleId, fromDate, toDate } = req.query;
+    const { companyId, bottleId, toDate } = req.query;
 
     if (!companyId || !bottleId) {
       return res.status(400).json({ success: false, message: "companyId and bottleId are required" });
     }
 
-    const LacquerPlan = require("../models/LacquerPlan");
-    const PrintingPlan = require("../models/PrintingPlan");
-    const BottlePerBox = require("../models/BottlePerBox");
-
     const validBottleId = String(bottleId || '').trim();
     const bp = mongoose.Types.ObjectId.isValid(validBottleId)
-      ? await BottlePerBox.findById(validBottleId).lean()
+      ? await BottlePerBox.findOne({ _id: validBottleId, isDeleted: { $ne: true } }).lean()
       : null;
 
     if (!bp) {
       return res.status(200).json({
         success: true,
         data: {
+          totalAvailable: 0,
+          availableBoxes: 0,
           totalUsed: 0,
           totalBoxes: 0,
           bottleId,
@@ -1399,28 +1397,6 @@ exports.getLiveStock = async (req, res) => {
         }
       });
     }
-
-    const dateFilter = {};
-    if (fromDate) {
-      const from = new Date(fromDate);
-      from.setHours(0, 0, 0, 0);
-      dateFilter.$gte = from;
-    }
-    if (toDate) {
-      const to = new Date(toDate);
-      to.setHours(23, 59, 59, 999);
-      dateFilter.$lte = to;
-    }
-
-    const bottleNames = [
-      bp.bottleName,
-      bp.plainBottleName,
-      ...(bp.bottleNames || [])
-    ].filter(Boolean);
-
-    const bottleRegexes = bottleNames.map(name =>
-      new RegExp("^" + String(name).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + "$", "i")
-    );
 
     const companyObjectId = mongoose.Types.ObjectId.isValid(companyId)
       ? new mongoose.Types.ObjectId(companyId)
@@ -1430,6 +1406,8 @@ exports.getLiveStock = async (req, res) => {
       return res.status(200).json({
         success: true,
         data: {
+          totalAvailable: 0,
+          availableBoxes: 0,
           totalUsed: 0,
           totalBoxes: 0,
           bottleId,
@@ -1438,78 +1416,106 @@ exports.getLiveStock = async (req, res) => {
       });
     }
 
-    const normalizedBottleNames = new Set(
-      bottleNames
-        .map(name => normalizeBottleForMatching(name))
-        .filter(Boolean)
+    const LacquerPlan = require("../models/LacquerPlan");
+    const PrintingPlan = require("../models/PrintingPlan");
+    const Brand = require("../models/Brand");
+    const { normalizeBottleName } = require("../utils/lacquerGroupKey");
+    const company = await Company.findById(companyObjectId).select("name").lean();
+    const [brands, allCompanies] = await Promise.all([
+      Brand.find({ companyId: companyObjectId, isDeleted: { $ne: true } }).select("_id companyId").lean(),
+      Company.find({ isDeleted: { $ne: true } }).select("_id name").lean()
+    ]);
+    const brandCompanyIds = brands.map(brand => brand._id);
+    const brandCompanyMap = new Map(brands.map(brand => [brand._id.toString(), brand.companyId]));
+    const companyByName = new Map(allCompanies.map(item => [
+      String(item.name || "").trim().toLowerCase(),
+      item._id
+    ]));
+    const bottleNames = [...new Set([
+      bp.bottleName,
+      bp.plainBottleName,
+      ...(bp.bottleNames || [])
+    ].filter(Boolean))];
+    const normalizedBottleNames = new Set(bottleNames.map(normalizeBottleName));
+    const bottleRegexes = bottleNames.map(name =>
+      new RegExp(`^\\s*${String(name).trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*$`, "i")
     );
+    const bottleConditions = [
+      { plainBottleId: bp._id },
+      { bottleName: { $in: bottleRegexes } },
+      { plainBottle: { $in: bottleRegexes } },
+      { plainBottleName: { $in: bottleRegexes } }
+    ];
+    const companyConditions = [
+      { companyId: companyObjectId },
+      ...(brandCompanyIds.length > 0 ? [{ brandId: { $in: brandCompanyIds } }] : [])
+    ];
+    if (company?.name) {
+      companyConditions.push({
+        companyName: new RegExp(`^\\s*${company.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*$`, "i")
+      });
+    }
 
-    const isPlainShade = (value) => String(value || '').trim().toUpperCase() === 'PLAIN';
-    const matchesBottle = (plan) => {
-      if (!plan) return false;
-      const planBottleId = plan.plainBottleId || plan.itemId;
-      if (planBottleId && String(planBottleId) === String(bp._id)) return true;
-
-      const candidateNames = [
-        plan.bottleName,
-        plan.plainBottleName,
-        plan.plainBottle,
-        plan.bottle,
-        plan.bottleNameRaw,
-        plan.plainBottleId && plan.plainBottleName
-      ].filter(Boolean);
-
-      return candidateNames.some(name => normalizedBottleNames.has(normalizeBottleForMatching(name)));
-    };
-
-    const lacquerQuery = {
+    const rawLacquerPlans = await LacquerPlan.find({
       isDeleted: { $ne: true },
-      companyId: companyObjectId
-    };
-    if (Object.keys(dateFilter).length > 0) {
-      lacquerQuery.planDate = dateFilter;
+      isArchived: { $ne: true },
+      isSoftRemoved: { $ne: true },
+      isSibling: { $ne: true },
+      $and: [
+        { $or: companyConditions },
+        { $or: bottleConditions }
+      ]
+    }).select("planDate companyId brandId companyName bottleName plainBottle plainBottleName plainBottleId").lean();
+
+    const lacquerPlans = [];
+    for (const plan of rawLacquerPlans) {
+      const brandCompanyId = brandCompanyMap.get(plan.brandId?.toString());
+      const namedCompanyId = companyByName.get(String(plan.companyName || "").trim().toLowerCase());
+      const effectiveCompanyId = plan.companyId || namedCompanyId || brandCompanyId;
+      if (!effectiveCompanyId || effectiveCompanyId.toString() !== companyObjectId.toString()) continue;
+
+      const matchesBottle = plan.plainBottleId?.toString() === bp._id.toString() ||
+        [plan.plainBottle, plan.plainBottleName, plan.bottleName]
+          .some(name => normalizedBottleNames.has(normalizeBottleName(name)));
+      if (!matchesBottle) continue;
+      lacquerPlans.push({ ...plan, effectiveCompanyId });
     }
 
-    const printingQuery = {
+    const printingPlans = await PrintingPlan.find({
       isDeleted: { $ne: true },
-      companyId: companyObjectId
-    };
-    if (Object.keys(dateFilter).length > 0) {
-      printingQuery.planDate = dateFilter;
+      companyId: companyObjectId,
+      bottleName: { $in: bottleRegexes }
+    }).select("planDate").lean();
+    const latestLacquerPlan = lacquerPlans
+      .filter(plan => !Number.isNaN(new Date(plan.planDate).getTime()))
+      .sort((left, right) => new Date(right.planDate).getTime() - new Date(left.planDate).getTime())[0];
+    const latestPrintingPlan = printingPlans
+      .map(plan => new Date(plan.planDate))
+      .filter(date => !Number.isNaN(date.getTime()))
+      .sort((left, right) => right.getTime() - left.getTime())[0];
+    const asOfDate = toDate
+      ? new Date(toDate)
+      : (latestLacquerPlan?.planDate || latestPrintingPlan || new Date());
+    if (Number.isNaN(asOfDate.getTime())) {
+      return res.status(400).json({ success: false, message: "toDate must be a valid date." });
     }
-
-    const lacquerPlans = await LacquerPlan.find(lacquerQuery).lean();
-    let lacquerTotal = 0;
-    let lacquerBoxes = 0;
-    for (const plan of lacquerPlans) {
-      if (!isPlainShade(plan.coatingShade ?? plan.colour)) continue;
-      if (!matchesBottle(plan)) continue;
-      lacquerTotal += Number(plan.coatingCompletedQty ?? plan.coatedQty ?? 0);
-      lacquerBoxes += Number(plan.noOfBoxes || 0);
-    }
-
-    const printingPlans = await PrintingPlan.find(printingQuery).lean();
-    let printingTotal = 0;
-    let printingBoxes = 0;
-    for (const plan of printingPlans) {
-      if (!isPlainShade(plan.coatingShade ?? plan.colour)) continue;
-      if (!matchesBottle(plan)) continue;
-      printingTotal += Number(plan.producedQty || 0);
-      printingBoxes += Number(plan.noOfBoxes || 0);
-    }
-
-    const totalUsed = lacquerTotal + printingTotal;
-    const totalBoxes = lacquerBoxes + printingBoxes;
+    const stockCompanyId = latestLacquerPlan
+      ? latestLacquerPlan.effectiveCompanyId
+      : companyObjectId;
+    const stock = await computeLivePlainStock(bp._id, stockCompanyId, asOfDate);
+    const totalAvailable = Number(stock?.available ?? stock) || 0;
+    const bottlePerBox = Number(bp.bottlePerBox);
+    const availableBoxes = Number.isFinite(bottlePerBox) && bottlePerBox > 0
+      ? Math.max(0, Math.floor(totalAvailable / bottlePerBox))
+      : 0;
 
     res.status(200).json({
       success: true,
       data: {
-        totalUsed,
-        totalBoxes,
-        lacquerTotal,
-        lacquerBoxes,
-        printingTotal,
-        printingBoxes,
+        totalAvailable,
+        availableBoxes,
+        totalUsed: totalAvailable,
+        totalBoxes: availableBoxes,
         bottleId,
         companyId
       }
