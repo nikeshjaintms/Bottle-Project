@@ -25,10 +25,10 @@ export default function DispatchList() {
   const [bottleFilter, setBottleFilter] = useState('');
   const [itemsPerPage, setItemsPerPage] = useState(10);
   const [showImportModal, setShowImportModal] = useState(false);
-  
+
   const { companyId } = useParams();
   const navigate = useNavigate();
-  
+
   const [searchParams, setSearchParams] = useSearchParams();
   const currentPage = Number(searchParams.get("page")) || 1;
 
@@ -66,9 +66,9 @@ export default function DispatchList() {
       api.get('/dispatch/bottle-options', { params: { companyId } })
         .then(res => {
           const options = res.data.data || [];
-          
+
           const unmappedCount = res.data.unmappedCount ?? 0;
-          
+
           // Build options array with Unmapped first (no brackets or counts)
           const allOptions = [
             { value: 'Unmapped', label: 'Unmapped' },
@@ -76,7 +76,7 @@ export default function DispatchList() {
               .map(b => ({ value: b.name, label: b.name }))
               .sort((a, b) => a.label.localeCompare(b.label, undefined, { numeric: true, sensitivity: 'base' }))
           ];
-          
+
           setBottleOptions(allOptions);
         })
         .catch(err => console.error('Error fetching bottle options:', err));
@@ -85,10 +85,10 @@ export default function DispatchList() {
 
   // Fetch data with proper pagination
   useEffect(() => {
-    dispatch(fetchDispatch({ 
+    dispatch(fetchDispatch({
       page: currentPage,
       limit: itemsPerPage,
-      search: debouncedSearch, 
+      search: debouncedSearch,
       dateFrom,
       dateTo,
       companyId,
@@ -136,14 +136,15 @@ export default function DispatchList() {
         dispatch(deleteDispatch(id)).then(res => {
           if (!res.error) {
             Swal.fire('Deleted!', 'Record removed.', 'success');
-            dispatch(fetchDispatch({ 
+            dispatch(fetchDispatch({
               page: 1,
               limit: itemsPerPage,
               search: debouncedSearch,
               dateFrom,
               dateTo,
               companyId,
-              plainBottleName: bottleFilter
+              plainBottleName: bottleFilter,
+              pagination: 'true'
             }));
           } else {
             Swal.fire('Error!', res.payload || 'Failed to delete.', 'error');
@@ -183,7 +184,7 @@ export default function DispatchList() {
 
       let exportedData = [];
       let srNo = 1;
-      
+
       allData.forEach((dispatch) => {
         if (dispatch.items && dispatch.items.length > 0) {
           dispatch.items.forEach((item, itemIdx) => {
@@ -227,7 +228,7 @@ export default function DispatchList() {
         { wch: 6 }, { wch: 12 }, { wch: 15 }, { wch: 20 }, { wch: 20 },
         { wch: 15 }, { wch: 15 }, { wch: 15 }, { wch: 10 }, { wch: 12 }, { wch: 15 }, { wch: 20 }
       ];
-      
+
       const workbook = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(workbook, worksheet, `Dispatch`);
 
@@ -464,6 +465,15 @@ export default function DispatchList() {
                                 {dispatchItem.isImported && (
                                   <span className="badge bg-secondary-subtle text-secondary border ms-1" style={{ fontSize: 10 }}>Imported</span>
                                 )}
+                                {dispatchItem.deliveryChallanId && (
+                                  <span
+                                    className="badge bg-primary-subtle text-primary border border-primary-subtle ms-2 px-1 py-0"
+                                    style={{ fontSize: '10px' }}
+                                    title="Created from Delivery Challan"
+                                  >
+                                    Challan
+                                  </span>
+                                )}
                               </td>
                               {!companyId && (
                                 <td className="fw-500 small" rowSpan={displayItems.length}>
@@ -518,11 +528,20 @@ export default function DispatchList() {
                           <td className="ps-4 fw-500 text-muted small">{startingIndex + idx + 1}</td>
                           <td className="fw-500 small">{new Date(dispatchItem.dispatchDate).toLocaleDateString('en-GB')}</td>
                           <td className="fw-bold text-primary small">
-                          {dispatchItem.gatePassNo}
-                          {dispatchItem.isImported && (
-                            <span className="badge bg-secondary-subtle text-secondary border ms-1" style={{ fontSize: 10 }}>Imported</span>
-                          )}
-                        </td>
+                            {dispatchItem.gatePassNo}
+                            {dispatchItem.isImported && (
+                              <span className="badge bg-secondary-subtle text-secondary border ms-1" style={{ fontSize: 10 }}>Imported</span>
+                            )}
+                            {dispatchItem.deliveryChallanId && (
+                              <span
+                                className="badge bg-primary-subtle text-primary border border-primary-subtle ms-2 px-1 py-0"
+                                style={{ fontSize: '10px' }}
+                                title="Created from Delivery Challan"
+                              >
+                                Challan
+                              </span>
+                            )}
+                          </td>
                           {!companyId && <td className="fw-500 small">{dispatchItem.companyId?.name || '-'}</td>}
                           <td colSpan={7} className="text-center text-muted small py-3">No items</td>
                           <td className="pe-4 text-end">
@@ -629,6 +648,6 @@ export default function DispatchList() {
           setSearchParams({ page: '1' });
         }}
       />
-    </div>
+    </div >
   );
 }

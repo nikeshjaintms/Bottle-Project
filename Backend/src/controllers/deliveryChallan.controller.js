@@ -244,6 +244,7 @@ const persistChallanAndVariantCodes = async ({ updates, saveChallan, rollbackCha
     throw error;
   }
 };
+const { syncChallanToDispatch, deleteChallanDispatch } = require("../services/deliveryChallanDispatchSync.service");
 
 // Helper to calculate total boxes from an expression or string
 function parseBoxCount(boxStr) {
@@ -471,6 +472,7 @@ exports.createChallan = async (req, res) => {
     });
 
     const populated = await challan.populate("companyId", "name");
+    await syncChallanToDispatch(challan);
 
     res.status(201).json({
       success: true,
@@ -783,6 +785,7 @@ exports.updateChallan = async (req, res) => {
     await updated.populate("companyId", "name");
     await updated.populate("billedToAddressId");
     await updated.populate("shippedToAddressId");
+    await syncChallanToDispatch(updated);
 
     res.json({
       success: true,
@@ -819,8 +822,8 @@ exports.renderChallanHtml = async (req, res) => {
     const html = isMcnore
       ? generateMcnoreChallanHtml(challan)
       : isShreno
-      ? generateShrenoChallanHtml(challan)
-      : generateChallanHtml(challan);
+        ? generateShrenoChallanHtml(challan)
+        : generateChallanHtml(challan);
     res.setHeader("Content-Type", "text/html");
     return res.send(html);
   } catch (err) {
@@ -853,8 +856,8 @@ exports.downloadChallanPdf = async (req, res) => {
     const html = isMcnore
       ? generateMcnoreChallanHtml(challan)
       : isShreno
-      ? generateShrenoChallanHtml(challan)
-      : generateChallanHtml(challan);
+        ? generateShrenoChallanHtml(challan)
+        : generateChallanHtml(challan);
     const browser = await getSharedBrowser();
     const page = await browser.newPage();
 
@@ -898,6 +901,8 @@ exports.deleteChallan = async (req, res) => {
     if (!deleted) {
       return res.status(404).json({ success: false, message: "Delivery Challan not found" });
     }
+
+    await deleteChallanDispatch(req.params.id);
 
     res.json({ success: true, message: "Delivery Challan deleted successfully" });
   } catch (err) {

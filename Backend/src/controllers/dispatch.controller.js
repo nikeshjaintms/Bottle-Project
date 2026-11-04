@@ -1,12 +1,15 @@
 const Dispatch = require("../models/Dispatch");
 const Company = require("../models/Company");
+const BottlePerBox = require("../models/BottlePerBox");
+const Variant = require("../models/Variant");
+const PrintingType = require("../models/PrintingType");
 const mongoose = require("mongoose");
 const { computePlainBottleKeys, updatePlainBottleKeysAtomic, normalizeBottleName } = require("../utils/computePlainBottleKeys");
 
 exports.getBottleOptions = async (req, res) => {
   try {
     const { companyId } = req.query;
-    
+
     if (!companyId) {
       return res.status(400).json({ message: "companyId is required" });
     }
@@ -14,7 +17,7 @@ exports.getBottleOptions = async (req, res) => {
     const db = mongoose.connection.db;
     const comp = await db.collection('companies').findOne({ _id: new mongoose.Types.ObjectId(companyId) });
     const isShreno = comp && /shreno/i.test(comp.name);
-    
+
     // Aggregate bottles that actually have entries in this company
     const rawOptions = await db.collection('dispatches').aggregate([
       {
@@ -55,7 +58,7 @@ exports.getBottleOptions = async (req, res) => {
         .find({ isDeleted: { $ne: true } })
         .project({ plainBottleName: 1, bottleName: 1 })
         .toArray();
-      
+
       masterBottles.forEach(b => {
         const name = normalizeBottleName(b.plainBottleName || b.bottleName);
         if (name && !optionsMap.has(name)) {
@@ -80,7 +83,7 @@ exports.getBottleOptions = async (req, res) => {
         { plainBottleKeys: [] }
       ]
     });
-    
+
     res.json({ data: options, unmappedCount });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -90,7 +93,7 @@ exports.getBottleOptions = async (req, res) => {
 exports.getDispatchBottles = async (req, res) => {
   try {
     const { companyId } = req.query;
-    
+
     if (!companyId) {
       return res.status(400).json({ message: "companyId is required" });
     }
@@ -122,8 +125,8 @@ exports.getDispatchBottles = async (req, res) => {
     });
 
     const bottles = Array.from(bottleMap.values());
-    const mostRecentBottleId = dispatches.length > 0 && dispatches[0].items?.length > 0 
-      ? dispatches[0].items[0].bottleId?._id 
+    const mostRecentBottleId = dispatches.length > 0 && dispatches[0].items?.length > 0
+      ? dispatches[0].items[0].bottleId?._id
       : (bottles.length > 0 ? bottles[0]._id : null);
 
     res.json({
@@ -142,16 +145,16 @@ exports.getAllDispatch = async (req, res) => {
   try {
     const { page, limit, search, pagination = "true", dateFrom, dateTo, searchPrinting, companyId, plainBottleName } = req.query;
     const query = { isDeleted: false };
-    
+
     // Filter by gate pass number
     if (search) {
       query.gatePassNo = { $regex: search, $options: "i" };
     }
-    
+
     if (companyId) {
       query.companyId = new mongoose.Types.ObjectId(companyId);
     }
-    
+
     // Filter by plain bottle name (in plainBottleKeys array)
     if (plainBottleName) {
       if (plainBottleName === 'Unmapped') {
@@ -165,7 +168,7 @@ exports.getAllDispatch = async (req, res) => {
         query.plainBottleKeys = normalized || plainBottleName;
       }
     }
-    
+
     if (searchPrinting) {
       query["items.printing"] = { $regex: searchPrinting, $options: "i" };
     }
@@ -181,7 +184,7 @@ exports.getAllDispatch = async (req, res) => {
         .populate('companyId', 'name')
         .lean()
         .sort({ dispatchDate: -1, createdAt: -1 });
-      
+
       // Batch load bottle, variant, printing data
       if (dispatches.length > 0) {
         await batchPopulateItems(dispatches);
@@ -199,7 +202,7 @@ exports.getAllDispatch = async (req, res) => {
           }
         });
       }
-      
+
       const total = dispatches.length;
       return res.json({ data: dispatches, total, page: 1, limit: total, totalPages: 1 });
     }
@@ -215,7 +218,7 @@ exports.getAllDispatch = async (req, res) => {
       .sort({ dispatchDate: -1, createdAt: -1 })
       .skip(skip)
       .limit(parsedLimit);
-    
+
     // Batch load bottle, variant, printing data
     if (dispatches.length > 0) {
       await batchPopulateItems(dispatches);
@@ -233,7 +236,7 @@ exports.getAllDispatch = async (req, res) => {
         }
       });
     }
-      
+
     res.json({
       data: dispatches,
       total,
@@ -251,7 +254,7 @@ async function batchPopulateItems(dispatches) {
   const bottleIds = new Set();
   const variantIds = new Set();
   const printingTypeIds = new Set();
-  
+
   dispatches.forEach(dispatch => {
     if (dispatch.items) {
       dispatch.items.forEach(item => {
@@ -261,7 +264,7 @@ async function batchPopulateItems(dispatches) {
       });
     }
   });
-  
+
   // Batch fetch all references
   const [bottles, variants, printingTypes] = await Promise.all([
     bottleIds.size > 0 ? mongoose.model('BottlePerBox').find(
@@ -277,11 +280,11 @@ async function batchPopulateItems(dispatches) {
       'name'
     ).lean() : Promise.resolve([])
   ]);
-  
+
   const bottleMap = new Map(bottles.map(b => [String(b._id), b]));
   const variantMap = new Map(variants.map(v => [String(v._id), v]));
   const printingMap = new Map(printingTypes.map(p => [String(p._id), p]));
-  
+
   // Populate items with names
   dispatches.forEach(dispatch => {
     if (dispatch.items) {
@@ -297,7 +300,7 @@ async function batchPopulateItems(dispatches) {
           item.plainBottleName = null;
           item.isUnmapped = true;
         }
-        
+
         // Resolve variantName with fallback
         if (item.variantId) {
           const variantData = variantMap.get(String(item.variantId));
@@ -309,12 +312,12 @@ async function batchPopulateItems(dispatches) {
         } else if (item.printing) {
           item.variantName = item.printing;
         }
-        
+
         // Fallback for coating shade from productName if available
         if (!item.coatingShade && item.productName) {
           item.coatingShadeHint = item.productName;
         }
-        
+
         // Keep printingTypeId for reference
         if (item.printingTypeId) {
           const printingData = printingMap.get(String(item.printingTypeId));
@@ -332,14 +335,14 @@ exports.getDispatchById = async (req, res) => {
     const dispatch = await Dispatch.findById(req.params.id)
       .populate('companyId', 'name')
       .lean();
-      
+
     if (!dispatch || dispatch.isDeleted) {
       return res.status(404).json({ message: "Dispatch record not found" });
     }
-    
+
     // Batch populate items with plainBottleName and variantName
     await batchPopulateItems([dispatch]);
-    
+
     res.json({ dispatch, items: dispatch.items });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -355,7 +358,7 @@ exports.createDispatch = async (req, res) => {
         return res.status(400).json({ success: false, message: "Stock supplier companies cannot be used for Dispatch." });
       }
     }
-    
+
     let items = [];
     if (rawItems) {
       items = typeof rawItems === 'string' ? JSON.parse(rawItems) : rawItems;
@@ -374,7 +377,7 @@ exports.createDispatch = async (req, res) => {
     const validatedItems = items.map(item => {
       // New schema: bottleId, variantId, coatingShade, printingTypeId, detectedTextColor
       // Old schema: productName, printing, foil, organic, additionalBox
-      
+
       const bottleId = item.bottleId || null;
       const variantId = item.variantId || null;
       const coatingShade = item.coatingShade || null;
@@ -383,16 +386,16 @@ exports.createDispatch = async (req, res) => {
       const box = Number(item.box) || 0;
       const qty = Number(item.qty) || 0;
       const totalQty = Number(item.totalQty) || (box * qty);
-      
+
       // At least bottleId is required (productName is for old unmapped entries)
       if (!bottleId && !item.productName) {
         throw new Error("Missing required fields in item: bottleId or productName required");
       }
-      
+
       if (box < 0 || qty < 0) {
         throw new Error("Box and Qty cannot be negative");
       }
-      
+
       return {
         bottleId: bottleId || null,
         variantId,
@@ -422,32 +425,32 @@ exports.createDispatch = async (req, res) => {
     });
 
     await dispatch.save();
-    
+
     // Compute and set plainBottleKeys
     const plainBottleKeys = await computePlainBottleKeys(validatedItems);
     await updatePlainBottleKeysAtomic(mongoose.connection.db, dispatch._id, plainBottleKeys);
-    
+
     // Populate references
     await dispatch.populate([
       { path: 'companyId', select: 'name' }
     ]);
-    
+
     // Batch populate items
     const db = mongoose.connection.db;
     const bottleIds = validatedItems.filter(i => i.bottleId).map(i => new mongoose.Types.ObjectId(i.bottleId));
     const variantIds = validatedItems.filter(i => i.variantId).map(i => new mongoose.Types.ObjectId(i.variantId));
     const printingTypeIds = validatedItems.filter(i => i.printingTypeId).map(i => new mongoose.Types.ObjectId(i.printingTypeId));
-    
+
     const [bottles, variants, printingTypes] = await Promise.all([
       bottleIds.length > 0 ? mongoose.model('BottlePerBox').find({ _id: { $in: bottleIds } }, 'bottleName plainBottleName').lean() : [],
       variantIds.length > 0 ? mongoose.model('Variant').find({ _id: { $in: variantIds } }, 'variantName').lean() : [],
       printingTypeIds.length > 0 ? mongoose.model('PrintingType').find({ _id: { $in: printingTypeIds } }, 'name').lean() : []
     ]);
-    
+
     const bottleMap = new Map(bottles.map(b => [String(b._id), b]));
     const variantMap = new Map(variants.map(v => [String(v._id), v]));
     const printingMap = new Map(printingTypes.map(p => [String(p._id), p]));
-    
+
     dispatch.items.forEach(item => {
       if (item.bottleId) item.bottleId = bottleMap.get(String(item.bottleId)) || item.bottleId;
       if (item.variantId) item.variantId = variantMap.get(String(item.variantId)) || item.variantId;
@@ -466,7 +469,7 @@ exports.createDispatch = async (req, res) => {
 exports.updateDispatch = async (req, res) => {
   try {
     const { dispatchDate, gatePassNo, companyId, remarks, items: rawItems } = req.body;
-    
+
     const dispatch = await Dispatch.findOne({ _id: req.params.id, isDeleted: false });
     if (!dispatch) {
       return res.status(404).json({ message: "Dispatch not found" });
@@ -483,11 +486,11 @@ exports.updateDispatch = async (req, res) => {
     let items = [];
     if (rawItems) {
       items = typeof rawItems === 'string' ? JSON.parse(rawItems) : rawItems;
-      
+
       const validatedItems = items.map(item => {
         // New schema: bottleId, variantId, coatingShade, printingTypeId, detectedTextColor
         // Old schema: productName, printing, foil, organic, additionalBox
-        
+
         const bottleId = item.bottleId || null;
         const variantId = item.variantId || null;
         const coatingShade = item.coatingShade || null;
@@ -496,16 +499,16 @@ exports.updateDispatch = async (req, res) => {
         const box = Number(item.box) || 0;
         const qty = Number(item.qty) || 0;
         const totalQty = Number(item.totalQty) || (box * qty);
-        
+
         // At least bottleId is required (productName is for old unmapped entries)
         if (!bottleId && !item.productName) {
           throw new Error("Missing required fields in item: bottleId or productName required");
         }
-        
+
         if (box < 0 || qty < 0) {
           throw new Error("Box and Qty cannot be negative");
         }
-        
+
         return {
           bottleId: bottleId || null,
           variantId,
@@ -535,32 +538,32 @@ exports.updateDispatch = async (req, res) => {
     if (wasImported) dispatch.isImported = true;
 
     await dispatch.save();
-    
+
     // Recompute plainBottleKeys
     const plainBottleKeys = await computePlainBottleKeys(dispatch.items);
     await updatePlainBottleKeysAtomic(mongoose.connection.db, dispatch._id, plainBottleKeys);
-    
+
     // Populate references
     await dispatch.populate([
       { path: 'companyId', select: 'name' }
     ]);
-    
+
     // Batch populate items
     const db = mongoose.connection.db;
     const bottleIds = dispatch.items.filter(i => i.bottleId).map(i => new mongoose.Types.ObjectId(i.bottleId));
     const variantIds = dispatch.items.filter(i => i.variantId).map(i => new mongoose.Types.ObjectId(i.variantId));
     const printingTypeIds = dispatch.items.filter(i => i.printingTypeId).map(i => new mongoose.Types.ObjectId(i.printingTypeId));
-    
+
     const [bottles, variants, printingTypes] = await Promise.all([
       bottleIds.length > 0 ? mongoose.model('BottlePerBox').find({ _id: { $in: bottleIds } }, 'bottleName plainBottleName').lean() : [],
       variantIds.length > 0 ? mongoose.model('Variant').find({ _id: { $in: variantIds } }, 'variantName').lean() : [],
       printingTypeIds.length > 0 ? mongoose.model('PrintingType').find({ _id: { $in: printingTypeIds } }, 'name').lean() : []
     ]);
-    
+
     const bottleMap = new Map(bottles.map(b => [String(b._id), b]));
     const variantMap = new Map(variants.map(v => [String(v._id), v]));
     const printingMap = new Map(printingTypes.map(p => [String(p._id), p]));
-    
+
     dispatch.items.forEach(item => {
       if (item.bottleId) item.bottleId = bottleMap.get(String(item.bottleId)) || item.bottleId;
       if (item.variantId) item.variantId = variantMap.get(String(item.variantId)) || item.variantId;

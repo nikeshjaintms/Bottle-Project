@@ -1,0 +1,11 @@
+.vscode
+.kiro
+.vscode/
+.kiro/
+node_modules/
+.env
+.env.*
+dist/
+uploads/
+*.bak
+backups_*/
