@@ -849,7 +849,7 @@ export default function AddPrintingPlan() {
         : null;
 
       // 1. Create / upsert bottle-per-box with brand & printing info
-      await API.post('/bottle-per-box', {
+      const bpbResponse = await API.post('/bottle-per-box', {
         bottleName: bottleNameVal,
         plainBottleName: bottleNameVal,
         bottleNames: [bottleNameVal],
@@ -860,6 +860,9 @@ export default function AddPrintingPlan() {
         status: true
       });
 
+      // Capture the actual bottlePerBox value from API response
+      const actualBoxQty = bpbResponse?.data?.data?.bottlePerBox || bpbValue;
+
       // 2. Also ensure BottleSpec is explicitly created or upserted if brandId is available
       if (missingPlainBottleData.brandId) {
         try {
@@ -868,7 +871,7 @@ export default function AddPrintingPlan() {
             bottleName: bottleNameVal,
             printingTypeId: missingPlainBottleData.printingTypeId || null,
             printingColorId: missingPlainBottleData.printingColorId || null,
-            bottlePerBox: bpbValue,
+            bottlePerBox: actualBoxQty,
             isCoating: true,
             isPrinting: true,
             status: true,
@@ -885,6 +888,23 @@ export default function AddPrintingPlan() {
         dispatch(fetchBottleSpecs({ pagination: 'false', type: 'all' })).unwrap()
       ]);
 
+      // 4. Update the form row BEFORE closing modal to ensure state is in sync
+      if (missingPlainBottleData.blockIndex !== null && missingPlainBottleData.itemIndex !== null && missingPlainBottleData.blockIndex !== undefined && missingPlainBottleData.itemIndex !== undefined) {
+        // Update blocks state directly to reflect changes immediately
+        const updatedBlocks = [...blocks];
+        const block = updatedBlocks[missingPlainBottleData.blockIndex];
+        const item = block.items[missingPlainBottleData.itemIndex];
+        if (item) {
+          item.plainBottle = bottleNameVal;
+          item.bottleName = bottleNameVal;
+          if (actualBoxQty) {
+            item.boxQty = actualBoxQty;
+          }
+          setBlocks(updatedBlocks);
+        }
+      }
+
+      // 5. Show success and close modal
       Swal.fire({
         icon: 'success',
         title: 'Plain Bottle Created',
@@ -896,13 +916,6 @@ export default function AddPrintingPlan() {
       });
 
       setShowMissingPlainBottleModal(false);
-
-      if (missingPlainBottleData.blockIndex !== null && missingPlainBottleData.itemIndex !== null && missingPlainBottleData.blockIndex !== undefined && missingPlainBottleData.itemIndex !== undefined) {
-        handleItemChange(missingPlainBottleData.blockIndex, missingPlainBottleData.itemIndex, 'plainBottle', bottleNameVal);
-        if (bpbValue) {
-          handleItemChange(missingPlainBottleData.blockIndex, missingPlainBottleData.itemIndex, 'boxQty', bpbValue);
-        }
-      }
     } catch (err) {
       console.error('Error creating plain bottle:', err);
       Swal.fire('Error', err.response?.data?.message || err.message || 'Failed to create plain bottle', 'error');
