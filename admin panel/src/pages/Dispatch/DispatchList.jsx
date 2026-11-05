@@ -30,7 +30,8 @@ export default function DispatchList() {
   const navigate = useNavigate();
 
   const [searchParams, setSearchParams] = useSearchParams();
-  const currentPage = Number(searchParams.get("page")) || 1;
+  const rawPage = parseInt(searchParams.get("page"), 10);
+  const currentPage = (!rawPage || rawPage < 1) ? 1 : rawPage;
 
   // Debounce search
   const searchTimeoutRef = useRef(null);

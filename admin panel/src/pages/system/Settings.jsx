@@ -1,11 +1,14 @@
 import { useState } from 'react';
 import { useSelector } from 'react-redux';
+import { Link } from 'react-router-dom';
+import { useMaintenance } from '../../context/MaintenanceContext';
 
 const sections = [
   { id: 'profile',        icon: 'bi-person-circle',      label: 'Profile' },
   { id: 'notifications',  icon: 'bi-bell',               label: 'Notifications' },
   { id: 'security',       icon: 'bi-shield-lock',        label: 'Security' },
   { id: 'appearance',     icon: 'bi-palette',            label: 'Appearance' },
+  { id: 'maintenance',    icon: 'bi-cone-striped',       label: 'Maintenance Mode' },
   { id: 'billing',        icon: 'bi-credit-card',        label: 'Billing' },
   { id: 'integrations',   icon: 'bi-plug',               label: 'Integrations' },
 ];
@@ -179,6 +182,31 @@ export default function Settings() {
                   ))}
                 </div>
                 <button className="btn-accent"><i className="bi bi-check2" /> Apply Theme</button>
+              </div>
+            </div>
+          )}
+
+                    {active === 'maintenance' && (
+            <div className="dash-card">
+              <div className="dash-card-header">
+                <span className="dash-card-title">System &amp; Module Maintenance</span>
+              </div>
+              <div className="dash-card-body p-4">
+                <p className="text-muted" style={{ fontSize: '14px' }}>
+                  Control granular ERP module downtime or global maintenance mode while allowing administrators to work unimpeded.
+                </p>
+                <div className="d-flex align-items-center gap-3 p-3 rounded-3 mb-4" style={{ background: 'rgba(99, 102, 241, 0.06)', border: '1px solid rgba(99, 102, 241, 0.2)' }}>
+                  <i className="bi bi-cone-striped text-warning fs-3" />
+                  <div>
+                    <h6 className="mb-1 fw-bold text-dark">Dedicated Maintenance Control Center</h6>
+                    <div className="text-muted small">
+                      Selectively pause modules (like Lacquer Plan or Stock Entry) during audits without shutting down the entire factory.
+                    </div>
+                  </div>
+                </div>
+                <Link to="/maintenance" className="btn-accent px-4 py-2 text-white text-decoration-none d-inline-flex align-items-center gap-2">
+                  <i className="bi bi-sliders2-vertical" /> Open Maintenance Control Center
+                </Link>
               </div>
             </div>
           )}

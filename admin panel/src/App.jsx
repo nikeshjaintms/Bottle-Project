@@ -138,6 +138,9 @@ import ReadyToDispatchList from './pages/ReadyToDispatch/ReadyToDispatchList';
 import AddReadyToDispatch from './pages/ReadyToDispatch/AddReadyToDispatch';
 import EditReadyToDispatch from './pages/ReadyToDispatch/EditReadyToDispatch';
 import ViewReadyToDispatch from './pages/ReadyToDispatch/ViewReadyToDispatch';
+import MaintenanceBanner from './components/MaintenanceBanner';
+import MaintenanceGuard from './components/MaintenanceGuard';
+import MaintenanceMode from './pages/system/MaintenanceMode';
 import './App.css';
 
 export default function App() {
@@ -214,85 +217,85 @@ export default function App() {
               <Route path="/raw-materials/add" element={<AddRawMaterial />} />
               <Route path="/raw-materials/edit/:id" element={<EditRawMaterial />} />
               <Route path="/raw-materials/view/:id" element={<ViewRawMaterial />} />
-              <Route path="/stock-summary" element={<StockSummary />} />
-              <Route path="/stock-invoices" element={<StockInvoices />} />
-              <Route path="/stock-history" element={<MaterialHistory />} />
-              <Route path="/stock-entries/add" element={<AddStockIn />} />
-              <Route path="/stock-entries/view/:id" element={<ViewStockIn />} />
-              <Route path="/stock-entries/edit/:id" element={<EditStockIn />} />
+              <Route path="/stock-summary" element={<MaintenanceGuard module="stock_entry"><StockSummary /></MaintenanceGuard>} />
+              <Route path="/stock-invoices" element={<MaintenanceGuard module="stock_entry"><StockInvoices /></MaintenanceGuard>} />
+              <Route path="/stock-history" element={<MaintenanceGuard module="stock_entry"><MaterialHistory /></MaintenanceGuard>} />
+              <Route path="/stock-entries/add" element={<MaintenanceGuard module="stock_entry"><AddStockIn /></MaintenanceGuard>} />
+              <Route path="/stock-entries/view/:id" element={<MaintenanceGuard module="stock_entry"><ViewStockIn /></MaintenanceGuard>} />
+              <Route path="/stock-entries/edit/:id" element={<MaintenanceGuard module="stock_entry"><EditStockIn /></MaintenanceGuard>} />
 
-              <Route path="/incoming" element={<IncomingCompanies />} />
-              <Route path="/incoming/company/:companyId" element={<IncomingList />} />
-              <Route path="/incoming/add" element={<AddIncoming />} />
-              <Route path="/incoming/edit/:id" element={<EditIncoming />} />
-              <Route path="/incoming/view/:id" element={<ViewIncoming />} />
+              <Route path="/incoming" element={<MaintenanceGuard module="incoming"><IncomingCompanies /></MaintenanceGuard>} />
+              <Route path="/incoming/company/:companyId" element={<MaintenanceGuard module="incoming"><IncomingList /></MaintenanceGuard>} />
+              <Route path="/incoming/add" element={<MaintenanceGuard module="incoming"><AddIncoming /></MaintenanceGuard>} />
+              <Route path="/incoming/edit/:id" element={<MaintenanceGuard module="incoming"><EditIncoming /></MaintenanceGuard>} />
+              <Route path="/incoming/view/:id" element={<MaintenanceGuard module="incoming"><ViewIncoming /></MaintenanceGuard>} />
 
-              <Route path="/shreno-incoming" element={<ShrenoIncomingList />} />
-              <Route path="/shreno-incoming/add" element={<AddShrenoIncoming />} />
-              <Route path="/shreno-incoming/edit/:id" element={<EditShrenoIncoming />} />
-              <Route path="/shreno-incoming/view/:id" element={<ViewShrenoIncoming />} />
+              <Route path="/shreno-incoming" element={<MaintenanceGuard module="incoming"><ShrenoIncomingList /></MaintenanceGuard>} />
+              <Route path="/shreno-incoming/add" element={<MaintenanceGuard module="incoming"><AddShrenoIncoming /></MaintenanceGuard>} />
+              <Route path="/shreno-incoming/edit/:id" element={<MaintenanceGuard module="incoming"><EditShrenoIncoming /></MaintenanceGuard>} />
+              <Route path="/shreno-incoming/view/:id" element={<MaintenanceGuard module="incoming"><ViewShrenoIncoming /></MaintenanceGuard>} />
 
               <Route path="/item-types" element={<ItemTypes />} />
               <Route path="/item-types/add" element={<AddItemType />} />
               <Route path="/item-types/edit/:id" element={<EditItemType />} />
 
-              <Route path="/lacquer-plan" element={<LacquerPlan />} />
-              <Route path="/lacquer-plan/add" element={<AddLacquerPlan />} />
-              <Route path="/lacquer-plan/edit/:id" element={<EditLacquerPlan />} />
-              <Route path="/lacquer-plan/view/:id" element={<ViewLacquerPlan />} />
+              <Route path="/lacquer-plan" element={<MaintenanceGuard module="lacquer_plan"><LacquerPlan /></MaintenanceGuard>} />
+              <Route path="/lacquer-plan/add" element={<MaintenanceGuard module="lacquer_plan"><AddLacquerPlan /></MaintenanceGuard>} />
+              <Route path="/lacquer-plan/edit/:id" element={<MaintenanceGuard module="lacquer_plan"><EditLacquerPlan /></MaintenanceGuard>} />
+              <Route path="/lacquer-plan/view/:id" element={<MaintenanceGuard module="lacquer_plan"><ViewLacquerPlan /></MaintenanceGuard>} />
 
-              <Route path="/printing-plan" element={<PrintingPlan />} />
-              <Route path="/printing-plan/add" element={<AddPrintingPlan />} />
-              <Route path="/printing-plan/edit/:id" element={<EditPrintingPlan />} />
-              <Route path="/printing-plan/view/:id" element={<ViewPrintingPlan />} />
+              <Route path="/printing-plan" element={<MaintenanceGuard module="printing_plan"><PrintingPlan /></MaintenanceGuard>} />
+              <Route path="/printing-plan/add" element={<MaintenanceGuard module="printing_plan"><AddPrintingPlan /></MaintenanceGuard>} />
+              <Route path="/printing-plan/edit/:id" element={<MaintenanceGuard module="printing_plan"><EditPrintingPlan /></MaintenanceGuard>} />
+              <Route path="/printing-plan/view/:id" element={<MaintenanceGuard module="printing_plan"><ViewPrintingPlan /></MaintenanceGuard>} />
 
-              <Route path="/dispatch" element={<DispatchCompanies />} />
-              <Route path="/dispatch/company/:companyId" element={<DispatchList />} />
-              <Route path="/dispatch/add" element={<AddDispatch />} />
-              <Route path="/dispatch/edit/:id" element={<EditDispatch />} />
-              <Route path="/dispatch/view/:id" element={<ViewDispatch />} />
+              <Route path="/dispatch" element={<MaintenanceGuard module="dispatch"><DispatchCompanies /></MaintenanceGuard>} />
+              <Route path="/dispatch/company/:companyId" element={<MaintenanceGuard module="dispatch"><DispatchList /></MaintenanceGuard>} />
+              <Route path="/dispatch/add" element={<MaintenanceGuard module="dispatch"><AddDispatch /></MaintenanceGuard>} />
+              <Route path="/dispatch/edit/:id" element={<MaintenanceGuard module="dispatch"><EditDispatch /></MaintenanceGuard>} />
+              <Route path="/dispatch/view/:id" element={<MaintenanceGuard module="dispatch"><ViewDispatch /></MaintenanceGuard>} />
 
-              <Route path="/ready-to-dispatch" element={<ReadyToDispatchCompanies />} />
-              <Route path="/ready-to-dispatch/company/:companyId" element={<ReadyToDispatchList />} />
-              <Route path="/ready-to-dispatch/add" element={<AddReadyToDispatch />} />
-              <Route path="/ready-to-dispatch/edit/:id" element={<EditReadyToDispatch />} />
-              <Route path="/ready-to-dispatch/view/:id" element={<ViewReadyToDispatch />} />
+              <Route path="/ready-to-dispatch" element={<MaintenanceGuard module="dispatch"><ReadyToDispatchCompanies /></MaintenanceGuard>} />
+              <Route path="/ready-to-dispatch/company/:companyId" element={<MaintenanceGuard module="dispatch"><ReadyToDispatchList /></MaintenanceGuard>} />
+              <Route path="/ready-to-dispatch/add" element={<MaintenanceGuard module="dispatch"><AddReadyToDispatch /></MaintenanceGuard>} />
+              <Route path="/ready-to-dispatch/edit/:id" element={<MaintenanceGuard module="dispatch"><EditReadyToDispatch /></MaintenanceGuard>} />
+              <Route path="/ready-to-dispatch/view/:id" element={<MaintenanceGuard module="dispatch"><ViewReadyToDispatch /></MaintenanceGuard>} />
 
-              <Route path="/delivery-challan/shayoona" element={<ShayonaChallanList />} />
-              <Route path="/delivery-challan/shayoona/add" element={<AddShayonaChallan />} />
-              <Route path="/delivery-challan/shayoona/edit/:id" element={<EditShayonaChallan />} />
-              <Route path="/delivery-challan/shayoona/view/:id" element={<ViewShayonaChallan />} />
+              <Route path="/delivery-challan/shayoona" element={<MaintenanceGuard module="delivery_challan"><ShayonaChallanList /></MaintenanceGuard>} />
+              <Route path="/delivery-challan/shayoona/add" element={<MaintenanceGuard module="delivery_challan"><AddShayonaChallan /></MaintenanceGuard>} />
+              <Route path="/delivery-challan/shayoona/edit/:id" element={<MaintenanceGuard module="delivery_challan"><EditShayonaChallan /></MaintenanceGuard>} />
+              <Route path="/delivery-challan/shayoona/view/:id" element={<MaintenanceGuard module="delivery_challan"><ViewShayonaChallan /></MaintenanceGuard>} />
 
-              <Route path="/delivery-challan/mcnore" element={<McnoreChallanList />} />
-              <Route path="/delivery-challan/mcnore/add" element={<AddMcnoreChallan />} />
-              <Route path="/delivery-challan/mcnore/edit/:id" element={<EditMcnoreChallan />} />
-              <Route path="/delivery-challan/mcnore/view/:id" element={<ViewMcnoreChallan />} />
+              <Route path="/delivery-challan/mcnore" element={<MaintenanceGuard module="delivery_challan"><McnoreChallanList /></MaintenanceGuard>} />
+              <Route path="/delivery-challan/mcnore/add" element={<MaintenanceGuard module="delivery_challan"><AddMcnoreChallan /></MaintenanceGuard>} />
+              <Route path="/delivery-challan/mcnore/edit/:id" element={<MaintenanceGuard module="delivery_challan"><EditMcnoreChallan /></MaintenanceGuard>} />
+              <Route path="/delivery-challan/mcnore/view/:id" element={<MaintenanceGuard module="delivery_challan"><ViewMcnoreChallan /></MaintenanceGuard>} />
 
-              <Route path="/delivery-challan/sherno" element={<ShernoChallanList />} />
-              <Route path="/delivery-challan/sherno/add" element={<AddShernoChallan />} />
-              <Route path="/delivery-challan/sherno/edit/:id" element={<EditShernoChallan />} />
-              <Route path="/delivery-challan/sherno/view/:id" element={<ViewShernoChallan />} />
+              <Route path="/delivery-challan/sherno" element={<MaintenanceGuard module="delivery_challan"><ShernoChallanList /></MaintenanceGuard>} />
+              <Route path="/delivery-challan/sherno/add" element={<MaintenanceGuard module="delivery_challan"><AddShernoChallan /></MaintenanceGuard>} />
+              <Route path="/delivery-challan/sherno/edit/:id" element={<MaintenanceGuard module="delivery_challan"><EditShernoChallan /></MaintenanceGuard>} />
+              <Route path="/delivery-challan/sherno/view/:id" element={<MaintenanceGuard module="delivery_challan"><ViewShernoChallan /></MaintenanceGuard>} />
 
               {/* <Route path="/gst" element={<GstList />} />
               <Route path="/gst/add" element={<AddGst />} />
               <Route path="/gst/edit/:id" element={<EditGst />} /> */}
 
-              <Route path="/summary" element={ability.can('read', 'summary') ? <SummaryCompanies /> : <Navigate to="/" replace />} />
-              <Route path="/summary/company/:companyId" element={ability.can('read', 'summary') ? <CompanySummary /> : <Navigate to="/" replace />} />
+              <Route path="/summary" element={<MaintenanceGuard module="summary">{ability.can('read', 'summary') ? <SummaryCompanies /> : <Navigate to="/" replace />}</MaintenanceGuard>} />
+              <Route path="/summary/company/:companyId" element={<MaintenanceGuard module="summary">{ability.can('read', 'summary') ? <CompanySummary /> : <Navigate to="/" replace />}</MaintenanceGuard>} />
 
               <Route path="/bottle-per-box" element={<BottlePerBoxes />} />
               <Route path="/bottle-per-box/add" element={<AddBottlePerBox />} />
               <Route path="/bottle-per-box/edit/:id" element={<EditBottlePerBox />} />
 
-              <Route path="/productions" element={<Productions />} />
-              <Route path="/production" element={<Production />} />
-              <Route path="/productions/add" element={<AddProduction />} />
-              <Route path="/productions/edit/:id" element={<EditProduction />} />
-              <Route path="/productions/view/:id" element={<ProductionDetail />} />
-              <Route path="/coating-productions/unit/:unit" element={<CoatingProductions />} />
-              <Route path="/coating-productions/add/unit/:unit" element={<AddCoatingProduction />} />
-              <Route path="/coating-productions/edit/:id" element={<EditCoatingProduction />} />
-              <Route path="/coating-productions/view/:id" element={<ViewCoatingProduction />} />
+              <Route path="/productions" element={<MaintenanceGuard module="production"><Productions /></MaintenanceGuard>} />
+              <Route path="/production" element={<MaintenanceGuard module="production"><Production /></MaintenanceGuard>} />
+              <Route path="/productions/add" element={<MaintenanceGuard module="production"><AddProduction /></MaintenanceGuard>} />
+              <Route path="/productions/edit/:id" element={<MaintenanceGuard module="production"><EditProduction /></MaintenanceGuard>} />
+              <Route path="/productions/view/:id" element={<MaintenanceGuard module="production"><ProductionDetail /></MaintenanceGuard>} />
+              <Route path="/coating-productions/unit/:unit" element={<MaintenanceGuard module="production"><CoatingProductions /></MaintenanceGuard>} />
+              <Route path="/coating-productions/add/unit/:unit" element={<MaintenanceGuard module="production"><AddCoatingProduction /></MaintenanceGuard>} />
+              <Route path="/coating-productions/edit/:id" element={<MaintenanceGuard module="production"><EditCoatingProduction /></MaintenanceGuard>} />
+              <Route path="/coating-productions/view/:id" element={<MaintenanceGuard module="production"><ViewCoatingProduction /></MaintenanceGuard>} />
               <Route path="/coating-specs" element={<CoatingSpecs />} />
               <Route path="/coating-specs/add" element={<AddCoatingSpec />} />
               <Route path="/coating-specs/edit/:id" element={<EditCoatingSpec />} />
@@ -313,6 +316,7 @@ export default function App() {
               <Route path="/permissions/create" element={<CreatePermission />} />
               <Route path="/permissions/edit/:id" element={<CreatePermission />} />
               <Route path="/settings" element={<Settings />} />
+              <Route path="/maintenance" element={<MaintenanceMode />} />
               <Route path="/change-password" element={<ChangePassword />} />
               <Route path="/analytics" element={<Placeholder title="Analytics" icon="bi-bar-chart-line-fill" desc="Deep-dive analytics" />} />
               <Route path="/reports" element={<Placeholder title="Reports" icon="bi-file-earmark-bar-graph-fill" desc="Generate and export reports" />} />

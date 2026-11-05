@@ -34,6 +34,11 @@ app.use(initRequestCache);
 
 app.use("/uploads", express.static("uploads"));
 
+// System Maintenance routes and global/modular interceptor
+app.use("/api/system-maintenance", require("./routes/maintenance.routes"));
+const { checkMaintenance } = require("./middleware/maintenance.middleware");
+app.use(checkMaintenance);
+
 app.use("/api/auth", require("./routes/auth.routes"));
 app.use("/api/users", require("./routes/user.routes"));
 app.use("/api/company", require("./routes/company.routes"));

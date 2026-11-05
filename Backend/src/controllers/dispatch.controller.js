@@ -208,9 +208,11 @@ exports.getAllDispatch = async (req, res) => {
     }
 
     const total = await Dispatch.countDocuments(query);
-    const parsedPage = parseInt(page) || 1;
-    const parsedLimit = parseInt(limit) || 10;
-    const skip = (parsedPage - 1) * parsedLimit;
+    const rawPage = parseInt(page, 10);
+    const parsedPage = (!rawPage || rawPage < 1) ? 1 : rawPage;
+    const rawLimit = parseInt(limit, 10);
+    const parsedLimit = (!rawLimit || rawLimit < 1) ? 10 : rawLimit;
+    const skip = Math.max(0, (parsedPage - 1) * parsedLimit);
 
     const dispatches = await Dispatch.find(query)
       .populate('companyId', 'name')

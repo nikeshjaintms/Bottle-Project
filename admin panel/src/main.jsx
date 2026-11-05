@@ -5,6 +5,7 @@ import { Provider } from "react-redux"
 import { store } from "./redux/store"
 import App from './App.jsx'
 import ErrorBoundary from './components/ErrorBoundary.jsx'
+import { MaintenanceProvider } from './context/MaintenanceContext.jsx'
 import 'bootstrap/dist/css/bootstrap.min.css'
 import 'bootstrap-icons/font/bootstrap-icons.css'
 import './index.css'
@@ -14,7 +15,9 @@ ReactDOM.createRoot(document.getElementById('root')).render(
     <ErrorBoundary>
       <Provider store={store}>
         <BrowserRouter>
-          <App />
+          <MaintenanceProvider>
+            <App />
+          </MaintenanceProvider>
         </BrowserRouter>
       </Provider>
     </ErrorBoundary>
