@@ -95,6 +95,50 @@ const computePrintingSplitSuggestion = (qty, sources, sourcesAvailMap, ownCompId
   return result;
 };
 
+const getLivePrintingSourceAvailability = (stockData, rows, currentItem, sourceId, bottleName, bottlePerBoxes, planCompanyId, excludeCurrentItem = false) => {
+  const sourceIdString = (sourceId?._id || sourceId)?.toString();
+  const source = [
+    ...(stockData?.sources || []),
+    ...(stockData?.eligibleSuppliers || []),
+    ...(stockData?.eligibleIncomingCompanies || [])
+  ].find(item => (item.companyId?._id || item.companyId)?.toString() === sourceIdString);
+  const available = Number(source?.available);
+  if (!Number.isFinite(available)) return 0;
+
+  const canonicalBottle = (name) => {
+    const bottleNameUpper = String(name || '').trim().toUpperCase();
+    const bottle = (bottlePerBoxes || []).find(item => {
+      const names = (Array.isArray(item.bottleNames) && item.bottleNames.length > 0)
+        ? item.bottleNames
+        : [item.bottleName || item.plainBottleName].filter(Boolean);
+      return names.some(alias => String(alias).trim().toUpperCase() === bottleNameUpper) ||
+        String(item.plainBottleName || item.bottleName || '').trim().toUpperCase() === bottleNameUpper;
+    });
+    return String(bottle?.plainBottleName || bottle?.bottleName || bottleNameUpper).trim().toUpperCase();
+  };
+  const bottleKey = canonicalBottle(bottleName);
+  const allocated = (rows || []).reduce((total, row) => {
+    if ((row.coatingShade || '').trim().toUpperCase() !== 'PLAIN' ||
+        canonicalBottle(row.plainBottle || row.bottleName) !== bottleKey) return total;
+    if (row === currentItem && excludeCurrentItem) return total;
+    if (row !== currentItem && row._id) return total;
+
+    const allocation = (row.stockAllocation || []).find(item =>
+      (item.companyId?._id || item.companyId)?.toString() === sourceIdString
+    );
+    if (allocation) return total + (Number(allocation.qty) || 0);
+
+    const rowSources = (row.stockSources?.length ? row.stockSources : [planCompanyId])
+      .map(item => (item?._id || item)?.toString());
+    if (rowSources.length === 1 && rowSources[0] === sourceIdString && Number(row.producedQty) > 0) {
+      return total + Number(row.producedQty);
+    }
+    return total;
+  }, 0);
+
+  return Math.max(0, available - allocated);
+};
+
 export default function EditPrintingPlan() {
   const { id } = useParams();
   const dispatch = useDispatch();
@@ -321,6 +365,7 @@ export default function EditPrintingPlan() {
                     b.items[idx].sources = lRes.data.data.sources || [];
                     b.items[idx].hasSuppliers = lRes.data.data.hasSuppliers || false;
                     b.items[idx].eligibleSuppliers = lRes.data.data.eligibleSuppliers || [];
+                    b.items[idx].eligibleIncomingCompanies = lRes.data.data.eligibleIncomingCompanies || [];
                   }
                   return b;
                 });
@@ -760,6 +805,24 @@ export default function EditPrintingPlan() {
           excludePlanIds: currentRow._id || id
         });
         if (calculationRequests.current.get(requestKey) !== requestId) return;
+        const selectedSources = (currentRow.stockSources || (newBlock.companyId ? [newBlock.companyId] : []))
+          .map(source => (source?._id || source)?.toString())
+          .filter(Boolean);
+        const sourceAvailability = new Map();
+        selectedSources.forEach(sourceId => sourceAvailability.set(
+          sourceId,
+          getLivePrintingSourceAvailability(
+            stats,
+            newBlock.items,
+            currentRow,
+            sourceId,
+            currentRow.plainBottle || currentRow.bottleName,
+            bottlePerBoxes,
+            newBlock.companyId,
+            true
+          )
+        ));
+        const shouldAutoAssign = field === 'producedQty' && (currentRow.coatingShade || '').trim().toUpperCase() === 'PLAIN';
         const computedFields = {
           balanceToMake: stats.balanceToMake,
           boxQty: stats.boxQty,
@@ -771,7 +834,11 @@ export default function EditPrintingPlan() {
           isExceedingStock: !!stats.plainStockWarning?.hasWarning,
           sources: stats.sources || [],
           hasSuppliers: stats.hasSuppliers,
-          eligibleSuppliers: stats.eligibleSuppliers || []
+          eligibleSuppliers: stats.eligibleSuppliers || [],
+          eligibleIncomingCompanies: stats.eligibleIncomingCompanies || [],
+          ...(shouldAutoAssign
+            ? { stockAllocation: computePrintingSplitSuggestion(currentRow.producedQty, selectedSources, sourceAvailability, newBlock.companyId) }
+            : {})
         };
         setBlock(currentBlock => {
             const nextBlock = { ...currentBlock, items: [...currentBlock.items] };
@@ -844,7 +911,7 @@ export default function EditPrintingPlan() {
         : null;
 
       // 1. Create / upsert bottle-per-box with brand & printing info
-      const bpbResponse = await API.post('/bottle-per-box', {
+      await API.post('/bottle-per-box', {
         bottleName: bottleNameVal,
         plainBottleName: bottleNameVal,
         bottleNames: [bottleNameVal],
@@ -855,9 +922,6 @@ export default function EditPrintingPlan() {
         status: true
       });
 
-      // Capture the actual bottlePerBox value from API response
-      const actualBoxQty = bpbResponse?.data?.data?.bottlePerBox || bpbValue;
-
       // 2. Also ensure BottleSpec is explicitly created or upserted if brandId is available
       if (missingPlainBottleData.brandId) {
         try {
@@ -866,7 +930,7 @@ export default function EditPrintingPlan() {
             bottleName: bottleNameVal,
             printingTypeId: missingPlainBottleData.printingTypeId || null,
             printingColorId: missingPlainBottleData.printingColorId || null,
-            bottlePerBox: actualBoxQty,
+            bottlePerBox: bpbValue,
             isCoating: true,
             isPrinting: true,
             status: true,
@@ -883,22 +947,6 @@ export default function EditPrintingPlan() {
         dispatch(fetchBottleSpecs({ pagination: 'false', type: 'all' })).unwrap()
       ]);
 
-      // 4. Update the form row BEFORE closing modal to ensure state is in sync
-      if (missingPlainBottleData.itemIndex !== null && missingPlainBottleData.itemIndex !== undefined) {
-        // Update block state directly to reflect changes immediately
-        const updatedBlock = { ...block };
-        const item = updatedBlock.items[missingPlainBottleData.itemIndex];
-        if (item) {
-          item.plainBottle = bottleNameVal;
-          item.bottleName = bottleNameVal;
-          if (actualBoxQty) {
-            item.boxQty = actualBoxQty;
-          }
-          setBlock(updatedBlock);
-        }
-      }
-
-      // 5. Show success and close modal
       Swal.fire({
         icon: 'success',
         title: 'Plain Bottle Created',
@@ -910,6 +958,13 @@ export default function EditPrintingPlan() {
       });
 
       setShowMissingPlainBottleModal(false);
+
+      if (missingPlainBottleData.itemIndex !== null && missingPlainBottleData.itemIndex !== undefined) {
+        handleItemChange(missingPlainBottleData.itemIndex, 'plainBottle', bottleNameVal);
+        if (bpbValue) {
+          handleItemChange(missingPlainBottleData.itemIndex, 'boxQty', bpbValue);
+        }
+      }
     } catch (err) {
       console.error('Error creating plain bottle:', err);
       Swal.fire('Error', err.response?.data?.message || err.message || 'Failed to create plain bottle', 'error');
@@ -981,6 +1036,10 @@ export default function EditPrintingPlan() {
       const sId = (s.companyId?._id || s.companyId)?.toString();
       if (!immediateAvailMap.has(sId)) immediateAvailMap.set(sId, s.available ?? 0);
     });
+    (currentItem.eligibleIncomingCompanies || []).forEach(s => {
+      const sId = (s.companyId?._id || s.companyId)?.toString();
+      if (!immediateAvailMap.has(sId)) immediateAvailMap.set(sId, s.available ?? 0);
+    });
 
     const updatedBlock = { ...block };
     const curBottle = currentItem.bottleName;
@@ -1000,6 +1059,7 @@ export default function EditPrintingPlan() {
         params: {
           bottleName: curBottle,
           companyId: block.companyId,
+          coatingShade: currentItem.coatingShade,
           planDate: planDate,
           stockSources: updatedSources.join(','),
           excludePlanIds: currentItem._id || id,
@@ -1012,12 +1072,26 @@ export default function EditPrintingPlan() {
         const plainStock = res.data.data.plainStock;
         const freshSources = res.data.data.sources || [];
         const freshEligible = res.data.data.eligibleSuppliers || [];
-        const availMap = new Map();
-        freshSources.forEach(s => availMap.set((s.companyId?._id || s.companyId)?.toString(), s.available ?? 0));
-        freshEligible.forEach(s => {
-          const sId = (s.companyId?._id || s.companyId)?.toString();
-          if (!availMap.has(sId)) availMap.set(sId, s.available ?? 0);
-        });
+        const freshIncoming = res.data.data.eligibleIncomingCompanies || [];
+        const freshStockData = {
+          ...res.data.data,
+          sources: freshSources,
+          eligibleSuppliers: freshEligible,
+          eligibleIncomingCompanies: freshIncoming
+        };
+        const availMap = new Map(updatedSources.map(sourceId => [
+          (sourceId?._id || sourceId)?.toString(),
+          getLivePrintingSourceAvailability(
+            freshStockData,
+            block.items,
+            currentItem,
+            sourceId,
+            currentItem.plainBottle || currentItem.bottleName,
+            bottlePerBoxes,
+            block.companyId,
+            true
+          )
+        ]));
 
         const newBlock = { ...block };
         for (let i = 0; i < newBlock.items.length; i++) {
@@ -1027,6 +1101,7 @@ export default function EditPrintingPlan() {
             it.sources = freshSources;
             it.hasSuppliers = res.data.data.hasSuppliers;
             it.eligibleSuppliers = freshEligible;
+            it.eligibleIncomingCompanies = freshIncoming;
             if (updatedSources.length >= 2) {
               it.stockAllocation = computePrintingSplitSuggestion(it.producedQty, updatedSources, availMap, block.companyId);
             }
@@ -1545,16 +1620,24 @@ export default function EditPrintingPlan() {
                                           
                                           // Look up the actual BottlePerBox data
                                           const bottlePerBoxData = (bottlePerBoxes || []).find(b =>
-                                            normalizeRollOn(b.plainBottleName || b.bottleName || '') === normalizeRollOn(selectedBottleName || '')
+                                            normalizeRollOn(b.plainBottleName || b.bottleName || '') === normalizeRollOn(selectedBottleName || '') ||
+                                            (b.bottleNames || []).some(name => normalizeRollOn(name) === normalizeRollOn(selectedBottleName || ''))
                                           );
-                                          
-                                          // If bottle exists in BottlePerBox master, it's valid - don't show the error modal
-                                          if (bottlePerBoxData) {
-                                            // Bottle exists in master - proceed normally
+
+                                          const bottleNameSet = new Set([
+                                            selectedBottleName,
+                                            ...(bottlePerBoxData?.bottleNames || [])
+                                          ].map(normalizeRollOn).filter(Boolean));
+                                          const hasBrandSpec = (bottleSpecs || []).some(spec =>
+                                            (spec.brandId?._id || spec.brandId)?.toString() === (block.brandId?._id || block.brandId)?.toString() &&
+                                            bottleNameSet.has(normalizeRollOn(spec.bottleName))
+                                          );
+
+                                          if (bottlePerBoxData && hasBrandSpec) {
                                             handleItemChange(itemIndex, 'plainBottle', selected?.value || '');
                                             
                                             // Auto-populate bottlePerBox if available
-                                            if (bottlePerBoxData && bottlePerBoxData.bottlePerBox) {
+                                            if (bottlePerBoxData.bottlePerBox) {
                                               // Update the item's bottlePerBox value
                                               const updatedBlocks = blocks.map((b, bIdx) => {
                                                 if (b._id === block._id) {
@@ -1582,7 +1665,7 @@ export default function EditPrintingPlan() {
                                               brandId: brandObj?._id || block.brandId || '',
                                               companyName: compObj?.name || '',
                                               brandName: brandObj?.name || '',
-                                              bottlePerBox: '',
+                                              bottlePerBox: bottlePerBoxData?.bottlePerBox ?? '',
                                               printingTypeId: '',
                                               printingColorId: '',
                                               itemIndex: itemIndex,
@@ -1775,13 +1858,28 @@ export default function EditPrintingPlan() {
                                   const stockSuppliers = (companies || []).filter(c => c.isStockSupplier);
                                   const hasSupplierWithBottle = (item.hasSuppliers === true) ||
                                     (Array.isArray(item.eligibleSuppliers) && item.eligibleSuppliers.length > 0) ||
+                                    (Array.isArray(item.eligibleIncomingCompanies) && item.eligibleIncomingCompanies.length > 0) ||
                                     (item.stockSources && item.stockSources.some(sId => stockSuppliers.some(supp => (supp._id || supp).toString() === (sId?._id || sId)?.toString())));
 
                                   if (!hasSupplierWithBottle) return null;
 
                                   const selectedSources = item.stockSources || (block.companyId ? [block.companyId] : []);
                                   const ownComp = (companies || []).find(c => (c._id?.toString() || c.toString()) === (block.companyId?._id || block.companyId)?.toString());
-                                  const availableSources = [ownComp, ...stockSuppliers].filter(Boolean);
+                                  const incomingSources = [
+                                    ...(item.eligibleSuppliers || []),
+                                    ...(item.eligibleIncomingCompanies || [])
+                                  ].map(source => {
+                                    const sourceId = (source.companyId?._id || source.companyId)?.toString();
+                                    return (companies || []).find(c => (c._id || c).toString() === sourceId) || {
+                                      _id: sourceId,
+                                      name: source.companyName
+                                    };
+                                  });
+                                  const availableSources = Array.from(new Map(
+                                    [ownComp, ...incomingSources]
+                                      .filter(Boolean)
+                                      .map(source => [(source._id || source).toString(), source])
+                                  ).values());
                                   return (
                                     <div className="dropdown dropup mt-1 position-relative stock-from-dropdown">
                                       <button
@@ -1821,9 +1919,19 @@ export default function EditPrintingPlan() {
                                             const sIdStr = (s._id || s).toString();
                                             const isChecked = selectedSources.some(id => (id?._id || id)?.toString() === sIdStr);
                                             const srcFound = (item.sources || []).find(src => (src.companyId?._id || src.companyId)?.toString() === sIdStr)
-                                                        || (item.eligibleSuppliers || []).find(src => (src.companyId?._id || src.companyId)?.toString() === sIdStr);
-                                            const sAvail = srcFound?.available !== undefined 
-                                              ? srcFound.available 
+                                                        || (item.eligibleSuppliers || []).find(src => (src.companyId?._id || src.companyId)?.toString() === sIdStr)
+                                                        || (item.eligibleIncomingCompanies || []).find(src => (src.companyId?._id || src.companyId)?.toString() === sIdStr);
+                                            const sAvail = srcFound?.available !== undefined
+                                              ? getLivePrintingSourceAvailability(
+                                                  item,
+                                                  block.items,
+                                                  item,
+                                                  sIdStr,
+                                                  item.plainBottle || item.bottleName,
+                                                  bottlePerBoxes,
+                                                  block.companyId,
+                                                  true
+                                                )
                                               : (sIdStr === String(block.companyId?._id || block.companyId) ? (item.plainBottleStock || 0) : 0);
                                             return (
                                               <div className="form-check" key={sIdStr}>

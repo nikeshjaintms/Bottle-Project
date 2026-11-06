@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import Swal from 'sweetalert2';
 import API from '../services/api';
+import { getBalanceToMake, getCoatedQty } from '../utils/lacquerPlanUtils';
 
 const getIndiaDateInput = (date = new Date()) => {
   const parts = new Intl.DateTimeFormat('en-CA', {
@@ -176,9 +177,25 @@ export function CoatingQtyModal({ show, plan, onClose, onSave }) {
 
   const ownCompId = (plan?.companyId?._id || plan?.companyId)?.toString();
   const boxSize = Number(plan?.boxQty) || 0;
-  const currentCoated = Number(plan?.coatingCompletedQty) || 0;
+  const currentCoated = getCoatedQty(plan);
+  const currentRejectedStockQty = (plan?.qtyEntries || [])
+    .filter(entry =>
+      !entry.isDeleted &&
+      entry.subType !== 'carried' &&
+      (entry.subType === 'coated' || entry.type === 'coatedQty' || entry.type === 'added' ||
+        (entry.type === 'edit-adjustment' && entry.subType === 'coated')) &&
+      (Number(entry.qty) || 0) > 0
+    )
+    .reduce((sum, entry) => {
+      const rejected = entry.rejectionQty !== undefined && entry.rejectionQty !== null
+        ? Number(entry.rejectionQty) || 0
+        : (Number(entry.rejectionBoxes) || 0) * boxSize + (Number(entry.rejectionLooseQty) || 0);
+      return sum + rejected;
+    }, 0);
   const rejectedQuantity = (Number(rejectionBoxes) || 0) * boxSize + (Number(rejectionQty) || 0);
-  const maxAdditionalQty = availableStock === null ? null : Math.max(0, Number(availableStock) - currentCoated);
+  const maxAdditionalQty = availableStock === null
+    ? null
+    : Math.max(0, Number(availableStock) - currentCoated - currentRejectedStockQty - rejectedQuantity);
 
   const validateSplit = (allocArray, targetTotal, availMap) => {
     let sum = 0;
@@ -202,6 +219,11 @@ export function CoatingQtyModal({ show, plan, onClose, onSave }) {
   };
 
   const updateCoatingSplit = quantity => {
+    if (quantity <= 0) {
+      setSplitAlloc([]);
+      setSplitError('');
+      return;
+    }
     if (planSources.length >= 2) {
       const availMap = new Map();
       (sourcesList || []).forEach(s => availMap.set(s.companyId, Number(s.available) || 0));
@@ -227,28 +249,32 @@ export function CoatingQtyModal({ show, plan, onClose, onSave }) {
   const handleCoatQtyChange = (val) => {
     setError('');
     let nextQty = Number(val) || 0;
-    if (maxAdditionalQty !== null && nextQty > 0 && nextQty + rejectedQuantity > maxAdditionalQty) {
-      nextQty = Math.max(0, maxAdditionalQty - rejectedQuantity);
+    if (maxAdditionalQty !== null && nextQty > 0 && nextQty > maxAdditionalQty) {
+      nextQty = maxAdditionalQty;
       setError(`Cannot exceed available plain stock. Maximum additional quantity: ${maxAdditionalQty}.`);
+    } else if (nextQty < 0 && rejectedQuantity > 0) {
+      setError('Rejection Qty cannot be added when subtracting quantity.');
+    } else {
+      setError('');
     }
     setCoatQty(val === '' ? '' : String(nextQty));
-    updateCoatingSplit(nextQty + rejectedQuantity);
+    updateCoatingSplit(nextQty);
   };
 
   const updateRejectedTotal = requestedTotal => {
     let total = Math.max(0, Number(requestedTotal) || 0);
-    const maxRejected = maxAdditionalQty === null
-      ? Number.POSITIVE_INFINITY
-      : Math.max(0, maxAdditionalQty - Math.max(0, Number(coatQty) || 0));
-    if (total > maxRejected) {
-      total = maxRejected;
-      setError(`Cannot exceed available plain stock. Maximum rejection quantity: ${maxRejected}.`);
+    const stockLimitedRejected = availableStock === null
+      ? total
+      : Math.max(0, Number(availableStock) - currentCoated - currentRejectedStockQty - Math.max(0, Number(coatQty) || 0));
+    const allowedRejected = stockLimitedRejected;
+    if (total > allowedRejected) {
+      total = allowedRejected;
+      setError(`Coating and rejected quantities exceed available stock. Maximum additional rejection quantity: ${allowedRejected}.`);
     } else {
       setError('');
     }
     setRejectionBoxes(boxSize > 0 ? String(Math.floor(total / boxSize)) : '');
     setRejectionQty(boxSize > 0 ? String(total % boxSize || '') : String(total || ''));
-    updateCoatingSplit((Number(coatQty) || 0) + total);
   };
 
   const handleRejectionQtyChange = value => {
@@ -266,7 +292,7 @@ export function CoatingQtyModal({ show, plan, onClose, onSave }) {
   };
 
   const handleModalSplitChange = (sourceId, val) => {
-    const quantity = (Number(coatQty) || 0) + rejectedQuantity;
+    const quantity = Math.max(0, Number(coatQty) || 0);
     const parsedVal = val === '' ? '' : Math.max(0, parseInt(val, 10) || 0);
     const availMap = new Map();
     (sourcesList || []).forEach(s => availMap.set(s.companyId, Number(s.available) || 0));
@@ -349,16 +375,15 @@ export function CoatingQtyModal({ show, plan, onClose, onSave }) {
     const rejectedBoxes = Number(rejectionBoxes) || 0;
     const rejectedLooseQty = Number(rejectionQty) || 0;
     const rejectedQuantity = rejectedBoxes * boxSize + rejectedLooseQty;
-    const quantity = wholeQuantity + rejectedQuantity;
+    const quantity = wholeQuantity;
     if ((!coatQty && !rejectionQty && !rejectionBoxes) || !Number.isInteger(wholeQuantity) || !Number.isInteger(rejectedBoxes) || rejectedBoxes < 0 || !Number.isInteger(rejectedLooseQty) || rejectedLooseQty < 0 || (rejectedBoxes > 0 && boxSize <= 0) || quantity === 0) {
-      setError('Enter whole and rejection quantities as whole numbers, with a non-zero total.');
+      setError('Enter a non-zero whole coating quantity and valid rejection quantities.');
       return;
     }
-    if (wholeQuantity < 0 && rejectedQuantity > 0) {
+    if (wholeQuantity < 0 && (rejectedQuantity > 0 || rejectedBoxes > 0 || rejectedLooseQty > 0)) {
       setError('Rejection Qty cannot be added when subtracting quantity.');
       return;
     }
-
     if (!entryDate) {
       setError('Please select a date');
       return;
@@ -369,21 +394,22 @@ export function CoatingQtyModal({ show, plan, onClose, onSave }) {
       return;
     }
 
-    const newCoatedTotal = (plan.coatingCompletedQty || 0) + quantity;
+    const newCoatedTotal = currentCoated + quantity;
     if (newCoatedTotal < 0) {
       setError('Coating quantity cannot reduce the total below zero.');
       return;
     }
 
-    if (quantity > 0 && newCoatedTotal > availableStock) {
-      setError(`Available stock is ${availableStock}. Cannot exceed this.`);
+    const totalStockUse = newCoatedTotal + currentRejectedStockQty + rejectedQuantity;
+    if (quantity > 0 && totalStockUse > availableStock) {
+      setError(`Coating and rejected quantities use ${totalStockUse} bottles, exceeding available stock ${availableStock}.`);
       return;
     }
 
     setLoading(true);
     setError('');
     try {
-      if (planSources.length >= 2) {
+      if (quantity > 0 && planSources.length >= 2) {
         const availMap = new Map();
         (sourcesList || []).forEach(s => availMap.set(s.companyId, Number(s.available) || 0));
         const ok = validateSplit(splitAlloc, quantity, availMap);
@@ -428,9 +454,15 @@ export function CoatingQtyModal({ show, plan, onClose, onSave }) {
   if (!show || !plan) return null;
 
   const wholeQuantity = Number(coatQty) || 0;
-  const newCoatedTotal = currentCoated + wholeQuantity + rejectedQuantity;
-  const newBalance = newCoatedTotal - (plan.orderQty || 0);
-  const newPoolStock = availableStock === null ? null : availableStock - newCoatedTotal;
+  const newCoatedTotal = currentCoated + wholeQuantity;
+  const newBalance = getBalanceToMake(plan.orderQty, newCoatedTotal);
+  const openingPoolStock = availableStock === null ? null : availableStock + currentCoated;
+  const maxAdditionalRejected = availableStock === null
+    ? undefined
+    : Math.max(0, availableStock - currentCoated - currentRejectedStockQty - Math.max(0, wholeQuantity));
+  const newPoolStock = openingPoolStock === null
+    ? null
+    : openingPoolStock - newCoatedTotal - currentRejectedStockQty - rejectedQuantity;
 
   return (
     <div className="modal show lacquer-quantity-modal" style={{ display: 'block', backgroundColor: 'rgba(0,0,0,0.5)' }} onClick={onClose}>
@@ -468,7 +500,7 @@ export function CoatingQtyModal({ show, plan, onClose, onSave }) {
                 className="form-control"
                 value={coatQty}
                 onChange={e => handleCoatQtyChange(e.target.value)}
-                max={maxAdditionalQty === null ? undefined : maxAdditionalQty - rejectedQuantity}
+                max={maxAdditionalQty === null ? undefined : maxAdditionalQty}
                 placeholder="Enter whole quantity coated"
                 disabled={loading}
               />
@@ -482,7 +514,7 @@ export function CoatingQtyModal({ show, plan, onClose, onSave }) {
                     step="1"
                     value={rejectionBoxes}
                     onChange={e => handleRejectionBoxesChange(e.target.value)}
-                    max={boxSize > 0 && maxAdditionalQty !== null ? Math.floor(Math.max(0, maxAdditionalQty - Math.max(0, wholeQuantity) - (Number(rejectionQty) || 0)) / boxSize) : undefined}
+                    max={boxSize > 0 && maxAdditionalRejected !== undefined ? Math.floor(maxAdditionalRejected / boxSize) : undefined}
                     placeholder="Boxes"
                     disabled={loading || boxSize <= 0}
                   />
@@ -496,7 +528,7 @@ export function CoatingQtyModal({ show, plan, onClose, onSave }) {
                     step="1"
                     value={rejectionQty}
                     onChange={e => handleRejectionQtyChange(e.target.value)}
-                    max={maxAdditionalQty === null ? undefined : Math.max(0, maxAdditionalQty - Math.max(0, wholeQuantity) - (Number(rejectionBoxes) || 0) * boxSize)}
+                    max={maxAdditionalRejected === undefined ? undefined : Math.max(0, maxAdditionalRejected - (Number(rejectionBoxes) || 0) * boxSize)}
                     placeholder="Loose bottles"
                     disabled={loading}
                   />
@@ -506,7 +538,7 @@ export function CoatingQtyModal({ show, plan, onClose, onSave }) {
               {availableStock !== null && (
                 <small className="text-muted d-block">Available plain stock for this entry: {maxAdditionalQty}</small>
               )}
-              {planSources.length >= 2 && (
+              {planSources.length >= 2 && wholeQuantity > 0 && (
                 <div className="mt-2 p-2 bg-light border rounded">
                   <div className="small fw-bold text-muted mb-1 text-uppercase" style={{ fontSize: '11px' }}>Per-Source Split:</div>
                   <div className="d-flex flex-wrap gap-2 align-items-center">
@@ -543,14 +575,14 @@ export function CoatingQtyModal({ show, plan, onClose, onSave }) {
                 Rejected total = {rejectionBoxes || 0} × {boxSize || 0} + {rejectionQty || 0} = <strong>{rejectedQuantity}</strong>
               </small>
               <small className="text-muted d-block">
-                New total = {currentCoated} + {wholeQuantity} + {rejectedQuantity} = <strong>{newCoatedTotal}</strong>
+                New total = {currentCoated} + {wholeQuantity} = <strong>{newCoatedTotal}</strong>
               </small>
               <small className="text-muted d-block">
-                Balance to make = {newCoatedTotal} − {plan.orderQty || 0} = <strong>{newBalance}</strong>
+                Balance to make = {plan.orderQty || 0} − {newCoatedTotal} = <strong>{newBalance}</strong>
               </small>
               <small className="text-muted d-block">
                 {availableStock === null && !error ? 'Loading available pool stock...' : availableStock === null ? 'Available pool stock unavailable' : (
-                  <>Plain Stock = {availableStock} − {newCoatedTotal} = <strong className={newPoolStock < 0 ? 'text-danger' : 'text-success'}>{newPoolStock}</strong></>
+                  <>Plain Stock = {openingPoolStock} − {newCoatedTotal} − {currentRejectedStockQty + rejectedQuantity} rejected = <strong className={newPoolStock < 0 ? 'text-danger' : 'text-success'}>{newPoolStock}</strong></>
                 )}
               </small>
             </div>

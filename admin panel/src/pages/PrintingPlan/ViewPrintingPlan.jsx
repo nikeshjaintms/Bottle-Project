@@ -160,7 +160,7 @@ export default function ViewPrintingPlan() {
                       {(currentPlan.coatingShade || '').trim().toUpperCase() === 'PLAIN' && renderUsedFrom(currentPlan.stockAllocation)}
                     </td>
                     <td>
-                      <input type="text" className="form-control form-control-sm shadow-none bg-light text-center fw-bold text-danger" disabled value={currentPlan.balanceToMake || '0'} />
+                      <input type="text" className={`form-control form-control-sm shadow-none bg-light text-center fw-bold ${Number(currentPlan.balanceToMake) > 0 ? 'text-danger' : 'text-success'}`} disabled value={currentPlan.balanceToMake ?? '0'} />
                     </td>
                     <td>
                       <input type="text" className="form-control form-control-sm shadow-none bg-light text-center" disabled value={currentPlan.boxQty || '0'} />

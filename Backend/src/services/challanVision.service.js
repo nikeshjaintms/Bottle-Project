@@ -87,24 +87,59 @@ function extractChallanNumbersNearText(
         const prev = rowWords[i - 1];
         const next = rowWords[i + 1];
         if (next && /^\d+$/.test(next.text.replace(/,/g, '')) && next.x >= minBoxX) {
-          box = parseInt(next.text.replace(/,/g, ''), 10);
-          break;
+          const val = parseInt(next.text.replace(/,/g, ''), 10);
+          if (val > 0 && val < 50000 && !/^\d{6,8}$/.test(next.text.replace(/,/g, ''))) {
+            box = val;
+            break;
+          }
         } else if (prev && /^\d+$/.test(prev.text.replace(/,/g, '')) && prev.x >= minBoxX) {
-          box = parseInt(prev.text.replace(/,/g, ''), 10);
-          break;
+          const val = parseInt(prev.text.replace(/,/g, ''), 10);
+          if (val > 0 && val < 50000 && !/^\d{6,8}$/.test(prev.text.replace(/,/g, ''))) {
+            box = val;
+            break;
+          }
         }
       }
     }
 
     // Check box column if not found from word adjacency
     if (!box && boxColumnX !== -1) {
-      const boxCandidates = rowWords.filter(w =>
-        w.x >= minBoxX &&
-        w.x < (boxColumnRightBound !== Infinity ? boxColumnRightBound : boxColumnX + 60) &&
-        /^\d+$/.test(w.text.replace(/,/g, ''))
-      );
+      const boxCandidates = rowWords.filter(w => {
+        const clean = w.text.replace(/,/g, '');
+        const val = parseInt(clean, 10);
+        return w.x >= minBoxX &&
+          w.x < (boxColumnRightBound !== Infinity ? boxColumnRightBound : boxColumnX + 60) &&
+          /^\d+$/.test(clean) &&
+          val > 0 && val < 50000 && !/^\d{6,8}$/.test(clean);
+      });
       if (boxCandidates.length > 0) {
         box = parseInt(boxCandidates[0].text.replace(/,/g, ''), 10);
+      }
+    }
+  }
+
+  // Explicit check for package issue or description patterns (e.g. "Package issue: 571", "issue: 571.000")
+  const issueMatch = cleanChunk.match(/(?:package|pkg|box|ctn|carton)?[\s\w]*issue[es]*\s*[:\s]*(\d+(?:\.\d+)?)/i);
+  const pkgMatch = cleanChunk.match(/(?:package|pkg|box|carton)[s\s]*(?:no[.\s]*|count[s\s]*)?[:\s]*(\d+(?:\.\d+)?)/i);
+  const contentMatch = cleanChunk.match(/(?:average\s*content|pcs\s*per\s*(?:box|package|pkg|ctn)|qty\s*per\s*(?:box|package|pkg|ctn)|per\s*(?:box|package|pkg|ctn))[\s\w:]*?(\d+(?:\.\d+)?)/i);
+
+  const parsedContent = contentMatch ? Math.round(parseFloat(contentMatch[1])) : 0;
+  const parsedIssue = issueMatch ? Math.round(parseFloat(issueMatch[1])) : (pkgMatch ? Math.round(parseFloat(pkgMatch[1])) : 0);
+
+  if (parsedIssue > 0 && parsedIssue < 50000) {
+    box = parsedIssue;
+  }
+  if (parsedContent > 0) {
+    qty = parsedContent;
+  }
+
+  if (!box) {
+    const boxMatch = cleanChunk.match(/(?:^|\s)\d{1,2}\s+(\d{1,5})\s+.*?\b(?:boxes|box|pkgs?|cartons?|ctns?)\b/i) ||
+                     cleanChunk.match(/\b(\d{1,5})\s*(?:boxes|box|pkgs?|cartons?|ctns?)\b/i);
+    if (boxMatch) {
+      const val = parseInt(boxMatch[1], 10);
+      if (val > 0 && val < 50000 && !/^\d{6,8}$/.test(boxMatch[1])) {
+        box = val;
       }
     }
   }
@@ -366,18 +401,26 @@ function normalizeVisionWords(visionResponse) {
 
 function calculateDynamicSlope(words) {
   if (!words || words.length < 10) return 0;
-  const pairs = [
-    { left: /(^si$|^sl$|no\.)/i, right: /(amount|total)/i, yMin: 300, yMax: 900 },
-    { left: /(consignee|buyer|bill)/i, right: /(invoice|dated|e-way)/i, yMin: 100, yMax: 600 }
-  ];
-
-  for (const pair of pairs) {
-    const leftW = words.find(w => pair.left.test(w.text) && w.y >= pair.yMin && w.y <= pair.yMax && w.x < 200);
-    const rightW = words.find(w => pair.right.test(w.text) && w.y >= pair.yMin && w.y <= pair.yMax && w.x > 500);
-    if (leftW && rightW && Math.abs(rightW.x - leftW.x) > 300) {
-      const slope = (rightW.y - leftW.y) / (rightW.x - leftW.x);
-      if (Math.abs(slope) < 0.1) return slope;
+  // Robust check: pairs of words across the page with large X separation (> 300) and small Y difference (< 30)
+  const candidateSlopes = [];
+  for (let i = 0; i < words.length; i++) {
+    const w1 = words[i];
+    if (w1.x > 150) continue;
+    for (let j = 0; j < words.length; j++) {
+      const w2 = words[j];
+      if (w2.x < 450) continue;
+      const dx = w2.x - w1.x;
+      const dy = w2.y - w1.y;
+      if (dx > 300 && Math.abs(dy) < 30) {
+        candidateSlopes.push(dy / dx);
+      }
     }
+  }
+
+  if (candidateSlopes.length > 0) {
+    candidateSlopes.sort((a, b) => a - b);
+    const median = candidateSlopes[Math.floor(candidateSlopes.length / 2)];
+    if (Math.abs(median) < 0.1) return median;
   }
   return 0;
 }
@@ -518,22 +561,26 @@ function parseChallanData(ocrResult, companies, bottlePerBoxes) {
   let billToName = ""; // Will be assigned by our new company matcher
 
   // Extract Delivery / Challan / Invoice number using priority order
-  // Priority 1: Strict match with "No", "Number", "#", or ":"
-  let chMatch = fullText.match(/(?:challan|challn|delivery)[\s\W]*(?:n[o0]\.?|number|#|:)[\s\W]*((?=[A-Za-z0-9/-]*\d)[A-Za-z0-9/-]+)/i);
-             
-  // Priority 2: Fallback without "No" (e.g. "Delivery 12345")
-  if (!chMatch) {
-    chMatch = fullText.match(/(?:challan|challn|delivery)[\s\W]*((?=[A-Za-z0-9/-]*\d)[A-Za-z0-9/-]+)/i);
+  const isInvalidDocNum = (s) => !s || s.length > 25 || /^[a-f0-9]{24,}$/i.test(s) || /^(tax|invoice|gst|delivery|ack)/i.test(s);
+  let chMatches = [
+    // Priority 1: Strict match with Delivery Note / Delivery No / Challan No
+    fullText.match(/(?:challan|challn|delivery)[\s\W]*(?:n[o0]\.?|number|#|note|:)[\s\W]*((?=[A-Za-z0-9/-]*\d)[A-Za-z0-9/-]+)/i),
+    // Priority 2: Invoice No / Bill No (ignoring Tax Invoice without No)
+    fullText.match(/(?:invoice|inv)[\s\W]*(?:n[o0]\.?|number|#|:)[\s\W]*((?=[A-Za-z0-9/-]*\d)[A-Za-z0-9/-]+)/i),
+    // Priority 3: Fallback without "No"
+    fullText.match(/(?:challan|challn|delivery)[\s\W]*((?=[A-Za-z0-9/-]*\d)[A-Za-z0-9/-]+)/i),
+    // Priority 4: Standard invoice pattern e.g. ASI/26-27/01395 or ASI26-27/01395
+    fullText.match(/\b([A-Za-z]{2,6}\s*(?:\/|-)?\s*\d{2}-\d{2}\s*(?:\/|-)?\s*\d{3,6})\b/i),
+    // Priority 5: Fallback invoice label
+    fullText.match(/(?:invoice|inv|bill)[\s\W]*(?:n[o0]\.?|number|#|:)?[\s\W]*((?=[A-Za-z0-9/-]*\d)[A-Za-z0-9/-]+)/i)
+  ];
+
+  for (const m of chMatches) {
+    if (m && m[1] && !isInvalidDocNum(m[1].trim())) {
+      deliveryNumber = m[1].trim().replace(/\s*\/\s*/g, '/').replace(/\s*-\s*/g, '-');
+      break;
+    }
   }
-  
-  // Priority 3: Invoice / Bill / Inv label fallback (if no challan/delivery exists)
-  if (!chMatch) {
-    chMatch = fullText.match(/(?:invoice|inv|bill)[\s\W]*(?:n[o0]\.?|number|#|:)?[\s\W]*((?=[A-Za-z0-9/-]*\d)[A-Za-z0-9/-]+)/i);
-  }
-  
-  // Priority 4: Generic fallback removed as per user request. We only extract explicitly labelled numbers.
-  
-  if (chMatch) deliveryNumber = chMatch[1].trim();
 
   // Find Date using a highly permissive regex across the document
   // Use negative lookbehind to ignore "PO DATE", "DUE DATE", etc.
@@ -771,7 +818,7 @@ function parseChallanData(ocrResult, companies, bottlePerBoxes) {
 
       if (/(^sr$|^si$|^sl$)/i.test(w.text) && slNoColX === -1) slNoColX = w.x;
       if (/hsn/i.test(w.text) && hsnColX === -1) hsnColX = w.x;
-      if (/(box(es)?|pkgs?|packages?|cartons?|ctns?|case(s)?)/i.test(w.text) && boxColX === -1) {
+      if (/(box(es)?|pkgs?|packages?|cartons?|ctns?|case(s)?|phas|pigs|pkas)/i.test(w.text) && boxColX === -1) {
         hasBoxHeader = true;
         boxColX = w.x;
       }
@@ -872,7 +919,17 @@ function parseChallanData(ocrResult, companies, bottlePerBoxes) {
     }
   });
 
-  const sortedBottles = expandedBottles.sort((a, b) => b.matchName.length - a.matchName.length);
+  const sortedBottles = expandedBottles.sort((a, b) => {
+    const aClean = a.matchName.replace(/[-_\s]+$/, '');
+    const bClean = b.matchName.replace(/[-_\s]+$/, '');
+    if (aClean.toLowerCase() === bClean.toLowerCase()) {
+      const aHasTrailing = /[-_\s]+$/.test(a.matchName);
+      const bHasTrailing = /[-_\s]+$/.test(b.matchName);
+      if (aHasTrailing && !bHasTrailing) return 1;
+      if (!aHasTrailing && bHasTrailing) return -1;
+    }
+    return b.matchName.length - a.matchName.length;
+  });
 
   for (let i = 0; i < rows.length; i++) {
     if (headerRowEndIdx !== -1 && i <= headerRowEndIdx) continue;
@@ -893,41 +950,45 @@ function parseChallanData(ocrResult, companies, bottlePerBoxes) {
       .replace(/kpsr/g, 'psr')
       .replace(/psr\s*0*(\d+)\s*0*(\d+)\b/g, 'psr $1 $2');
 
+    let lookAheadEnd = i;
+    for (let j = i + 1; j < Math.min(rows.length, i + 5); j++) {
+      if (hasSerialNo(rows[j]) || isTableEnd(rowStrings[j])) break;
+      lookAheadEnd = j;
+    }
+
+    let blockCombinedString = "";
+    let blockCombinedWords = [];
+    for (let j = i; j <= lookAheadEnd; j++) {
+      blockCombinedString += " " + rowStrings[j];
+      blockCombinedWords = blockCombinedWords.concat(rows[j].words);
+    }
+    const normalizedBlock = blockCombinedString.toLowerCase()
+      .replace(/(\d+)\s*(ml|gm|kg|ltr|l|g)\b/gi, '$1 $2')
+      .replace(/[-_]/g, ' ')
+      .replace(/[^\w\s]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .replace(/kpsr/g, 'psr')
+      .replace(/psr\s*0*(\d+)\s*0*(\d+)\b/g, 'psr $1 $2');
+
     for (const bottle of sortedBottles) {
       if (foundNames.has(bottle.plainBottleName)) continue;
-      if (!checkBottleMatch(normalizedLine, bottle)) continue;
+      const isMatch = checkBottleMatch(normalizedLine, bottle) || checkBottleMatch(normalizedBlock, bottle);
+      if (!isMatch) continue;
 
       matched = true;
       matchedBottleName = bottle.plainBottleName;
 
       let itemStartIdx = i;
-      let itemEndIdx = i;
+      let itemEndIdx = lookAheadEnd;
 
-      // If row i does not have its own serial number, look backwards
-      if (!hasSerialNo(rows[i])) {
-        for (let j = i - 1; j >= Math.max(0, i - 3); j--) {
-          if (headerRowEndIdx !== -1 && j <= headerRowEndIdx) break;
-          const prevLine = rowStrings[j];
-          if (isTableEnd(prevLine)) break;
-          const prevNorm = prevLine.toLowerCase().replace(/[-_]/g, ' ').replace(/[^\w\s]/g, '').trim();
-          const hasOtherBottle = sortedBottles.some(b => b.plainBottleName !== bottle.plainBottleName && checkBottleMatch(prevNorm, b));
-          if (hasOtherBottle) break;
-
-          itemStartIdx = j;
-          if (hasSerialNo(rows[j])) break; // Found start of this item
+      // If previous row has no serial number and belongs to this item table entry, include it
+      if (i > 0 && !hasSerialNo(rows[i - 1]) && i - 1 > headerRowEndIdx && !isTableEnd(rowStrings[i - 1])) {
+        const prevNorm = rowStrings[i - 1].toLowerCase();
+        const prevHasOtherBottle = sortedBottles.some(b => b.plainBottleName !== bottle.plainBottleName && checkBottleMatch(prevNorm, b));
+        if (!prevHasOtherBottle) {
+          itemStartIdx = i - 1;
         }
-      }
-
-      // Look downwards
-      for (let j = i + 1; j < Math.min(rows.length, i + 3); j++) {
-        const nextLine = rowStrings[j];
-        if (isTableEnd(nextLine)) break;
-        if (hasSerialNo(rows[j])) break;
-        const nextNorm = nextLine.toLowerCase().replace(/[-_]/g, ' ').replace(/[^\w\s]/g, '').trim();
-        const hasOtherBottle = sortedBottles.some(b => b.plainBottleName !== bottle.plainBottleName && checkBottleMatch(nextNorm, b));
-        if (hasOtherBottle) break;
-
-        itemEndIdx = j;
       }
 
       let combinedString = "";
@@ -952,24 +1013,65 @@ function parseChallanData(ocrResult, companies, bottlePerBoxes) {
         slNoColX
       );
 
-      if (bestMatchFinancials.totalQty > 0 || bestMatchFinancials.qty > 0) {
-        const alreadyMatched = items.some(it =>
-          it.totalQty === bestMatchFinancials.totalQty &&
-          it.box === bestMatchFinancials.box &&
-          bestMatchFinancials.totalQty > 0
-        );
-        if (!alreadyMatched) {
-          const matchedBottleObj = canonicalMap.get(bottle.plainBottleName);
+      const matchedBottleObj = canonicalMap.get(bottle.plainBottleName);
+      let bpbQty = (matchedBottleObj && matchedBottleObj.bottlePerBox) || null;
+      let finalBox = bestMatchFinancials.box;
+      let finalQty = bestMatchFinancials.qty || bpbQty || 1;
+      let finalTotal = bestMatchFinancials.totalQty;
+
+      if (bpbQty && bpbQty > 0) {
+        if (finalBox > 0 && finalTotal > 0) {
+          const derived = Math.round(finalTotal / finalBox);
+          if (derived === bpbQty || Math.abs(derived - bpbQty) <= 2) {
+            finalQty = bpbQty;
+            finalTotal = finalBox * bpbQty;
+          }
+        } else if (finalBox > 0 && !finalTotal) {
+          finalQty = bpbQty;
+          finalTotal = finalBox * bpbQty;
+        } else if (finalTotal > 0 && !finalBox) {
+          finalQty = bpbQty;
+          finalBox = Math.round(finalTotal / bpbQty);
+        }
+      }
+
+      if (finalTotal > 0 || finalQty > 0 || finalBox > 0) {
+        const existingItemIndex = items.findIndex(it => {
+          const sameTotal = it.totalQty > 0 && finalTotal > 0 && it.totalQty === finalTotal;
+          const itNameNorm = (it.bottleId?.plainBottleName || '').toLowerCase().replace(/[-_\s]+/g, ' ').trim();
+          const newNameNorm = (bottle.plainBottleName || '').toLowerCase().replace(/[-_\s]+/g, ' ').trim();
+          const sameBottle = itNameNorm && newNameNorm && (
+            itNameNorm === newNameNorm ||
+            itNameNorm.replace(/\s*-\s*$/, '') === newNameNorm.replace(/\s*-\s*$/, '') ||
+            stringSimilarity.compareTwoStrings(itNameNorm, newNameNorm) > 0.8
+          );
+          return sameTotal || sameBottle;
+        });
+
+        if (existingItemIndex !== -1) {
+          const existing = items[existingItemIndex];
+          const existingBoxInvalid = !existing.box || existing.box >= 50000 || /^\d{6,8}$/.test(String(existing.box));
+          const newBoxValid = finalBox > 0 && finalBox < 50000;
+          if (existingBoxInvalid && newBoxValid) {
+            existing.box = finalBox;
+            existing.qty = finalQty;
+            existing.totalQty = finalTotal || existing.totalQty;
+          }
+          if (bottle.plainBottleName && !/-$/.test(bottle.plainBottleName) && /-$/.test(existing.bottleId.plainBottleName)) {
+            existing.bottleId._id = bottle._id.toString();
+            existing.bottleId.plainBottleName = bottle.plainBottleName;
+          }
+        } else {
           items.push({
             bottleId: { 
               _id: bottle._id.toString(), 
               plainBottleName: bottle.plainBottleName,
               bottlePerBox: matchedBottleObj ? matchedBottleObj.bottlePerBox : null
             },
-            bottlePerBox: bestMatchFinancials.qty || (matchedBottleObj ? matchedBottleObj.bottlePerBox : null),
-            box: bestMatchFinancials.box,
-            qty: bestMatchFinancials.qty || (matchedBottleObj ? matchedBottleObj.bottlePerBox : null) || 1,
-            totalQty: bestMatchFinancials.totalQty,
+            bottlePerBox: finalQty || bpbQty,
+            box: finalBox,
+            qty: finalQty || bpbQty || 1,
+            totalQty: finalTotal,
             textLine: combinedString.trim() || line
           });
           foundNames.add(bottle.plainBottleName);
@@ -977,11 +1079,12 @@ function parseChallanData(ocrResult, companies, bottlePerBoxes) {
 
         if (unmatchedItems.length > 0) {
           const lastUnmatched = unmatchedItems[unmatchedItems.length - 1];
-          if (lastUnmatched.totalQty === bestMatchFinancials.totalQty && lastUnmatched.qty === bestMatchFinancials.qty) {
+          if (lastUnmatched.totalQty === finalTotal && lastUnmatched.qty === finalQty) {
             unmatchedItems.pop();
           }
         }
       }
+      i = itemEndIdx;
       break;
     }
 
@@ -1134,15 +1237,97 @@ function parseChallanData(ocrResult, companies, bottlePerBoxes) {
       }
 
       if (finalTotal > 0 || (finalBox > 0 && finalQty > 0)) {
-        const alreadyInItems = items.some(it => it.totalQty === finalTotal && it.box === finalBox);
-        if (!alreadyInItems) {
-          unmatchedItems.push({
-            suggestedName: nameGuess || "Unknown Item",
-            box: finalBox || 1,
-            qty: finalQty || 1,
-            totalQty: finalTotal,
-            textLine: combinedString.trim() || line
+        let foundBlockBottle = null;
+        const normCombined = combinedString.toLowerCase()
+          .replace(/(\d+)\s*(ml|gm|kg|ltr|l|g)\b/gi, '$1 $2')
+          .replace(/[-_]/g, ' ')
+          .replace(/[^\w\s]/g, '')
+          .replace(/\s+/g, ' ')
+          .trim();
+        const normGuess = (nameGuess || '').toLowerCase()
+          .replace(/(\d+)\s*(ml|gm|kg|ltr|l|g)\b/gi, '$1 $2')
+          .replace(/[-_]/g, ' ')
+          .replace(/[^\w\s]/g, '')
+          .replace(/\s+/g, ' ')
+          .trim();
+
+        for (const bottle of sortedBottles) {
+          if (!foundNames.has(bottle.plainBottleName)) {
+            if (checkBottleMatch(normCombined, bottle) || (normGuess && checkBottleMatch(normGuess, bottle))) {
+              foundBlockBottle = bottle;
+              break;
+            }
+          }
+        }
+
+        if (foundBlockBottle) {
+          const matchedBottleObj = canonicalMap.get(foundBlockBottle.plainBottleName);
+          let bpbQty = (matchedBottleObj && matchedBottleObj.bottlePerBox) || null;
+          if (bpbQty && bpbQty > 0) {
+            if (finalBox > 0 && finalTotal > 0) {
+              const derived = Math.round(finalTotal / finalBox);
+              if (derived === bpbQty || Math.abs(derived - bpbQty) <= 2) {
+                finalQty = bpbQty;
+                finalTotal = finalBox * bpbQty;
+              }
+            } else if (finalBox > 0 && !finalTotal) {
+              finalQty = bpbQty;
+              finalTotal = finalBox * bpbQty;
+            } else if (finalTotal > 0 && !finalBox) {
+              finalQty = bpbQty;
+              finalBox = Math.round(finalTotal / bpbQty);
+            }
+          }
+          const existingItemIndex = items.findIndex(it => {
+            const sameTotal = it.totalQty > 0 && finalTotal > 0 && it.totalQty === finalTotal;
+            const itNameNorm = (it.bottleId?.plainBottleName || '').toLowerCase().replace(/[-_\s]+/g, ' ').trim();
+            const newNameNorm = (foundBlockBottle.plainBottleName || '').toLowerCase().replace(/[-_\s]+/g, ' ').trim();
+            const sameBottle = itNameNorm && newNameNorm && (
+              itNameNorm === newNameNorm ||
+              itNameNorm.replace(/\s*-\s*$/, '') === newNameNorm.replace(/\s*-\s*$/, '') ||
+              stringSimilarity.compareTwoStrings(itNameNorm, newNameNorm) > 0.8
+            );
+            return sameTotal || sameBottle;
           });
+
+          if (existingItemIndex !== -1) {
+            const existing = items[existingItemIndex];
+            const existingBoxInvalid = !existing.box || existing.box >= 50000 || /^\d{6,8}$/.test(String(existing.box));
+            const newBoxValid = finalBox > 0 && finalBox < 50000;
+            if (existingBoxInvalid && newBoxValid) {
+              existing.box = finalBox;
+              existing.qty = finalQty;
+              existing.totalQty = finalTotal || existing.totalQty;
+            }
+          } else {
+            items.push({
+              bottleId: {
+                _id: foundBlockBottle._id.toString(),
+                plainBottleName: foundBlockBottle.plainBottleName,
+                bottlePerBox: matchedBottleObj ? matchedBottleObj.bottlePerBox : null
+              },
+              bottlePerBox: finalQty || bpbQty,
+              box: finalBox,
+              qty: finalQty || bpbQty || 1,
+              totalQty: finalTotal,
+              textLine: combinedString.trim() || line
+            });
+            foundNames.add(foundBlockBottle.plainBottleName);
+          }
+        } else {
+          const alreadyInItems = items.some(it => {
+            if (it.totalQty > 0 && it.totalQty === finalTotal) return true;
+            return false;
+          });
+          if (!alreadyInItems) {
+            unmatchedItems.push({
+              suggestedName: nameGuess || "Unknown Item",
+              box: finalBox || 1,
+              qty: finalQty || 1,
+              totalQty: finalTotal,
+              textLine: combinedString.trim() || line
+            });
+          }
         }
       }
       i = itemEndIdx;
@@ -1150,10 +1335,17 @@ function parseChallanData(ocrResult, companies, bottlePerBoxes) {
   }
 
   const finalUnmatchedItems = unmatchedItems.filter(u => {
-    const alreadyMatched = items.some(it =>
-      (it.totalQty > 0 && it.totalQty === u.totalQty && it.box === u.box) ||
-      (it.totalQty > 0 && it.totalQty === u.totalQty)
-    );
+    const alreadyMatched = items.some(it => {
+      if (it.totalQty > 0 && it.totalQty === u.totalQty) return true;
+      const itNameNorm = (it.bottleId?.plainBottleName || '').toLowerCase().replace(/[-_\s]+/g, ' ').trim();
+      const uNameNorm = (u.suggestedName || '').toLowerCase().replace(/[-_\s]+/g, ' ').trim();
+      if (itNameNorm && uNameNorm && (
+        itNameNorm === uNameNorm ||
+        itNameNorm.replace(/\s*-\s*$/, '') === uNameNorm.replace(/\s*-\s*$/, '') ||
+        stringSimilarity.compareTwoStrings(itNameNorm, uNameNorm) > 0.7
+      )) return true;
+      return false;
+    });
     if (alreadyMatched) return false;
 
     const norm = normalizeSkipText(u.suggestedName || '');

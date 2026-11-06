@@ -77,8 +77,61 @@ export default function CreateRole() {
   }
 
   const groupOrder = [
-    'dashboard', 'user', 'operator', 'shift', 'unit', 'company', 'brand', 'printing-type', 'printing-color', 'bottlespec', 'variant', 'formula', 'production', 'incoming', 'coating-type', 'coatingspec', 'coatingproduction', 'permission', 'role', 'vision', 'all'
+    'dashboard',
+    'user',
+    'shift',
+    'operator',
+    'unit',
+    'raw-material',
+    'bottleperbox',
+    'company',
+    'brand',
+    'printing-type',
+    'printing-color',
+    'bottlespec',
+    'variant',
+    'production',
+    'coating-type',
+    'coatingspec',
+    'coatingproduction',
+    'formula',
+    'stock_entry',
+    'sg-label',
+    'sg-label-2',
+    'company-address',
+    'incoming',
+    'shreno-incoming',
+    'lacquerplan',
+    'printingplan',
+    'ready-to-dispatch',
+    'delivery-challan',
+    'dispatch',
+    'summary',
+    'vision',
+    'permission',
+    'role',
+    'all'
   ];
+
+  const getPermissionActionRank = (permissionName) => {
+    const name = String(permissionName || '').toLowerCase();
+
+    if (name.startsWith('create-')) return 0;
+    if (name.startsWith('send-')) return 1;
+    if (name.startsWith('edit-')) return 2;
+    if (name.startsWith('read-')) return 3;
+    if (name.startsWith('delete-')) return 4;
+    if (name.startsWith('sidebar-')) return 5;
+    if (name.startsWith('show-')) return 6;
+    return 7;
+  };
+
+  const getPermissionSortName = (permissionName) => {
+    const name = String(permissionName || '').toLowerCase();
+    const [action, ...subjectParts] = name.split('-');
+    const subject = subjectParts.join('-');
+    return `${getPermissionActionRank(name)}-${subject || name}`;
+  };
 
   const groupedPermissions = permissions.reduce((acc, p) => {
     let subject = 'other';
@@ -105,6 +158,14 @@ export default function CreateRole() {
     acc[subject].push(p);
     return acc;
   }, {});
+
+  Object.keys(groupedPermissions).forEach((subject) => {
+    groupedPermissions[subject].sort((a, b) => {
+      const actionRankDiff = getPermissionActionRank(a.name) - getPermissionActionRank(b.name);
+      if (actionRankDiff !== 0) return actionRankDiff;
+      return (a.name || '').localeCompare(b.name || '');
+    });
+  });
 
   const sortedSubjects = Object.keys(groupedPermissions).sort((a, b) => {
     const idxA = groupOrder.indexOf(a);
@@ -196,5 +257,4 @@ export default function CreateRole() {
     </div>
   );
 }
-
 

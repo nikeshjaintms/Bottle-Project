@@ -14,7 +14,7 @@ import CreatableSelect from 'react-select/creatable';
 import API from '../../services/api';
 import Swal from 'sweetalert2';
 import { useLacquerPlanLanguage } from '../../hooks/useLacquerPlanLanguage';
-import { isPlanRowCompleted } from '../../utils/lacquerPlanUtils';
+import { getBalanceToMake, isPlanRowCompleted } from '../../utils/lacquerPlanUtils';
 
 // Pool key: (company, plain bottle id / canonical name), strictly NO brand and NO section in the key.
 const getPoolKey = (companyId, bottleName, bottlePerBoxes = []) => {
@@ -43,6 +43,37 @@ const getCanonicalPlainBottleName = (bottleName, bottlePerBoxes = []) => {
     return names.some(n => n.trim().toUpperCase() === bTrim);
   });
   return bp ? (bp.plainBottleName || bp.bottleName || bTrim).trim().toUpperCase() : bTrim;
+};
+
+const getLiveSourceAvailability = (poolData, rows, poolKey, sourceId, bottlePerBoxes, poolSourcesMap, excludeRowIndex = null) => {
+  const sourceIdString = (sourceId?._id || sourceId)?.toString();
+  const sourceData = [
+    ...(poolData?.sources || []),
+    ...(poolData?.eligibleSuppliers || []),
+    ...(poolData?.eligibleIncomingCompanies || [])
+  ].find(source => (source.companyId?._id || source.companyId)?.toString() === sourceIdString);
+  const baseAvailable = Number(sourceData?.available);
+  if (!Number.isFinite(baseAvailable)) return 0;
+
+  const alreadyAllocated = rows.reduce((total, row, index) => {
+    if (index === excludeRowIndex || getPoolKey(row.companyId, row.bottleName || row.plainBottle, bottlePerBoxes) !== poolKey) {
+      return total;
+    }
+
+    const allocation = (row.stockAllocation || []).find(item =>
+      (item.companyId?._id || item.companyId)?.toString() === sourceIdString
+    );
+    if (allocation) return total + (Number(allocation.qty) || 0);
+
+    const rowSources = (poolSourcesMap[poolKey] || row.stockSources || [row.companyId])
+      .map(source => (source?._id || source)?.toString());
+    if (rowSources.length === 1 && rowSources[0] === sourceIdString) {
+      return total + (Number(row.coatedQty ?? row.coatingCompletedQty) || 0);
+    }
+    return total;
+  }, 0);
+
+  return Math.max(0, baseAvailable - alreadyAllocated);
 };
 
 
@@ -234,22 +265,18 @@ export default function AddLacquerPlan() {
     }
     setPoolSourcesMap(prev => ({ ...prev, [pk]: updatedSources }));
 
-    // Prepare immediate availability map from current poolData
     const poolData = openingStockMap[pk] || {};
-    const immediateAvailMap = new Map();
-    (poolData.sources || []).forEach(s => {
-      immediateAvailMap.set((s.companyId?._id || s.companyId)?.toString(), s.available ?? 0);
-    });
-    (poolData.eligibleSuppliers || []).forEach(s => {
-      const sId = (s.companyId?._id || s.companyId)?.toString();
-      if (!immediateAvailMap.has(sId)) {
-        immediateAvailMap.set(sId, s.available ?? 0);
-      }
-    });
-
-    setRows(prevRows => prevRows.map(r => {
+    const updatedSourcesMap = { ...poolSourcesMap, [pk]: updatedSources };
+    setRows(prevRows => prevRows.map((r, rowIndex) => {
       const rPk = getPoolKey(r.companyId, r.bottleName || r.plainBottle, bottlePerBoxes);
       if (rPk === pk) {
+        const immediateAvailMap = new Map(updatedSources.map(source => {
+          const sourceId = (source?._id || source)?.toString();
+          return [
+            sourceId,
+            getLiveSourceAvailability(poolData, prevRows, pk, sourceId, bottlePerBoxes, updatedSourcesMap, rowIndex)
+          ];
+        }));
         const rowAlloc = updatedSources.length >= 2
           ? computeSplitSuggestion(r.coatedQty, updatedSources, immediateAvailMap, r.companyId)
           : (r.stockAllocation || []);
@@ -270,7 +297,6 @@ export default function AddLacquerPlan() {
         const plainStock = res.data.data.plainStock !== undefined ? res.data.data.plainStock : res.data.data.openingStock;
         const opStock = res.data.data.openingStock !== undefined ? res.data.data.openingStock : plainStock;
         const freshSources = res.data.data.sources || [];
-        const freshEligible = res.data.data.eligibleSuppliers || [];
         setOpeningStockMap(prev => ({
           ...prev,
           [pk]: {
@@ -278,21 +304,28 @@ export default function AddLacquerPlan() {
             openingStock: Number.isFinite(Number(opStock)) ? Number(opStock) : 0,
             sources: freshSources,
             hasSuppliers: res.data.data.hasSuppliers || false,
-            eligibleSuppliers: freshEligible
+            eligibleSuppliers: res.data.data.eligibleSuppliers || [],
+            eligibleIncomingCompanies: res.data.data.eligibleIncomingCompanies || []
           }
         }));
 
         // Re-suggest split for multi-source rows in this pool
         if (updatedSources.length >= 2) {
-          const availMap = new Map();
-          freshSources.forEach(s => availMap.set((s.companyId?._id || s.companyId)?.toString(), s.available ?? 0));
-          freshEligible.forEach(s => {
-            const sId = (s.companyId?._id || s.companyId)?.toString();
-            if (!availMap.has(sId)) availMap.set(sId, s.available ?? 0);
-          });
-          setRows(prevRows => prevRows.map(r => {
+          const freshPoolData = {
+            sources: freshSources,
+            eligibleSuppliers: res.data.data.eligibleSuppliers || [],
+            eligibleIncomingCompanies: res.data.data.eligibleIncomingCompanies || []
+          };
+          setRows(prevRows => prevRows.map((r, rowIndex) => {
             const rPk = getPoolKey(r.companyId, r.bottleName || r.plainBottle, bottlePerBoxes);
             if (rPk === pk) {
+              const availMap = new Map(updatedSources.map(source => {
+                const sourceId = (source?._id || source)?.toString();
+                return [
+                  sourceId,
+                  getLiveSourceAvailability(freshPoolData, prevRows, pk, sourceId, bottlePerBoxes, updatedSourcesMap, rowIndex)
+                ];
+              }));
               return {
                 ...r,
                 stockAllocation: computeSplitSuggestion(r.coatedQty, updatedSources, availMap, r.companyId)
@@ -412,7 +445,8 @@ export default function AddLacquerPlan() {
               openingStock: Number.isFinite(Number(opStock)) ? Number(opStock) : 0,
               sources: res.data.data.sources || [],
               hasSuppliers: res.data.data.hasSuppliers || false,
-              eligibleSuppliers: res.data.data.eligibleSuppliers || []
+              eligibleSuppliers: res.data.data.eligibleSuppliers || [],
+              eligibleIncomingCompanies: res.data.data.eligibleIncomingCompanies || []
             }
           }));
         }
@@ -774,7 +808,8 @@ export default function AddLacquerPlan() {
                 openingStock: Number.isFinite(Number(fetchedOpeningStock)) ? Number(fetchedOpeningStock) : 0,
                 sources: res.data?.data?.sources || [],
                 hasSuppliers: res.data?.data?.hasSuppliers || false,
-                eligibleSuppliers: res.data?.data?.eligibleSuppliers || []
+                eligibleSuppliers: res.data?.data?.eligibleSuppliers || [],
+                eligibleIncomingCompanies: res.data?.data?.eligibleIncomingCompanies || []
               }
             }));
           }
@@ -862,7 +897,7 @@ export default function AddLacquerPlan() {
         currentRow.noOfBoxes = Math.ceil(orderQty / boxQty);
       }
       const coatedQty = parseFloat(currentRow.coatedQty);
-      currentRow.balanceToMake = (!isNaN(coatedQty) && String(currentRow.coatedQty).trim() !== '') ? (coatedQty - orderQty) : -orderQty;
+      currentRow.balanceToMake = getBalanceToMake(orderQty, !isNaN(coatedQty) ? coatedQty : 0);
     }
 
     if (field === 'coatedQty') {
@@ -870,21 +905,19 @@ export default function AddLacquerPlan() {
       if (isNaN(newCoatedQty)) newCoatedQty = 0;
       currentRow.coatedQty = value === '' ? '' : newCoatedQty;
       const orderQty = parseFloat(currentRow.orderQty);
-      currentRow.balanceToMake = (!isNaN(orderQty) && String(currentRow.orderQty).trim() !== '') ? (newCoatedQty - orderQty) : 0;
+      currentRow.balanceToMake = getBalanceToMake(!isNaN(orderQty) ? orderQty : 0, newCoatedQty);
 
       const pk = getPoolKey(currentRow.companyId, currentRow.bottleName || currentRow.plainBottle, bottlePerBoxes);
       const sources = poolSourcesMap[pk] || currentRow.stockSources || [currentRow.companyId];
       if (sources.length >= 2) {
         const poolData = openingStockMap[pk] || {};
         const sourcesAvailMap = new Map();
-        (poolData.sources || []).forEach(s => {
-          sourcesAvailMap.set((s.companyId?._id || s.companyId)?.toString(), s.available ?? 0);
-        });
-        (poolData.eligibleSuppliers || []).forEach(s => {
-          const sId = (s.companyId?._id || s.companyId)?.toString();
-          if (!sourcesAvailMap.has(sId)) {
-            sourcesAvailMap.set(sId, s.available ?? 0);
-          }
+        sources.forEach(source => {
+          const sourceId = (source?._id || source)?.toString();
+          sourcesAvailMap.set(
+            sourceId,
+            getLiveSourceAvailability(poolData, rows, pk, sourceId, bottlePerBoxes, poolSourcesMap, index)
+          );
         });
         const currentSum = (currentRow.stockAllocation || []).reduce((sum, a) => sum + (Number(a.qty) || 0), 0);
         if (currentSum !== newCoatedQty) {
@@ -1026,8 +1059,15 @@ export default function AddLacquerPlan() {
 
       // Asynchronously fetch plainStock for currentRow if needed
       if (currentRow.bottleName && currentRow.companyId) {
+        const stockPoolKey = getPoolKey(currentRow.companyId, currentRow.bottleName, bottlePerBoxes);
+        const stockSources = poolSourcesMap[stockPoolKey] || currentRow.stockSources || [currentRow.companyId];
         API.get('/lacquer-plan/stats/computed', {
-          params: { bottleName: currentRow.bottleName, companyId: currentRow.companyId, planDate }
+          params: {
+            bottleName: currentRow.bottleName,
+            companyId: currentRow.companyId,
+            planDate,
+            stockSources: stockSources.map(source => (source?._id || source).toString()).join(',')
+          }
         }).then(res => {
           if (res.data?.success) {
             const fetchedStock = res.data.data.plainStock !== undefined ? res.data.data.plainStock : 0;
@@ -1041,7 +1081,8 @@ export default function AddLacquerPlan() {
                   openingStock: Number.isFinite(Number(fetchedOpeningStock)) ? Number(fetchedOpeningStock) : 0,
                   sources: res.data?.data?.sources || [],
                   hasSuppliers: res.data?.data?.hasSuppliers || false,
-                  eligibleSuppliers: res.data?.data?.eligibleSuppliers || []
+                  eligibleSuppliers: res.data?.data?.eligibleSuppliers || [],
+                  eligibleIncomingCompanies: res.data?.data?.eligibleIncomingCompanies || []
                 }
               }));
             }
@@ -1061,8 +1102,17 @@ export default function AddLacquerPlan() {
         rowsToAdd.forEach(clonedRow => {
           const vid = clonedRow.variantId[0];
           if (clonedRow.bottleName && clonedRow.companyId) {
+            const stockPoolKey = getPoolKey(clonedRow.companyId, clonedRow.bottleName, bottlePerBoxes);
+            const stockSources = poolSourcesMap[stockPoolKey] || clonedRow.stockSources || [clonedRow.companyId];
             API.get('/lacquer-plan/stats/computed', {
-              params: { bottleName: clonedRow.bottleName, companyId: clonedRow.companyId, brandId: clonedRow.brandId, colour: clonedRow.colour, planDate }
+              params: {
+                bottleName: clonedRow.bottleName,
+                companyId: clonedRow.companyId,
+                brandId: clonedRow.brandId,
+                colour: clonedRow.colour,
+                planDate,
+                stockSources: stockSources.map(source => (source?._id || source).toString()).join(',')
+              }
             }).then(res => {
               if (res.data?.success) {
                 setRows(currentRows => {
@@ -1432,7 +1482,7 @@ export default function AddLacquerPlan() {
         const alloc = r.stockAllocation || [];
         let sum = 0;
         for (const sId of sources) {
-          const sAvail = pData?.sources?.find(src => src.companyId === sId)?.available ?? 0;
+          const sAvail = getLiveSourceAvailability(pData, rows, rPk, sId, bottlePerBoxes, poolSourcesMap, rIdx);
           const comp = (companies || []).find(c => c._id === sId);
           const sName = comp?.name || 'Company';
           const partObj = alloc.find(a => (a.companyId?._id || a.companyId)?.toString() === sId);
@@ -2055,11 +2105,20 @@ export default function AddLacquerPlan() {
                                                 
                                                 // Look up the actual BottlePerBox data
                                                 const bottlePerBoxData = (bottlePerBoxes || []).find(b =>
+                                                  String(b._id) === String(selected.value) ||
                                                   normalizeRollOn(b.plainBottleName || b.bottleName || '').trim() === normalizeRollOn(selectedBottleName || '').trim()
                                                 );
                                                 
-                                                // If bottle exists in BottlePerBox master, it's valid - don't show the error modal
-                                                if (bottlePerBoxData) {
+                                                const bottleNameSet = new Set([
+                                                  selectedBottleName,
+                                                  ...(bottlePerBoxData?.bottleNames || [])
+                                                ].map(normalizeRollOn).filter(Boolean));
+                                                const hasBrandSpec = (bottleSpecs || []).some(spec =>
+                                                  (spec.brandId?._id || spec.brandId)?.toString() === gBrandId?.toString() &&
+                                                  bottleNameSet.has(normalizeRollOn(spec.bottleName))
+                                                );
+
+                                                if (bottlePerBoxData && hasBrandSpec) {
                                                   // Bottle exists in master - proceed normally
                                                   handleRowChange(index, 'plainBottleId', selected.value);
                                                   
@@ -2075,7 +2134,7 @@ export default function AddLacquerPlan() {
                                                     brandId: gBrandId || '',
                                                     companyName: companies.find(c => c._id === gCompanyId)?.name || '',
                                                     brandName: brands.find(b => b._id === gBrandId)?.name || '',
-                                                    bottlePerBox: '',
+                                                    bottlePerBox: bottlePerBoxData?.bottlePerBox ?? '',
                                                     printingTypeId: '',
                                                     printingColorId: '',
                                                     rowIndex: index,
@@ -2235,13 +2294,28 @@ export default function AddLacquerPlan() {
                                             const ownComp = (companies || []).find(c => (c._id?.toString() || c.toString()) === (row.companyId?._id || row.companyId)?.toString());
                                             const stockSuppliers = (companies || []).filter(c => c.isStockSupplier);
                                             const poolData = openingStockMap[pk] || {};
+                                            const incomingSources = [
+                                              ...(poolData.eligibleSuppliers || []),
+                                              ...(poolData.eligibleIncomingCompanies || [])
+                                            ].map(source => {
+                                              const sourceId = (source.companyId?._id || source.companyId)?.toString();
+                                              return (companies || []).find(c => (c._id || c).toString() === sourceId) || {
+                                                _id: sourceId,
+                                                name: source.companyName
+                                              };
+                                            });
                                             const hasSupplierWithBottle = (poolData?.hasSuppliers === true) ||
                                               (Array.isArray(poolData?.eligibleSuppliers) && poolData.eligibleSuppliers.length > 0) ||
+                                              (Array.isArray(poolData?.eligibleIncomingCompanies) && poolData.eligibleIncomingCompanies.length > 0) ||
                                               (row.stockSources && row.stockSources.some(sId => stockSuppliers.some(supp => (supp._id || supp).toString() === (sId?._id || sId)?.toString())));
 
                                             if (!hasSupplierWithBottle) return null;
 
-                                            const availableSources = [ownComp, ...stockSuppliers].filter(Boolean);
+                                            const availableSources = Array.from(new Map(
+                                              [ownComp, ...stockSuppliers, ...incomingSources]
+                                                .filter(Boolean)
+                                                .map(source => [(source._id || source).toString(), source])
+                                            ).values());
                                             return (
                                               <div className="dropdown dropup mt-1 position-relative stock-from-dropdown">
                                                 <button
@@ -2280,9 +2354,10 @@ export default function AddLacquerPlan() {
                                                       const sIdStr = (s._id || s).toString();
                                                       const isChecked = selectedSources.some(id => (id?._id || id)?.toString() === sIdStr);
                                                       const srcFound = (poolData?.sources || []).find(src => (src.companyId?._id || src.companyId)?.toString() === sIdStr)
-                                                        || (poolData?.eligibleSuppliers || []).find(src => (src.companyId?._id || src.companyId)?.toString() === sIdStr);
-                                                      const sAvail = srcFound?.available !== undefined 
-                                                        ? srcFound.available 
+                                                        || (poolData?.eligibleSuppliers || []).find(src => (src.companyId?._id || src.companyId)?.toString() === sIdStr)
+                                                        || (poolData?.eligibleIncomingCompanies || []).find(src => (src.companyId?._id || src.companyId)?.toString() === sIdStr);
+                                                      const sAvail = srcFound?.available !== undefined
+                                                        ? getLiveSourceAvailability(poolData, rows, pk, sIdStr, bottlePerBoxes, poolSourcesMap, index)
                                                         : (sIdStr === String(row.companyId?._id || row.companyId) ? currentShownStock : 0);
                                                       return (
                                                         <div className="form-check" key={sIdStr}>
@@ -2352,9 +2427,15 @@ export default function AddLacquerPlan() {
                                           for (const sId of selectedSources) {
                                             const comp = (companies || []).find(c => (c._id || c)?.toString() === sId?.toString());
                                             const sName = comp?.name || 'Company';
-                                            const sAvail = poolData?.sources?.find(src => (src.companyId?._id || src.companyId)?.toString() === sId?.toString())?.available
-                                              ?? poolData?.eligibleSuppliers?.find(src => (src.companyId?._id || src.companyId)?.toString() === sId?.toString())?.available
-                                              ?? 0;
+                                            const sAvail = getLiveSourceAvailability(
+                                              poolData,
+                                              rows,
+                                              pk,
+                                              sId,
+                                              bottlePerBoxes,
+                                              poolSourcesMap,
+                                              index
+                                            );
                                             const partObj = alloc.find(a => (a.companyId?._id || a.companyId)?.toString() === sId?.toString());
                                             const partQty = partObj ? Number(partObj.qty) : 0;
                                             allocSum += partQty;

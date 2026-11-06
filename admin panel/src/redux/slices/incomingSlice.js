@@ -11,16 +11,29 @@ export const fetchIncomingPlainBottleOptions = createAsyncThunk(
         params: { companyId },
       });
       const optionsByName = new Map();
-      (response.data?.data || []).forEach((bottle) => {
-        const name = String(bottle.name || '').trim().replace(/\s+/g, ' ');
+      const allBottles = [
+        ...(response.data?.data || []).map(b => ({ ...b, isOtherBottle: false })),
+        ...(response.data?.otherBottles || []).map(b => ({ ...b, isOtherBottle: true }))
+      ];
+      allBottles.forEach((bottle) => {
+        const name = String(bottle.name || bottle.plainBottleName || '').trim().replace(/\s+/g, ' ');
         const normalizedName = normalizeBottleName(name);
         if (!bottle.id || !name || !normalizedName || normalizedName === 'unknown' || optionsByName.has(normalizedName)) return;
-        optionsByName.set(normalizedName, { value: String(bottle.id), label: name });
+        optionsByName.set(normalizedName, {
+          value: String(bottle.id),
+          label: name,
+          plainBottleName: bottle.plainBottleName || name,
+          bottlePerBox: bottle.bottlePerBox !== undefined ? bottle.bottlePerBox : null,
+          isOtherBottle: Boolean(bottle.isOtherBottle)
+        });
       });
 
-      const options = Array.from(optionsByName.values()).sort((a, b) =>
-        a.label.localeCompare(b.label, undefined, { numeric: true, sensitivity: 'base' })
-      );
+      const options = Array.from(optionsByName.values()).sort((a, b) => {
+        if (a.isOtherBottle !== b.isOtherBottle) {
+          return a.isOtherBottle ? 1 : -1;
+        }
+        return a.label.localeCompare(b.label, undefined, { numeric: true, sensitivity: 'base' });
+      });
       return { companyId: String(companyId), options };
     } catch (error) {
       return rejectWithValue(

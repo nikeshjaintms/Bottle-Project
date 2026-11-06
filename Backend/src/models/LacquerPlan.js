@@ -145,6 +145,10 @@ const lacquerPlanSchema = new mongoose.Schema({
     type: Number,
     default: null
   },
+  isExcelViewOnly: {
+    type: Boolean,
+    default: false
+  },
   isEditedAfterImport: {
     type: Boolean,
     default: false

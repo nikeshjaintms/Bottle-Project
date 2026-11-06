@@ -14,10 +14,12 @@ import Select from 'react-select';
 import ImportExcelModal from './ImportExcelModal';
 import { usePrintingPlanLanguage } from '../../hooks/usePrintingPlanLanguage';
 import { usePrintingPlanInfiniteScroll } from '../../hooks/usePrintingPlanInfiniteScroll';
+import { sortPrintingPlans } from '../../utils/printingPlanSort';
 import { buildMultipleContiguousGroups } from '../../utils/tableGrouping';
 import ZoomControl from '../../components/ZoomControl';
 import { downloadPrintingPlanExcel } from '../../utils/printingPlanExport';
 import { PrintingOrderQtyModal, PrintingReadyQtyModal } from '../../components/PrintingQuantityModals';
+import { getBalanceToMake } from '../../utils/planQuantityUtils';
 const DoubleScrollContainer = ({ children }) => {
   const topScrollRef = React.useRef(null);
   const bottomScrollRef = React.useRef(null);
@@ -261,12 +263,14 @@ export default function PrintingPlan() {
   };
 
   const handleSendToReadyToDispatch = async (plan) => {
+    if (!ability.can('send', 'printingplan')) return;
+
     try {
       const orderQty = Number(plan.orderQty || 0);
       const printed = Number(plan.producedQty ?? 0);
       const alreadySent = Number(plan.sentToReadyQty || 0);
       const sendable = Math.max(0, printed - alreadySent);
-      const balanceToMake = printed - orderQty;
+      const balanceToMake = getBalanceToMake(orderQty, printed);
 
       if (printed <= 0) {
         Swal.fire({
@@ -297,7 +301,7 @@ export default function PrintingPlan() {
       let selectedQty = sendable;
       let remainingOrderAfterDispatch = remainingUnprinted;
       let remainingPrintedAfterDispatch = 0;
-      let balanceAfterDispatch = 0 - remainingUnprinted;
+      let balanceAfterDispatch = getBalanceToMake(remainingUnprinted, 0);
 
       if (remainingUnprinted > 0) {
         // Partial production: order > printed. Present both production options!
@@ -321,7 +325,7 @@ export default function PrintingPlan() {
                 </div>
                 <div class="col-4">
                   <div class="text-muted text-uppercase" style="font-size: 10px; font-weight: 600;">Balance To Make</div>
-                  <div class="fw-bold ${balanceToMake >= 0 ? 'text-success' : 'text-danger'} fs-6">${balanceToMake}</div>
+                  <div class="fw-bold ${balanceToMake <= 0 ? 'text-success' : 'text-danger'} fs-6">${balanceToMake}</div>
                 </div>
                 <div class="col-6 mt-2">
                   <div class="text-muted text-uppercase" style="font-size: 10px; font-weight: 600;">Already Dispatched</div>
@@ -502,7 +506,7 @@ export default function PrintingPlan() {
         const totalDispatchedAfterAction = alreadySent + selectedQty;
         remainingOrderAfterDispatch = Math.max(0, orderQty - totalDispatchedAfterAction);
         remainingPrintedAfterDispatch = Math.max(0, printed - totalDispatchedAfterAction);
-        balanceAfterDispatch = remainingPrintedAfterDispatch - remainingOrderAfterDispatch;
+        balanceAfterDispatch = getBalanceToMake(remainingOrderAfterDispatch, remainingPrintedAfterDispatch);
 
         // Show confirmation dialog with exact dispatch and cancellation/remaining quantities
         const isOption1 = selectedOption === 'CLOSE_ENTIRE_ORDER';
@@ -556,7 +560,7 @@ export default function PrintingPlan() {
               </div>
               <div class="d-flex justify-content-between">
                 <span>New Active Balance To Make:</span>
-                <strong class="${balanceAfterDispatch >= 0 ? 'text-success' : 'text-danger'}">${balanceAfterDispatch} units</strong>
+                <strong class="${balanceAfterDispatch <= 0 ? 'text-success' : 'text-danger'}">${balanceAfterDispatch} units</strong>
               </div>
             </div>
             <div class="alert alert-info py-2 px-3 small mb-0">
@@ -813,8 +817,12 @@ export default function PrintingPlan() {
     if (!planList || planList.length === 0) {
       return renderDailyTable([], showDate, 0);
     }
+    
+    // Sort plans by bottle size and other criteria
+    const sortedPlanList = [...planList].sort(sortPrintingPlans);
+    
     const groupedByCompany = {};
-    planList.forEach(plan => {
+    sortedPlanList.forEach(plan => {
       const compId = (plan.canonicalCompanyId || plan.companyId?._id || plan.companyId || plan.brandId?.companyId?._id || plan.brandId?.company?._id || plan.company?._id || 'UNASSIGNED').toString();
       const compName = plan.companyName || plan.companyId?.name || plan.company?.name || plan.brandId?.companyId?.name || plan.brandId?.company?.name || (compId === 'UNASSIGNED' ? 'UNASSIGNED' : 'Unassigned');
       if (!groupedByCompany[compId]) {
@@ -847,7 +855,7 @@ export default function PrintingPlan() {
     
     const isShreno = planList.length > 0 && (planList[0].companyName || planList[0].companyId?.name || planList[0].company?.name || '').toUpperCase().includes('SHRENO');
     
-    const getBoundary = (r) => `${r.canonicalCompanyId || r.companyId?._id || r.companyId || r.companyName || r.company || 'UNASSIGNED'}_${r.planDate}`;
+    const getBoundary = (r) => `${r.canonicalCompanyId || r.companyId?._id || r.companyId || r.companyName || r.company || 'UNASSIGNED'}_${r.planDate}_${r.isExcelViewOnly ? 'excel' : 'operational'}`;
     
     // Use a stable ID for non-grouped SHRENO columns instead of Math.random()
     const getRowStableId = (r) => r._id || `temp-${r.excelRowNumber || r.srNo || Math.floor(Math.random() * 1000000)}`;
@@ -861,7 +869,11 @@ export default function PrintingPlan() {
         }},
         { idKey: '_cShade', keySelector: r => {
              const shade = (r.coatingShade || '').trim().toUpperCase();
-             return shade ? `${getBoundary(r)}_${(r.plainBottle || r.bottleName || '').trim().toUpperCase()}_${shade}` : `nogroup_${getRowStableId(r)}`;
+             // Only group if shade is PLAIN, otherwise each row stands alone
+             if (shade === 'PLAIN') {
+               return `${getBoundary(r)}_${(r.plainBottle || r.bottleName || '').trim().toUpperCase()}_${shade}`;
+             }
+             return `nogroup_${getRowStableId(r)}`;
         }},
         { idKey: '_cPrinting', keySelector: r => isShreno ? `nogroup_${getRowStableId(r)}` : `${getBoundary(r)}_${(r.plainBottle || r.bottleName || '').trim().toUpperCase()}_${r.coatingShade}_${r.printingToBeDone}` },
         { idKey: '_cTextColor', keySelector: r => isShreno ? `nogroup_${getRowStableId(r)}` : `${getBoundary(r)}_${(r.plainBottle || r.bottleName || '').trim().toUpperCase()}_${r.coatingShade}_${r.printingToBeDone}_${r.textColor}` },
@@ -948,30 +960,6 @@ export default function PrintingPlan() {
             const isPrintingFirst = !renderedSets._cPrinting.has(plan._cPrinting);
             const isTextFirst = !renderedSets._cTextColor.has(plan._cTextColor);
 
-            // UI Debug log as explicitly requested
-            if (isShreno) {
-                console.log("[SHRENO UI FINAL ROW]", {
-                    rowNumber: index,
-                    bottleName: plan.bottleName,
-                    coatingShade: plan.coatingShade,
-                    printingToBeDone: plan.printingToBeDone,
-                    textColor: plan.textColor
-                });
-                
-                console.log("[SHRENO CELL TRACE]", {
-                    rowNumber: index,
-                    renderBottleCell: isBottleFirst,
-                    renderShadeCell: isShadeFirst,
-                    renderPrintingCell: isPrintingFirst,
-                    renderTextColorCell: isTextFirst,
-
-                    bottleValue: plan.bottleName,
-                    shadeValue: plan.coatingShade,
-                    printingValue: plan.printingToBeDone,
-                    textColorValue: plan.textColor
-                });
-            }
-
             return (
             <tr key={plan._id || index} className={rowClasses}>
               <td className="py-3 ps-4 text-start">
@@ -1039,21 +1027,24 @@ export default function PrintingPlan() {
                 })())}
               
               <td
-                className={`py-3 text-center fw-bold align-middle ${plan.plainStockWarning?.hasWarning ? 'bg-warning' : ''}`}
-                style={{ cursor: 'pointer' }}
-                onClick={() => openQuantityModal('order', plan)}
-                title={plan.plainStockWarning ? plan.plainStockWarning.tooltip : 'Click to add Order Qty'}
+                className={`py-3 text-center fw-bold align-middle ${!plan.isExcelViewOnly && plan.plainStockWarning?.hasWarning ? 'bg-warning' : ''}`}
+                style={{ cursor: plan.isExcelViewOnly ? 'default' : 'pointer' }}
+                onClick={plan.isExcelViewOnly ? undefined : () => openQuantityModal('order', plan)}
+                title={plan.isExcelViewOnly ? 'Imported Excel row — view only' : (plan.plainStockWarning ? plan.plainStockWarning.tooltip : 'Click to add Order Qty')}
               >
                 {plan.orderQty !== null && plan.orderQty !== undefined ? plan.orderQty : '-'}
               </td>
               
               <td
                 className="py-3 text-center align-middle"
-                style={{ cursor: 'pointer' }}
-                onClick={() => openQuantityModal('ready', plan)}
-                title={(plan.coatingShade || '').trim().toUpperCase() === 'PLAIN' && plan.usedFromTooltip ? plan.usedFromTooltip : 'Click to add Ready (Printed) Qty'}
+                style={{ cursor: plan.isExcelViewOnly ? 'default' : 'pointer' }}
+                onClick={plan.isExcelViewOnly ? undefined : () => openQuantityModal('ready', plan)}
+                title={plan.isExcelViewOnly ? 'Imported Excel row — view only' : ((plan.coatingShade || '').trim().toUpperCase() === 'PLAIN' && plan.usedFromTooltip ? plan.usedFromTooltip : 'Click to add Ready (Printed) Qty')}
               >
                 <div>{plan.producedQty !== null && plan.producedQty !== undefined ? plan.producedQty : 0}</div>
+                {plan.lacquerPlanId && plan.lacquerCoatingCompletedQty !== undefined && (
+                  <div className="small text-muted">Lacquer Coated: {plan.lacquerCoatingCompletedQty}</div>
+                )}
                 {Number(plan.readyRejectionQty) > 0 && (
                   <div className="small text-muted">Rejected: {plan.readyRejectionQty}</div>
                 )}
@@ -1065,8 +1056,8 @@ export default function PrintingPlan() {
                 )}
               </td>
 
-              <td className={`py-3 text-center fw-bold align-middle ${plan.balanceToMake < 0 ? 'text-danger' : 'text-dark'}`}>
-                {plan.balanceToMake !== null && plan.balanceToMake !== undefined ? plan.balanceToMake : '-'}
+              <td className={`py-3 text-center fw-bold align-middle ${plan.balanceToMake > 0 ? 'text-danger' : 'text-success'}`}>
+                {plan.balanceToMake !== null && plan.balanceToMake !== undefined ? -Number(plan.balanceToMake) : '-'}
               </td>
               
               {renderGroupedTd('_cBoxQty', plan.boxQty !== null && plan.boxQty !== undefined && plan.boxQty > 0 ? plan.boxQty : '-')}
@@ -1093,11 +1084,16 @@ export default function PrintingPlan() {
                   <Link to={`/printing-plan/view/${plan._id}`} className="btn btn-sm btn-outline-info border-0 rounded-3 shadow-none p-2" title="View">
                     <i className="bi bi-eye fs-6"></i>
                   </Link>
+                  {plan.isExcelViewOnly ? (
+                    <span className="badge bg-secondary align-self-center">Excel · View only</span>
+                  ) : (
+                    <>
                   <Link 
                      to={`/printing-plan/edit/${(() => {
                        const curBottle = (plan.plainBottle || plan.bottleName || '').trim().toUpperCase();
                        const curBrand = (plan.brandId?._id || plan.brandId || plan.brandName || '').toString();
                        const matchingPlans = contiguousPlanList.filter(p => {
+                         if (p.isExcelViewOnly) return false;
                          const pBottle = (p.plainBottle || p.bottleName || '').trim().toUpperCase();
                          const pBrand = (p.brandId?._id || p.brandId || p.brandName || '').toString();
                          return pBottle === curBottle && pBrand === curBrand;
@@ -1109,6 +1105,7 @@ export default function PrintingPlan() {
                          const curBottle = (plan.plainBottle || plan.bottleName || '').trim().toUpperCase();
                          const curBrand = (plan.brandId?._id || plan.brandId || plan.brandName || '').toString();
                          const matchingPlans = contiguousPlanList.filter(p => {
+                           if (p.isExcelViewOnly) return false;
                            const pBottle = (p.plainBottle || p.bottleName || '').trim().toUpperCase();
                            const pBrand = (p.brandId?._id || p.brandId || p.brandName || '').toString();
                            return pBottle === curBottle && pBrand === curBrand;
@@ -1121,7 +1118,7 @@ export default function PrintingPlan() {
                   >
                     <i className="bi bi-pencil-square fs-6"></i>
                   </Link>
-                  {ability && ability.can('dispatch', 'ready-to-dispatch') && (
+                  {ability && ability.can('send', 'printingplan') && (
                     <button 
                       onClick={() => handleSendToReadyToDispatch(plan)} 
                       className={`btn btn-sm border-0 rounded-3 shadow-none p-2 ${
@@ -1137,6 +1134,8 @@ export default function PrintingPlan() {
                   <button onClick={() => handleDelete(plan._id)} className="btn btn-sm btn-outline-danger border-0 rounded-3 shadow-none p-2" title="Delete">
                     <i className="bi bi-trash fs-6"></i>
                   </button>
+                    </>
+                  )}
                 </div>
               </td>
             </tr>
@@ -1246,9 +1245,6 @@ export default function PrintingPlan() {
           )}
           <button onClick={handleExport} className="btn btn-outline-primary shadow-sm px-4 py-2 rounded-3">
             <i className="bi bi-file-earmark-excel-fill me-2" /> Export Excel
-          </button>
-          <button onClick={fetchPlans} className="btn btn-outline-secondary shadow-sm px-4 py-2 rounded-3" title="Refresh list to show latest stock changes">
-            <i className="bi bi-arrow-clockwise me-2" /> Refresh
           </button>
           <button onClick={() => setShowImportModal(true)} className="btn btn-outline-success shadow-sm px-4 py-2 rounded-3">
             <i className="bi bi-file-earmark-excel-fill me-2" /> {labels.importExcel}

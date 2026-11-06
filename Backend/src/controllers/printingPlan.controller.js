@@ -8,10 +8,83 @@ const BottleSpec = require("../models/Bottlespecs");
 const Brand = require("../models/Brand");
 const BottlePerBox = require("../models/BottlePerBox");
 const PlainBottleStock = require("../models/PlainBottleStock");
-const { recomputePlainStock, computeLivePlainStock, replayStockAllocations, validateStockBeforeSave, validateStockAllocation, getBottleSourcesInfo } = require("../utils/stockRecompute");
+const { recomputePlainStock, computeLivePlainStock, replayStockAllocations, validateStockBeforeSave, validateStockAllocation, getBottleSourcesInfo, getPrintingReadyRejectionAllocations } = require("../utils/stockRecompute");
 const { isPrintingProcess } = require("../utils/processRouting");
-const { decodeCursor, encodeCursor, buildKeysetQuery, parseLimit } = require("../utils/keyset-pagination");
+const { parseLimit } = require("../utils/keyset-pagination");
 const { buildLacquerPrintingIdentity, getLacquerPrintingDayRange } = require("../utils/lacquerPrintingIdentity");
+const { calculateBalanceToMake, getCoatingCompletedQty } = require("../utils/lacquerPlanCalculations");
+
+const PRINTING_PLAN_PAGE_SORT = [
+  ["companySortName", 1],
+  ["bottleSortSize", 1],
+  ["bottleSortName", 1],
+  ["sourceGroupPresence", 1],
+  ["sourceGroupSortName", 1],
+  ["brandPresence", 1],
+  ["brandSortKey", 1],
+  ["shadeSortName", 1],
+  ["printingSortName", 1],
+  ["textSortName", 1],
+  ["planDate", -1],
+  ["_id", -1]
+];
+
+const encodePrintingPlanCursor = plan => {
+  const plainBottleName = plan.plainBottleName || plan.plainBottle || plan.bottleName || "";
+  const bottleSize = plainBottleName.match(/(\d+(?:\.\d+)?)/)?.[0];
+  const sourceGroupId = String(plan.sourceGroupId || "");
+  const isShreno = String(plan.companyName || "").toUpperCase().includes("SHRENO");
+  const brandName = String(plan.brandSortName || plan.brandId?.name || plan.brandName || "");
+  const values = {
+    companySortName: String(plan.companyName || "").toLowerCase(),
+    bottleSortSize: bottleSize ? Number(bottleSize) : 1e100,
+    bottleSortName: String(plainBottleName).trim().toLowerCase(),
+    sourceGroupPresence: !isShreno && sourceGroupId ? 0 : 1,
+    sourceGroupSortName: isShreno ? "" : sourceGroupId.toLowerCase(),
+    brandPresence: brandName ? 0 : 1,
+    brandSortKey: brandName.toLowerCase(),
+    shadeSortName: String(plan.coatingShade || "").toLowerCase(),
+    printingSortName: String(plan.printingToBeDone || "").toLowerCase(),
+    textSortName: String(plan.textColor || "").toLowerCase(),
+    planDate: plan.planDate,
+    _id: plan._id
+  };
+  return Buffer.from(JSON.stringify(values)).toString("base64url");
+};
+
+const decodePrintingPlanCursor = cursor => {
+  if (!cursor) return null;
+  try {
+    const values = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
+    if (!values || !values._id || !values.planDate || !Number.isFinite(Number(values.bottleSortSize))) return null;
+    if (PRINTING_PLAN_PAGE_SORT.some(([field]) => !Object.prototype.hasOwnProperty.call(values, field))) return null;
+    values.planDate = new Date(values.planDate);
+    if (Number.isNaN(values.planDate.getTime()) || !mongoose.Types.ObjectId.isValid(values._id)) return null;
+    values._id = new mongoose.Types.ObjectId(values._id);
+    return values;
+  } catch {
+    return null;
+  }
+};
+
+const buildPrintingPlanCursorQuery = values => {
+  if (!values) return null;
+  const clauses = [];
+  const equalPrefix = {};
+  for (const [field, direction] of PRINTING_PLAN_PAGE_SORT) {
+    const value = values[field];
+    clauses.push({ ...equalPrefix, [field]: { [direction === 1 ? "$gt" : "$lt"]: value } });
+    equalPrefix[field] = value;
+  }
+  return { $or: clauses };
+};
+
+const isExcelViewOnlyPlan = plan => Boolean(plan?.isExcelViewOnly);
+const rejectExcelViewOnlyPlan = (plan, res) => {
+  if (!isExcelViewOnlyPlan(plan)) return false;
+  res.status(403).json({ success: false, message: "Excel-imported Printing Plan rows are view-only." });
+  return true;
+};
 
 const normalizeStockDisplayText = value => String(value || "").replace(/\s+/g, " ").trim().toUpperCase();
 
@@ -79,19 +152,30 @@ const compareStockDisplayRows = (left, right) => {
     || compareText(left.textColor, right.textColor);
 };
 
+const getReadyEntryQty = (plan, entry) => {
+  const qty = Number(entry.qty) || 0;
+  if ((plan.coatingShade || "").trim().toUpperCase() === "PLAIN" || entry.rejectionSeparate) {
+    return qty;
+  }
+  return qty - Math.min(Math.max(0, Number(entry.rejectionQty) || 0), Math.max(0, qty));
+};
+
 const getQtyEntryTotal = (plan, subType) => (plan.qtyEntries || [])
   .filter(entry => !entry.isDeleted && entry.subType === subType)
-  .reduce((sum, entry) => sum + (Number(entry.qty) || 0), 0);
+  .reduce((sum, entry) => sum + (subType === "ready" ? getReadyEntryQty(plan, entry) : (Number(entry.qty) || 0)), 0);
 
 const getPrintingQuantityState = (plan) => {
   const orderEntriesTotal = getQtyEntryTotal(plan, "order");
   const readyEntriesTotal = getQtyEntryTotal(plan, "ready");
+  const rawReadyEntriesTotal = (plan.qtyEntries || [])
+    .filter(entry => !entry.isDeleted && entry.subType === "ready")
+    .reduce((sum, entry) => sum + (Number(entry.qty) || 0), 0);
   const orderQtyInitial = plan.orderQtyInitial !== null && plan.orderQtyInitial !== undefined
     ? Number(plan.orderQtyInitial)
     : Math.max(0, (Number(plan.orderQty) || 0) - orderEntriesTotal);
   const producedQtyInitial = plan.producedQtyInitial !== null && plan.producedQtyInitial !== undefined
     ? Number(plan.producedQtyInitial)
-    : Math.max(0, (Number(plan.producedQty) || 0) - readyEntriesTotal);
+    : Math.max(0, (Number(plan.producedQty) || 0) - rawReadyEntriesTotal);
   const initialAllocations = Array.isArray(plan.stockAllocationInitial) ? [...plan.stockAllocationInitial] : [];
   const allocations = new Map();
   for (const allocation of initialAllocations) {
@@ -144,7 +228,7 @@ const getPrintingPlanCalculations = (plan) => {
     readyRejectionQty: (plan.qtyEntries || [])
       .filter(entry => !entry.isDeleted && entry.subType === "ready")
       .reduce((sum, entry) => sum + (Number(entry.rejectionQty) || 0), 0),
-    balanceToMake: producedQty - orderQty,
+    balanceToMake: calculateBalanceToMake(orderQty, producedQty),
     completed: orderQty > 0 && producedQty >= orderQty,
     noOfBoxes: boxQty > 0 ? Math.ceil(orderQty / boxQty) : (Number(plan.noOfBoxes) || 0)
   };
@@ -171,7 +255,10 @@ const initializePrintingQtyHistory = (plan) => {
     plan.orderQtyInitial = Math.max(0, (Number(plan.orderQty) || 0) - getQtyEntryTotal(plan, "order"));
   }
   if (plan.producedQtyInitial === null || plan.producedQtyInitial === undefined) {
-    plan.producedQtyInitial = Math.max(0, (Number(plan.producedQty) || 0) - getQtyEntryTotal(plan, "ready"));
+    const rawReadyEntriesTotal = (plan.qtyEntries || [])
+      .filter(entry => !entry.isDeleted && entry.subType === "ready")
+      .reduce((sum, entry) => sum + (Number(entry.qty) || 0), 0);
+    plan.producedQtyInitial = Math.max(0, (Number(plan.producedQty) || 0) - rawReadyEntriesTotal);
   }
   if (!Array.isArray(plan.stockAllocationInitial) || plan.stockAllocationInitial.length === 0) {
     const currentAllocation = Array.isArray(plan.stockAllocation) ? plan.stockAllocation : [];
@@ -234,7 +321,7 @@ const buildPrintingQtyHistory = (plan, companyNameMap = new Map()) => {
   let runningOrder = calculations.orderQtyInitial;
   let runningReady = calculations.producedQtyInitial;
   for (const entry of entries) {
-    const qty = Number(entry.qty) || 0;
+    const qty = entry.subType === "ready" ? getReadyEntryQty(plan, entry) : (Number(entry.qty) || 0);
     if (entry.subType === "order" && !entry.isDeleted) runningOrder += qty;
     if (entry.subType === "ready" && !entry.isDeleted) runningReady += qty;
     rows.push({
@@ -262,6 +349,17 @@ const buildPrintingQtyHistory = (plan, companyNameMap = new Map()) => {
 
 const serializePrintingPlan = async (plan) => {
   const rawPlan = typeof plan.toObject === "function" ? plan.toObject() : plan;
+  if (isExcelViewOnlyPlan(rawPlan)) {
+    return {
+      ...rawPlan,
+      readyQty: rawPlan.producedQty,
+      coatedStockAvailable: rawPlan.plainBottleStock,
+      completed: false,
+      plainStockWarning: null,
+      quantityHistory: [],
+      stockContext: null
+    };
+  }
   const boxQtyByAlias = await getBottlePerBoxByAlias([rawPlan]);
   const boxQty = boxQtyByAlias.get(String(rawPlan.bottleName || "").trim().toUpperCase()) || Number(rawPlan.boxQty) || 0;
   const calculations = getPrintingPlanCalculations({ ...rawPlan, boxQty });
@@ -276,11 +374,14 @@ const serializePrintingPlan = async (plan) => {
   const companyNameMap = new Map(companies.map(company => [company._id.toString(), company.name]));
   const isPlain = (rawPlan.coatingShade || "").trim().toUpperCase() === "PLAIN";
   const stockContext = isPlain
-    ? await getBottleSourcesInfo(rawPlan.bottleName, rawPlan.companyId, rawPlan.planDate, rawPlan._id, { useResolvedBottleDoc: true })
+    ? await getBottleSourcesInfo(rawPlan.bottleName, rawPlan.companyId, rawPlan.planDate, rawPlan._id, {
+        useResolvedBottleDoc: true,
+        includeNonSupplierSources: true
+      })
     : null;
   const stockCache = new Map();
   const coatedStockAvailable = await getLivePrintingStock(rawPlan, stockCache);
-  const plainBottleStock = isPlain ? coatedStockAvailable : rawPlan.plainBottleStock;
+  const plainBottleStock = coatedStockAvailable;
   const stockWarnings = isPlain ? await getPlainStockWarnings([rawPlan], stockCache) : new Map();
   const readyBoxFields = getReadyBoxFields({ ...rawPlan, boxQty, producedQty: calculations.producedQty });
   return {
@@ -361,7 +462,8 @@ const updateLinkedLacquerOrder = async (plan, orderQty, session) => {
         let linkedPlansQuery = PrintingPlan.find({
           lacquerPlanId: { $in: matches.map(candidate => candidate._id) },
           _id: { $ne: plan._id },
-          isDeleted: { $ne: true }
+          isDeleted: { $ne: true },
+          isExcelViewOnly: { $ne: true }
         }).select("lacquerPlanId");
         if (session) linkedPlansQuery = linkedPlansQuery.session(session);
         const alreadyLinkedIds = new Set(
@@ -385,7 +487,7 @@ const updateLinkedLacquerOrder = async (plan, orderQty, session) => {
     }
   }
   if (!lacquerPlan || lacquerPlan.isDeleted) return;
-  const coatedQty = Number(lacquerPlan.coatingCompletedQty ?? lacquerPlan.coatedQty) || 0;
+  const coatedQty = getCoatingCompletedQty(lacquerPlan);
   const activeOrderEntries = (lacquerPlan.qtyEntries || [])
     .filter(entry => !entry.isDeleted && (entry.subType === "order" || entry.type === "orderQty" || (entry.type === "edit-adjustment" && entry.subType === "order")))
     .reduce((sum, entry) => sum + (Number(entry.qty) || 0), 0);
@@ -397,7 +499,7 @@ const updateLinkedLacquerOrder = async (plan, orderQty, session) => {
   }
   lacquerPlan.orderQty = orderQty;
   lacquerPlan.orderQtyInitial = orderQtyInitial;
-  lacquerPlan.balanceToMake = coatedQty - orderQty;
+  lacquerPlan.balanceToMake = calculateBalanceToMake(orderQty, coatedQty);
   lacquerPlan.status = orderQty > 0 && coatedQty >= orderQty;
   if (Number(lacquerPlan.boxQty) > 0) {
     lacquerPlan.noOfBoxes = Math.ceil(orderQty / Number(lacquerPlan.boxQty));
@@ -411,8 +513,8 @@ const addPrintingQtyEntry = async (req, res, subType) => {
     const rejectionQty = Number(req.body.rejectionQty || 0);
     const rejectionBoxes = Number(req.body.rejectionBoxes || 0);
     const rejectionLooseQty = req.body.rejectionLooseQty === undefined ? rejectionQty : Number(req.body.rejectionLooseQty);
-    if (!Number.isInteger(quantity) || quantity === 0) {
-      return res.status(400).json({ success: false, message: "Qty must be a non-zero integer." });
+    if (!Number.isInteger(quantity)) {
+      return res.status(400).json({ success: false, message: "Qty must be a whole number." });
     }
     if (!Number.isInteger(rejectionQty) || rejectionQty < 0 ||
       !Number.isInteger(rejectionBoxes) || rejectionBoxes < 0 ||
@@ -441,7 +543,28 @@ const addPrintingQtyEntry = async (req, res, subType) => {
     }
 
     const isPlain = (plan.coatingShade || "").trim().toUpperCase() === "PLAIN";
-    if (subType === "ready" && quantity > 0 && !isPlain) {
+    if (quantity === 0 && (subType !== "ready" || rejectionQty <= 0)) {
+      return res.status(400).json({ success: false, message: "Enter a non-zero Ready Qty or rejection quantity." });
+    }
+    if (subType === "ready" && isPlain && (quantity > 0 || rejectionQty > 0)) {
+      const requestSources = normalizeSourceIds(req.body.stockSources, plan.companyId);
+      const availableStock = await computeLivePlainStock(
+        plan.bottleName,
+        requestSources,
+        plan.planDate,
+        plan._id
+      );
+      const priorRejectedQty = getPrintingReadyRejectionAllocations(plan)
+        .reduce((sum, allocation) => sum + allocation.qty, 0);
+      const stockUse = nextTotal + priorRejectedQty + rejectionQty;
+      if (stockUse > (Number(availableStock.available) || 0)) {
+        return res.status(400).json({
+          success: false,
+          message: `Ready and rejected quantities exceed available plain stock. Available for this plan: ${availableStock.available}.`
+        });
+      }
+    }
+    if (subType === "ready" && !isPlain && (quantity > 0 || rejectionQty > 0)) {
       const availableWithoutPlan = await calculateCoatedStock(
         plan.coatingShade,
         plan.companyId,
@@ -449,8 +572,11 @@ const addPrintingQtyEntry = async (req, res, subType) => {
         plan._id,
         null
       );
-      if (nextTotal > availableWithoutPlan) {
-        return res.status(400).json({ success: false, message: `Ready Qty cannot exceed available coated stock. Available for this plan: ${availableWithoutPlan}.` });
+      const priorRejectedQty = (plan.qtyEntries || [])
+        .filter(entry => !entry.isDeleted && entry.subType === "ready")
+        .reduce((sum, entry) => sum + (Number(entry.rejectionQty) || 0), 0);
+      if (nextTotal + priorRejectedQty + rejectionQty > availableWithoutPlan) {
+        return res.status(400).json({ success: false, message: `Ready and rejected quantities exceed available coated stock. Available for this plan: ${availableWithoutPlan}.` });
       }
     }
 
@@ -473,6 +599,8 @@ const addPrintingQtyEntry = async (req, res, subType) => {
             companyId: allocation.companyId?._id || allocation.companyId,
             qty: Number(allocation.qty)
           }));
+        } else if (quantity === 0) {
+          entryAllocation = [];
         } else if (stockSources.length === 1) {
           entryAllocation = [{ companyId: stockSources[0], qty: quantity }];
         } else {
@@ -489,6 +617,7 @@ const addPrintingQtyEntry = async (req, res, subType) => {
         subType,
         qty: quantity,
         rejectionQty,
+        rejectionSeparate: subType === "ready",
         rejectionBoxes,
         rejectionLooseQty,
         at: entryDate,
@@ -517,8 +646,49 @@ const addPrintingQtyEntry = async (req, res, subType) => {
         plan._id,
         null,
         null,
-        { useResolvedBottleDoc: true }
+        { useResolvedBottleDoc: true, includeNonSupplierSources: isPlain }
       );
+      if (isPlain && rejectionQty > 0) {
+        const sourceStock = await computeLivePlainStock(
+          plan.bottleName,
+          validationSources,
+          plan.planDate,
+          plan._id
+        );
+        const sourceAvailability = new Map(
+          (sourceStock.sources || []).map(source => [
+            source.companyId?.toString(),
+            {
+              available: Number(source.available) || 0,
+              name: source.companyName || "Company"
+            }
+          ])
+        );
+        const sourceUsage = new Map();
+        for (const allocation of allocationResult.stockAllocation) {
+          const companyId = (allocation.companyId?._id || allocation.companyId)?.toString();
+          if (companyId) {
+            sourceUsage.set(companyId, (sourceUsage.get(companyId) || 0) + (Number(allocation.qty) || 0));
+          }
+        }
+        for (const allocation of getPrintingReadyRejectionAllocations(plan)) {
+          sourceUsage.set(
+            allocation.companyId,
+            (sourceUsage.get(allocation.companyId) || 0) + allocation.qty
+          );
+        }
+        for (const [companyId, used] of sourceUsage) {
+          const source = sourceAvailability.get(companyId);
+          if (!source || used > source.available) {
+            const available = source?.available || 0;
+            const name = source?.name || "Selected stock source";
+            return res.status(400).json({
+              success: false,
+              message: `Ready and rejected quantities exceed available plain stock from ${name}. Available for this plan: ${available}.`
+            });
+          }
+        }
+      }
       plan.stockSources = allocationResult.stockSources;
       plan.stockAllocation = allocationResult.stockAllocation;
     } else {
@@ -527,6 +697,7 @@ const addPrintingQtyEntry = async (req, res, subType) => {
         subType,
         qty: quantity,
         rejectionQty,
+        rejectionSeparate: subType === "ready",
         rejectionBoxes,
         rejectionLooseQty,
         at: entryDate,
@@ -583,19 +754,39 @@ const findPlainBottleStockDoc = async (bottleName, companyId = null) => {
 };
 
 // Helper to calculate coated stock for a non-PLAIN coating shade
-// Formula: stock(coatingShade, company, date D) = 
-//   Σ Lacquer Coating Completed (date ≤ D) 
-//   - Σ Printing Ready qty of non-PLAIN rows with same coatingShade (date ≤ D)
+// Formula: colored stock is reduced by Ready Qty and rejected bottles.
 const calculateCoatedStock = async (coatingShade, companyId, planDate = null, excludePrintingPlanId = null, session = null) => {
   if (!coatingShade || coatingShade.trim().toUpperCase() === 'PLAIN') return 0;
   const cidStr = (companyId?._id || companyId)?.toString().trim();
   if (!cidStr || !mongoose.Types.ObjectId.isValid(cidStr)) return 0;
+  const shadePattern = String(coatingShade)
+    .trim()
+    .split(/\s+/)
+    .map(escapeRegex)
+    .join("\\s+");
+  const shadeRegex = new RegExp(`^\\s*${shadePattern}\\s*$`, "i");
+  const excludedPlanId = (excludePrintingPlanId?._id || excludePrintingPlanId)?.toString().trim();
+  let linkedLacquerPlanId = null;
+  if (excludedPlanId && mongoose.Types.ObjectId.isValid(excludedPlanId)) {
+    let linkedPlanQuery = PrintingPlan.findById(excludedPlanId).select("lacquerPlanId");
+    if (session) linkedPlanQuery = linkedPlanQuery.session(session);
+    const linkedPlan = await linkedPlanQuery.lean();
+    linkedLacquerPlanId = linkedPlan?.lacquerPlanId || null;
+  }
   
   // 1. Sum Lacquer Coating Completed for this shade
   const lacquerQuery = {
-    companyId: cidStr,
-    isDeleted: false,
-    coatingShade: { $regex: new RegExp("^" + coatingShade.trim() + "$", "i") }
+    isDeleted: { $ne: true },
+    $or: [
+      {
+        companyId: cidStr,
+        $or: [
+          { coatingShade: { $regex: shadeRegex } },
+          { colour: { $regex: shadeRegex } }
+        ]
+      },
+      ...(linkedLacquerPlanId ? [{ _id: linkedLacquerPlanId, isDeleted: { $ne: true } }] : [])
+    ]
   };
   if (planDate && !isNaN(new Date(planDate).getTime())) {
     const endOfDay = new Date(planDate);
@@ -616,12 +807,12 @@ const calculateCoatedStock = async (coatingShade, companyId, planDate = null, ex
   // 2. Sum Printing Ready for this shade (non-deleted)
   const printingQuery = {
     companyId: cidStr,
-    isDeleted: false,
-    coatingShade: { $regex: new RegExp("^" + coatingShade.trim() + "$", "i") }
+    isDeleted: { $ne: true },
+    isExcelViewOnly: { $ne: true },
+    coatingShade: { $regex: shadeRegex }
   };
-  const exIdStr = (excludePrintingPlanId?._id || excludePrintingPlanId)?.toString().trim();
-  if (exIdStr && mongoose.Types.ObjectId.isValid(exIdStr)) {
-    printingQuery._id = { $ne: new mongoose.Types.ObjectId(exIdStr) };
+  if (excludedPlanId && mongoose.Types.ObjectId.isValid(excludedPlanId)) {
+    printingQuery._id = { $ne: new mongoose.Types.ObjectId(excludedPlanId) };
   }
   if (planDate && !isNaN(new Date(planDate).getTime())) {
     const endOfDay = new Date(planDate);
@@ -633,14 +824,18 @@ const calculateCoatedStock = async (coatingShade, companyId, planDate = null, ex
   if (session) printingFind = printingFind.session(session);
   const printingRecords = await printingFind.lean();
   let totalPrintingReady = 0;
+  let totalPrintingRejected = 0;
   for (const pp of printingRecords) {
-    totalPrintingReady += (pp.producedQty || 0);
+    totalPrintingReady += getPrintingPlanCalculations(pp).producedQty;
+    totalPrintingRejected += (pp.qtyEntries || [])
+      .filter(entry => !entry.isDeleted && entry.subType === "ready")
+      .reduce((sum, entry) => sum + (Number(entry.rejectionQty) || 0), 0);
   }
   
-  return Math.max(0, totalLacquerCoated - totalPrintingReady);
+  return Math.max(0, totalLacquerCoated - totalPrintingReady - totalPrintingRejected);
 };
 
-const getLivePrintingStock = (plan, stockCache) => {
+const getLivePrintingStock = (plan, stockCache, includeCurrentPlanRejections = false) => {
   const isPlain = (plan.coatingShade || "").trim().toUpperCase() === "PLAIN";
   const rawCid = plan.companyId?._id || plan.companyId;
   const companyId = rawCid && mongoose.Types.ObjectId.isValid(rawCid) ? rawCid.toString() : "";
@@ -652,18 +847,35 @@ const getLivePrintingStock = (plan, stockCache) => {
   ].filter(id => id && mongoose.Types.ObjectId.isValid(id)))];
   const key = isPlain
     ? `plain|${companyId}|${String(plan.bottleName || "").trim().toUpperCase()}|${sources.join(",")}|${planDate}`
-    : `coated|${companyId}|${String(plan.coatingShade || "").trim().toUpperCase()}|${planDate}`;
+    : `coated|${companyId}|${String(plan.coatingShade || "").trim().toUpperCase()}|${planDate}|${includeCurrentPlanRejections ? "all" : "exclude-current"}`;
   if (!stockCache.has(key)) {
     const stockPromise = isPlain
-      ? computeLivePlainStock(plan.bottleName, sources, plan.planDate).then(result => Number(result?.available) || 0)
-      : calculateCoatedStock(plan.coatingShade, companyId, plan.planDate);
+      ? (async () => {
+          const { resolveCanonicalPlainBottle } = require("../utils/lacquerGroupKey");
+          const canonicalBottle = await resolveCanonicalPlainBottle(plan.plainBottle || plan.bottleName, companyId);
+          const result = await computeLivePlainStock(
+            canonicalBottle || plan.bottleName,
+            sources,
+            plan.planDate,
+            null,
+            null,
+            { includeNonSupplierSources: true, useResolvedBottleDoc: true }
+          );
+          return Number(result?.available) || 0;
+        })()
+      : calculateCoatedStock(
+        plan.coatingShade,
+        companyId,
+        plan.planDate,
+        includeCurrentPlanRejections ? null : plan._id
+      );
     stockCache.set(key, stockPromise);
   }
   return stockCache.get(key);
 };
 
 const getPlainStockWarnings = async (plans, stockCache) => {
-  const plainPlans = plans.filter(plan => (plan.coatingShade || "").trim().toUpperCase() === "PLAIN");
+  const plainPlans = plans.filter(plan => !isExcelViewOnlyPlan(plan) && (plan.coatingShade || "").trim().toUpperCase() === "PLAIN");
   const groups = new Map();
   for (const plan of plainPlans) {
     const rawCid = plan.companyId?._id || plan.companyId;
@@ -689,6 +901,7 @@ const getPlainStockWarnings = async (plans, stockCache) => {
     const poolRows = await PrintingPlan.find({
       companyId: new mongoose.Types.ObjectId(companyId),
       isDeleted: false,
+      isExcelViewOnly: { $ne: true },
       coatingShade: { $regex: /^PLAIN$/i },
       planDate: { $gte: start, $lte: end },
       $or: [
@@ -700,7 +913,10 @@ const getPlainStockWarnings = async (plans, stockCache) => {
       companyId,
       ...poolRows.flatMap(row => [
         ...(row.stockSources || []).map(source => (source?._id || source)?.toString()),
-        ...(row.stockAllocation || []).map(allocation => (allocation.companyId?._id || allocation.companyId)?.toString())
+        ...(row.stockAllocation || []).map(allocation => (allocation.companyId?._id || allocation.companyId)?.toString()),
+        ...(row.qtyEntries || []).flatMap(entry =>
+          (entry.stockAllocation || []).map(allocation => (allocation.companyId?._id || allocation.companyId)?.toString())
+        )
       ])
     ].filter(Boolean)));
     const stockSourcePlan = {
@@ -711,14 +927,17 @@ const getPlainStockWarnings = async (plans, stockCache) => {
     const sourceSet = new Set(sources);
     const readyDeductedToday = poolRows.reduce((total, row) => {
       const allocations = Array.isArray(row.stockAllocation) ? row.stockAllocation : [];
+      const rejectedAllocation = getPrintingReadyRejectionAllocations(row)
+        .filter(allocation => sourceSet.has(allocation.companyId))
+        .reduce((sum, allocation) => sum + allocation.qty, 0);
       if (allocations.length > 0) {
-        return total + allocations
+        return total + rejectedAllocation + allocations
           .filter(allocation => sourceSet.has((allocation.companyId?._id || allocation.companyId)?.toString()))
           .reduce((sum, allocation) => sum + (Number(allocation.qty) || 0), 0);
       }
       return sourceSet.has((row.companyId?._id || row.companyId)?.toString())
-        ? total + (Number(row.producedQty) || 0)
-        : total;
+        ? total + rejectedAllocation + (Number(row.producedQty) || 0)
+        : total + rejectedAllocation;
     }, 0);
     const openingStock = stockAfterReady + readyDeductedToday;
     let runningOrderQty = 0;
@@ -766,7 +985,7 @@ const getBottlePerBoxByAlias = async (plans) => {
 // Stock sync helper for PLAIN shade Printing Plans
 const syncPrintingPlanStockDeduction = async (planDocOrId, newProducedQty, userId = null) => {
   let plan = typeof planDocOrId === 'object' && planDocOrId._id ? planDocOrId : await PrintingPlan.findById(planDocOrId);
-  if (!plan) return;
+  if (!plan || isExcelViewOnlyPlan(plan)) return;
 
   const isPlainShade = (plan.coatingShade || "").trim().toUpperCase() === "PLAIN";
   if (!isPlainShade) return;
@@ -784,7 +1003,7 @@ const syncPrintingPlanStockDeduction = async (planDocOrId, newProducedQty, userI
 // Revert applied stock deduction completely (e.g. on soft delete)
 const revertPrintingPlanStockDeduction = async (planDocOrId, userId = null) => {
   let plan = typeof planDocOrId === 'object' && planDocOrId._id ? planDocOrId : await PrintingPlan.findById(planDocOrId);
-  if (!plan) return;
+  if (!plan || isExcelViewOnlyPlan(plan)) return;
 
   plan.appliedStockDeduction = 0;
   await PrintingPlan.findByIdAndUpdate(plan._id, { $set: { appliedStockDeduction: 0 } });
@@ -801,6 +1020,7 @@ const revertPrintingPlanStockDeduction = async (planDocOrId, userId = null) => {
 const getSentToDispatchPrintingRows = async (targetDate = null, includeTargetDate = false) => {
   const query = {
     isDeleted: false,
+    isExcelViewOnly: { $ne: true },
     readyToDispatch: { $exists: true, $ne: null } // Only rows with the readyToDispatch mark
   };
 
@@ -847,7 +1067,8 @@ exports.createPlan = async (req, res) => {
               brandId: item.brandId,
               bottleName: { $regex: new RegExp("^" + item.bottleName.trim() + "$", "i") },
               printingToBeDone: item.printingToBeDone || "",
-              isDeleted: false
+              isDeleted: false,
+              isExcelViewOnly: { $ne: true }
            };
            if (item.coatingShade) {
              duplicateQuery.coatingShade = { $regex: new RegExp("^" + item.coatingShade.trim() + "$", "i") };
@@ -861,6 +1082,7 @@ exports.createPlan = async (req, res) => {
     }
 
     for (const item of plansToInsert) {
+      item.isExcelViewOnly = false;
       let effectiveCompanyId = item.companyId;
       if (!effectiveCompanyId && item.brandId) {
         const bDoc = await Brand.findById(item.brandId);
@@ -885,14 +1107,6 @@ exports.createPlan = async (req, res) => {
         if (item.stockSources) {
           let sources = Array.isArray(item.stockSources) ? item.stockSources : [item.stockSources];
           sources = sources.map(s => s ? (s._id || s).toString() : null).filter(Boolean);
-          const suppliers = await Company.find({ isStockSupplier: true, isDeleted: { $ne: true } }).lean();
-          const validSupplierIds = new Set(suppliers.map(s => s._id.toString()));
-          const cidStr = effectiveCompanyId ? effectiveCompanyId.toString() : '';
-          for (const src of sources) {
-            if (src !== cidStr && !validSupplierIds.has(src)) {
-              throw new Error("Invalid stock sources. Only own company and stock supplier companies are allowed.");
-            }
-          }
           item.stockSources = sources.map(s => new mongoose.Types.ObjectId(s));
         } else {
           item.stockSources = effectiveCompanyId ? [effectiveCompanyId] : [];
@@ -909,18 +1123,18 @@ exports.createPlan = async (req, res) => {
           null,
           null,
           null,
-          { useResolvedBottleDoc: true }
+          { useResolvedBottleDoc: true, includeNonSupplierSources: true }
         );
         item.stockSources = allocRes.stockSources;
         item.stockAllocation = allocRes.stockAllocation;
         item.stockAllocationInitial = allocRes.stockAllocation;
         item.plainBottleStock = allocRes.combinedAvailable;
-        item.balanceToMake = producedQty - orderQty;
+        item.balanceToMake = calculateBalanceToMake(orderQty, producedQty);
       } else {
         item.stockAllocation = [];
         item.stockAllocationInitial = [];
         item.stockSources = [];
-        item.balanceToMake = producedQty - orderQty;
+        item.balanceToMake = calculateBalanceToMake(orderQty, producedQty);
       }
       if (Number(item.boxQty) > 0) {
         item.noOfBoxes = Math.ceil(orderQty / Number(item.boxQty));
@@ -942,7 +1156,7 @@ exports.createPlan = async (req, res) => {
       const isPlainShade = (req.body.coatingShade || "").trim().toUpperCase() === "PLAIN";
       const orderQty = Number(req.body.orderQty) || 0;
       const producedQty = Number(req.body.producedQty) || 0;
-      req.body.balanceToMake = producedQty - orderQty;
+      req.body.balanceToMake = calculateBalanceToMake(orderQty, producedQty);
       
       const plan = new PrintingPlan(req.body);
       await plan.save();
@@ -1052,9 +1266,8 @@ exports.getPlans = async (req, res) => {
     }
 
     // Augment plans with computed fields
-    const allCompaniesList = await Company.find({ isDeleted: { $ne: true } }).select('_id name isStockSupplier').lean();
+    const allCompaniesList = await Company.find({ isDeleted: { $ne: true } }).select('_id name').lean();
     const companyNameMap = new Map(allCompaniesList.map(c => [c._id.toString(), c.name]));
-    const supplierIdSet = new Set(allCompaniesList.filter(c => c.isStockSupplier).map(c => c._id.toString()));
     const stockCache = new Map();
     const bottleNames = [...new Set(validPlans.map(plan => plan.bottleName).filter(Boolean))];
     const bottleRegexes = bottleNames.map(name => new RegExp(`^${name.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, "i"));
@@ -1081,8 +1294,23 @@ exports.getPlans = async (req, res) => {
     const stockWarnings = await getPlainStockWarnings(validPlans, stockCache);
 
     const augmentedPlans = await Promise.all(validPlans.map(async (plan) => {
+      if (isExcelViewOnlyPlan(plan)) {
+        return {
+          ...plan,
+          plainBottleName: plan.plainBottle || plan.bottleName || "",
+          coatedStockAvailable: plan.plainBottleStock,
+          readyQty: plan.producedQty,
+          readyRejectionQty: 0,
+          completed: false,
+          plainStockWarning: null,
+          stockSources: [],
+          stockAllocation: [],
+          usedFrom: [],
+          usedFromTooltip: ""
+        };
+      }
       const isPlainShade = (plan.coatingShade || "").trim().toUpperCase() === "PLAIN";
-      const coatedStockAvailable = await getLivePrintingStock(plan, stockCache);
+      const coatedStockAvailable = await getLivePrintingStock(plan, stockCache, true);
       const boxQty = boxQtyByAlias.get(String(plan.bottleName || "").trim().toUpperCase()) || Number(plan.boxQty) || 0;
       const calculations = getPrintingPlanCalculations({ ...plan, boxQty });
       const { orderQty, producedQty, balanceToMake, completed, noOfBoxes } = calculations;
@@ -1103,8 +1331,11 @@ exports.getPlans = async (req, res) => {
       let rowUsedFrom = [];
       let rowUsedFromTooltip = '';
       if (isPlainShade && Array.isArray(plan.stockAllocation) && plan.stockAllocation.length > 0) {
-        const hasSupplier = plan.stockAllocation.some(a => supplierIdSet.has((a.companyId?._id || a.companyId)?.toString()) && Number(a.qty) > 0);
-        if (hasSupplier) {
+        const planCompanyId = (plan.companyId?._id || plan.companyId)?.toString();
+        const hasExternalSource = plan.stockAllocation.some(a =>
+          (a.companyId?._id || a.companyId)?.toString() !== planCompanyId && Number(a.qty) > 0
+        );
+        if (hasExternalSource) {
           rowUsedFrom = plan.stockAllocation
             .filter(a => Number(a.qty) > 0)
             .map(a => {
@@ -1121,7 +1352,7 @@ exports.getPlans = async (req, res) => {
 
       return {
         ...plan,
-        plainBottleStock: isPlainShade ? coatedStockAvailable : plan.plainBottleStock,
+        plainBottleStock: coatedStockAvailable,
         plainBottleName,
         coatedStockAvailable,
         producedQty,
@@ -1192,6 +1423,7 @@ exports.deleteQtyEntry = async (req, res) => {
     if (!plan || plan.isDeleted) {
       return res.status(404).json({ success: false, message: "Printing Plan not found." });
     }
+    if (rejectExcelViewOnlyPlan(plan, res)) return;
 
     initializePrintingQtyHistory(plan);
     const entry = plan.qtyEntries.find(item => item._id?.toString() === req.params.entryId);
@@ -1224,7 +1456,7 @@ exports.deleteQtyEntry = async (req, res) => {
         [plan.companyId, ...(plan.stockSources || [])],
         req.user?._id,
         null,
-        { useResolvedBottleDoc: true }
+        { useResolvedBottleDoc: true, includeNonSupplierSources: true }
       );
       if (!replay?.success) {
         return res.status(400).json({ success: false, message: replay?.message || "Plain stock replay failed." });
@@ -1253,6 +1485,7 @@ exports.updatePlan = async (req, res) => {
     if (!plan || plan.isDeleted) {
       return res.status(404).json({ success: false, message: "Plan not found" });
     }
+    if (rejectExcelViewOnlyPlan(plan, res)) return;
 
     initializePrintingQtyHistory(plan);
     const previous = {
@@ -1263,7 +1496,7 @@ exports.updatePlan = async (req, res) => {
       stockSources: [...(plan.stockSources || [])]
     };
     const updateData = { ...req.body };
-    for (const field of ["balanceToMake", "noOfBoxes", "completed", "plainBottleStock", "qtyEntries", "orderQtyInitial", "producedQtyInitial", "stockAllocationInitial", "appliedStockDeduction", "allocationShortfall", "shortfallQty", "quantityHistory", "stockContext"]) {
+    for (const field of ["balanceToMake", "noOfBoxes", "completed", "plainBottleStock", "lacquerCoatingCompletedQty", "qtyEntries", "orderQtyInitial", "producedQtyInitial", "stockAllocationInitial", "appliedStockDeduction", "allocationShortfall", "shortfallQty", "quantityHistory", "stockContext", "isExcelViewOnly"]) {
       delete updateData[field];
     }
     updateData.isEditedAfterImport = true;
@@ -1327,7 +1560,7 @@ exports.updatePlan = async (req, res) => {
     plan.orderQty = orderQty;
     plan.producedQty = producedQty;
     const finalBoxQty = Number(updateData.boxQty !== undefined ? updateData.boxQty : plan.boxQty) || 0;
-    plan.balanceToMake = producedQty - orderQty;
+    plan.balanceToMake = calculateBalanceToMake(orderQty, producedQty);
     plan.noOfBoxes = finalBoxQty > 0 ? Math.ceil(orderQty / finalBoxQty) : 0;
 
     if (nextIsPlain) {
@@ -1352,7 +1585,7 @@ exports.updatePlan = async (req, res) => {
         plan._id,
         null,
         null,
-        { useResolvedBottleDoc: true }
+        { useResolvedBottleDoc: true, includeNonSupplierSources: true }
       );
       const entryAllocations = getEntryAllocationTotals(plan, []);
       const entryAllocationBySource = new Map(entryAllocations.map(allocation => [allocation.companyId.toString(), Number(allocation.qty) || 0]));
@@ -1419,10 +1652,12 @@ exports.updatePlan = async (req, res) => {
 // Delete Plan
 exports.deletePlan = async (req, res) => {
   try {
-    const plan = await PrintingPlan.findByIdAndUpdate(req.params.id, { isDeleted: true }, { returnDocument: 'after' });
-    if (!plan) {
+    const existingPlan = await PrintingPlan.findById(req.params.id);
+    if (!existingPlan || existingPlan.isDeleted) {
       return res.status(404).json({ success: false, message: "Plan not found" });
     }
+    if (rejectExcelViewOnlyPlan(existingPlan, res)) return;
+    const plan = await PrintingPlan.findByIdAndUpdate(req.params.id, { isDeleted: true }, { returnDocument: 'after' });
     await revertPrintingPlanStockDeduction(plan, req.user?._id);
     const isPlain = (plan.coatingShade || "").trim().toUpperCase() === "PLAIN";
     if (isPlain) {
@@ -1468,26 +1703,31 @@ exports.getComputedStats = async (req, res) => {
     let stockContext = null;
     let warningSources = [];
 
+    let stock = null;
     if (isPlainShade) {
       if (bottleName) {
-        stockContext = await getBottleSourcesInfo(bottleName, effectiveCompanyId, planDate, excludePlanIds, { useResolvedBottleDoc: true });
+        const { resolveCanonicalPlainBottle } = require("../utils/lacquerGroupKey");
+        const canonicalBottle = await resolveCanonicalPlainBottle(bottleName, effectiveCompanyId);
+        const bottleRef = canonicalBottle || bottleName;
+
+        stockContext = await getBottleSourcesInfo(bottleRef, effectiveCompanyId, planDate, excludePlanIds, {
+          useResolvedBottleDoc: true,
+          includeNonSupplierSources: true
+        });
         const selectedSources = normalizeSourceIds(stockSources, effectiveCompanyId);
         warningSources = selectedSources.length > 0
           ? selectedSources
           : stockContext.sources.map(source => source.companyId.toString());
-        const stock = await computeLivePlainStock(
-          bottleName,
+        stock = await computeLivePlainStock(
+          bottleRef,
           warningSources,
           planDate,
-          excludePlanIds
-        );
-        const displayedStock = await computeLivePlainStock(
-          bottleName,
-          warningSources,
-          planDate
+          excludePlanIds,
+          null,
+          { includeNonSupplierSources: true, useResolvedBottleDoc: true }
         );
         allocationAvailable = Number(stock?.available) || 0;
-        coatedStockAvailable = Number(displayedStock?.available) || 0;
+        coatedStockAvailable = allocationAvailable;
       }
 
       // Also fetch printed qty if bottle and brand exist
@@ -1553,6 +1793,7 @@ exports.getComputedStats = async (req, res) => {
         .map(id => new mongoose.Types.ObjectId(id));
       const currentDayRows = await PrintingPlan.find({
         isDeleted: false,
+        isExcelViewOnly: { $ne: true },
         companyId: effectiveCompanyId,
         coatingShade: { $regex: /^PLAIN$/i },
         bottleName: { $regex: new RegExp(`^${String(bottleName).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, "i") },
@@ -1596,17 +1837,19 @@ exports.getComputedStats = async (req, res) => {
       data: {
         coatedStockAvailable,
         allocationAvailable: isPlainShade ? allocationAvailable : coatedStockAvailable,
-        plainStock: isPlainShade ? coatedStockAvailable : undefined,
+        plainStock: isPlainShade ? allocationAvailable : undefined,
+        openingStock: isPlainShade ? (Number(stock?.openingStock) || 0) : undefined,
         producedQty,
         readyQty,
         boxQty,
-        balanceToMake: readyQty - orderQty,
+        balanceToMake: calculateBalanceToMake(orderQty, readyQty),
         completed: orderQty > 0 && readyQty >= orderQty,
         noOfBoxes: boxQty > 0 ? Math.ceil(orderQty / boxQty) : 0,
         stockContext,
         sources: stockContext?.sources || [],
         hasSuppliers: stockContext?.hasSuppliers || false,
         eligibleSuppliers: stockContext?.eligibleSuppliers || [],
+        eligibleIncomingCompanies: stockContext?.eligibleIncomingCompanies || [],
         plainStockWarning
       }
     });
@@ -1636,6 +1879,7 @@ exports.importPreviousDay = async (req, res) => {
     
     const oldPlans = await PrintingPlan.find({
       isDeleted: false,
+      isExcelViewOnly: { $ne: true },
       planDate: { $gte: startOfPrevDay, $lte: endOfPrevDay }
     }).lean();
     
@@ -1650,6 +1894,7 @@ exports.importPreviousDay = async (req, res) => {
 
     const existingTargetPlans = await PrintingPlan.find({
       isDeleted: false,
+      isExcelViewOnly: { $ne: true },
       planDate: { $gte: startOfTargetDay, $lte: endOfTargetDay }
     }).lean();
 
@@ -1747,7 +1992,7 @@ exports.importPreviousDay = async (req, res) => {
         const stockDoc = await findPlainBottleStockDoc(finalValues.bottleName, finalValues.companyId);
         finalValues.plainBottleStock = stockDoc?.availableQuantity || 0;
         const prod = Number(finalValues.producedQty) || 0;
-        finalValues.balanceToMake = prod > 0 ? (finalValues.plainBottleStock - prod) : finalValues.plainBottleStock;
+        finalValues.balanceToMake = calculateBalanceToMake(finalValues.orderQty, prod);
       }
 
       const snapshot = {
@@ -1860,14 +2105,8 @@ exports.getPlansPaginated = async (req, res) => {
     }
 
     const baseQuery = { ...query };
-
-    // Keyset pagination: exclude already-fetched records
-    const decodedCursor = decodeCursor(cursor);
-    if (decodedCursor) {
-      const keysetQuery = buildKeysetQuery(decodedCursor, 'planDate', -1);
-      query.$and = query.$and || [];
-      query.$and.push(keysetQuery);
-    }
+    const decodedCursor = decodePrintingPlanCursor(cursor);
+    const cursorQuery = buildPrintingPlanCursorQuery(decodedCursor);
 
     // Use aggregate pipeline for efficiency
     const pipeline = [
@@ -1935,7 +2174,118 @@ exports.getPlansPaginated = async (req, res) => {
           canonicalCompanyId: { $ifNull: ['$companyDoc._id', { $ifNull: ['$nameCompanyDoc._id', '$brandCompanyDoc._id'] }] }
         }
       },
-      { $sort: { companyName: 1, bottleName: 1, brandSortName: 1, coatingShade: 1, printingToBeDone: 1, textColor: 1, planDate: -1, _id: -1 } },
+      {
+        $lookup: {
+          from: 'bottleperboxes',
+          let: { planBottleName: '$bottleName' },
+          pipeline: [
+            {
+              $match: {
+                isDeleted: { $ne: true },
+                $expr: {
+                  $or: [
+                    {
+                      $eq: [
+                        { $toLower: { $trim: { input: { $ifNull: ['$plainBottleName', ''] } } } },
+                        { $toLower: { $trim: { input: { $ifNull: ['$$planBottleName', ''] } } } }
+                      ]
+                    },
+                    {
+                      $eq: [
+                        { $toLower: { $trim: { input: { $ifNull: ['$bottleName', ''] } } } },
+                        { $toLower: { $trim: { input: { $ifNull: ['$$planBottleName', ''] } } } }
+                      ]
+                    },
+                    {
+                      $in: [
+                        { $toLower: { $trim: { input: { $ifNull: ['$$planBottleName', ''] } } } },
+                        {
+                          $map: {
+                            input: { $ifNull: ['$bottleNames', []] },
+                            as: 'alias',
+                            in: { $toLower: { $trim: { input: '$$alias' } } }
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+            },
+            { $project: { plainBottleName: 1 } },
+            { $limit: 1 }
+          ],
+          as: 'plainBottleMaster'
+        }
+      },
+      { $unwind: { path: '$plainBottleMaster', preserveNullAndEmptyArrays: true } },
+      {
+        $addFields: {
+          plainBottleName: {
+            $ifNull: ['$plainBottle', {
+              $ifNull: ['$plainBottleName', {
+                $ifNull: ['$plainBottleMaster.plainBottleName', { $ifNull: ['$bottleName', ''] }]
+              }]
+            }]
+          },
+          companySortName: { $toLower: { $ifNull: ['$companyName', ''] } },
+          bottleSortName: {
+            $toLower: {
+              $trim: {
+                input: {
+                  $ifNull: ['$plainBottle', {
+                    $ifNull: ['$plainBottleName', {
+                      $ifNull: ['$plainBottleMaster.plainBottleName', { $ifNull: ['$bottleName', ''] }]
+                    }]
+                  }]
+                }
+              }
+            }
+          },
+          sourceGroupPresence: {
+            $cond: [
+              { $regexMatch: { input: { $ifNull: ['$companyName', ''] }, regex: 'SHRENO', options: 'i' } },
+              1,
+              { $cond: [{ $and: [{ $ne: ['$sourceGroupId', null] }, { $ne: ['$sourceGroupId', ''] }] }, 0, 1] }
+            ]
+          },
+          sourceGroupSortName: {
+            $cond: [
+              { $regexMatch: { input: { $ifNull: ['$companyName', ''] }, regex: 'SHRENO', options: 'i' } },
+              '',
+              { $toLower: { $ifNull: ['$sourceGroupId', ''] } }
+            ]
+          },
+          brandPresence: {
+            $cond: [{ $and: [{ $ne: ['$brandSortName', null] }, { $ne: ['$brandSortName', ''] }] }, 0, 1]
+          },
+          brandSortKey: { $toLower: { $ifNull: ['$brandSortName', ''] } },
+          shadeSortName: { $toLower: { $ifNull: ['$coatingShade', ''] } },
+          printingSortName: { $toLower: { $ifNull: ['$printingToBeDone', ''] } },
+          textSortName: { $toLower: { $ifNull: ['$textColor', ''] } },
+          bottleSizeMatch: {
+            $regexFind: {
+              input: {
+                $ifNull: ['$plainBottle', {
+                  $ifNull: ['$plainBottleName', {
+                    $ifNull: ['$plainBottleMaster.plainBottleName', { $ifNull: ['$bottleName', ''] }]
+                  }]
+                }]
+              },
+              regex: /(\d+(?:\.\d+)?)/
+            }
+          }
+        }
+      },
+      {
+        $addFields: {
+          bottleSortSize: {
+            $convert: { input: '$bottleSizeMatch.match', to: 'double', onError: 1e100, onNull: 1e100 }
+          }
+        }
+      },
+      ...(cursorQuery ? [{ $match: cursorQuery }] : []),
+      { $sort: Object.fromEntries(PRINTING_PLAN_PAGE_SORT) },
       {
         $lookup: {
           from: 'bottlespecs',
@@ -1952,6 +2302,7 @@ exports.getPlansPaginated = async (req, res) => {
           bottleName: 1,
           brandName: 1,
           brandSortName: 1,
+          sourceGroupId: 1,
           coatingShade: 1,
           printingToBeDone: 1,
           printingVariant: 1,
@@ -1965,6 +2316,7 @@ exports.getPlansPaginated = async (req, res) => {
           stockAllocationInitial: 1,
           stockSources: 1,
           stockAllocation: 1,
+          isExcelViewOnly: 1,
           createdAt: 1,
           boxQty: 1,
           noOfBoxes: 1,
@@ -2012,9 +2364,8 @@ exports.getPlansPaginated = async (req, res) => {
     const hasMore = allDocs.length > limit;
     const items = allDocs.slice(0, limit);
 
-    const allCompaniesList = await Company.find({ isDeleted: { $ne: true } }).select('_id name isStockSupplier').lean();
+    const allCompaniesList = await Company.find({ isDeleted: { $ne: true } }).select('_id name').lean();
     const companyNameMap = new Map(allCompaniesList.map(c => [c._id.toString(), c.name]));
-    const supplierIdSet = new Set(allCompaniesList.filter(c => c.isStockSupplier).map(c => c._id.toString()));
     const stockCache = new Map();
     const stockWarnings = await getPlainStockWarnings(items, stockCache);
     const boxQtyByAlias = await getBottlePerBoxByAlias(items);
@@ -2023,6 +2374,7 @@ exports.getPlansPaginated = async (req, res) => {
     const stockDisplayGroupFilters = new Map();
 
     for (const plan of items) {
+      if (isExcelViewOnlyPlan(plan)) continue;
       const key = getStockDisplayGroupKey(plan, companyNameMap);
       if (!stockDisplayRowsByKey.has(key)) stockDisplayRowsByKey.set(key, []);
       const companyName = plan.companyId?.name || plan.companyName || plan.company?.name || "";
@@ -2038,6 +2390,7 @@ exports.getPlansPaginated = async (req, res) => {
       const displayGroupPlans = await PrintingPlan.find({
         $and: [
           baseQuery,
+          { isExcelViewOnly: { $ne: true } },
           { $or: Array.from(stockDisplayGroupFilters.values()) }
         ]
       })
@@ -2062,15 +2415,34 @@ exports.getPlansPaginated = async (req, res) => {
       const isPlainShade = (firstRow.coatingShade || "").trim().toUpperCase() === "PLAIN";
       stockDisplayValues.set(
         key,
-        isPlainShade ? await getLivePrintingStock(firstRow, stockCache) : firstRow.plainBottleStock
+        await getLivePrintingStock(firstRow, stockCache, true)
       );
     }
 
     // Augment items with group-identifying fields and computed values
     const augmentedItems = await Promise.all(items.map(async (plan) => {
+      if (isExcelViewOnlyPlan(plan)) {
+        return {
+          ...plan,
+          plainBottleName: plan.plainBottleName || plan.plainBottle || plan.bottleName || "",
+          plainBottle: plan.plainBottle || plan.plainBottleName || plan.bottleName || "",
+          readyQty: plan.producedQty,
+          plainBottleStockDisplay: plan.plainBottleStock,
+          coatedStockAvailable: plan.plainBottleStock,
+          completed: false,
+          plainStockWarning: null,
+          stockSources: [],
+          stockAllocation: [],
+          _cBottle: plan.bottleName,
+          _cShade: plan.coatingShade,
+          _cPrinting: plan.printingToBeDone,
+          _cTextColor: plan.textColor,
+          _cStock: plan.plainBottleStock
+        };
+      }
       const isPlainShade = (plan.coatingShade || "").trim().toUpperCase() === "PLAIN";
       const stockDisplayGroupKey = getStockDisplayGroupKey(plan, companyNameMap);
-      const coatedStockAvailable = await getLivePrintingStock(plan, stockCache);
+      const coatedStockAvailable = await getLivePrintingStock(plan, stockCache, true);
       const boxQty = boxQtyByAlias.get(String(plan.bottleName || "").trim().toUpperCase()) || Number(plan.boxQty) || 0;
       const calculations = getPrintingPlanCalculations({ ...plan, boxQty });
       const { orderQty, producedQty, balanceToMake, completed, noOfBoxes } = calculations;
@@ -2078,8 +2450,11 @@ exports.getPlansPaginated = async (req, res) => {
       let rowUsedFrom = [];
       let rowUsedFromTooltip = '';
       if (isPlainShade && Array.isArray(plan.stockAllocation) && plan.stockAllocation.length > 0) {
-        const hasSupplier = plan.stockAllocation.some(a => supplierIdSet.has((a.companyId?._id || a.companyId)?.toString()) && Number(a.qty) > 0);
-        if (hasSupplier) {
+        const planCompanyId = (plan.companyId?._id || plan.companyId)?.toString();
+        const hasExternalSource = plan.stockAllocation.some(a =>
+          (a.companyId?._id || a.companyId)?.toString() !== planCompanyId && Number(a.qty) > 0
+        );
+        if (hasExternalSource) {
           rowUsedFrom = plan.stockAllocation
             .filter(a => Number(a.qty) > 0)
             .map(a => {
@@ -2102,6 +2477,8 @@ exports.getPlansPaginated = async (req, res) => {
         _id: plan._id,
         planDate: plan.planDate,
         bottleName: plan.bottleName,
+        plainBottleName: plan.plainBottleName || plan.plainBottle || plan.bottleName || "",
+        plainBottle: plan.plainBottle || plan.plainBottleName || plan.bottleName || "",
         brandId: plan.brandId,
         brandName: plan.brandName,
         coatingShade: plan.coatingShade,
@@ -2111,12 +2488,15 @@ exports.getPlansPaginated = async (req, res) => {
         orderQty: orderQty,
         producedQty: producedQty,
         readyQty: producedQty,
+        readyRejectionQty: (plan.qtyEntries || [])
+          .filter(entry => !entry.isDeleted && entry.subType === "ready")
+          .reduce((sum, entry) => sum + (Number(entry.rejectionQty) || 0), 0),
         balanceToMake: balanceToMake,
         completed,
         plainStockWarning: stockWarnings.get(plan._id.toString()) || null,
         boxQty,
         noOfBoxes,
-        plainBottleStock: isPlainShade ? coatedStockAvailable : plan.plainBottleStock,
+        plainBottleStock: coatedStockAvailable,
         plainBottleStockDisplay: stockDisplayValues.get(stockDisplayGroupKey) ?? null,
         coatedStockAvailable: coatedStockAvailable,
         dispatchBalance: plan.dispatchBalance,
@@ -2141,7 +2521,9 @@ exports.getPlansPaginated = async (req, res) => {
       };
     }));
 
-    const nextCursor = items.length > 0 ? encodeCursor(items[items.length - 1], 'planDate') : null;
+    const nextCursor = hasMore && items.length > 0
+      ? encodePrintingPlanCursor(items[items.length - 1])
+      : null;
 
     res.status(200).json({
       success: true,
@@ -2206,6 +2588,8 @@ exports.getPlansTotals = async (req, res) => {
       query.$or.push({ printingToBeDone: { $regex: search, $options: 'i' } });
     }
 
+    query.isExcelViewOnly = { $ne: true };
+
     // Use aggregate pipeline for efficiency
     const pipeline = [
       { $match: query },
@@ -2261,7 +2645,7 @@ exports.getPlansTotals = async (req, res) => {
     const stockCache = new Map();
     for (const plan of allPlans) {
       const isPlainShade = (plan.coatingShade || "").trim().toUpperCase() === "PLAIN";
-      const availableStock = await getLivePrintingStock(plan, stockCache);
+      const availableStock = await getLivePrintingStock(plan, stockCache, true);
       if (isPlainShade) {
         totalPlainStockBalance += availableStock;
       } else {

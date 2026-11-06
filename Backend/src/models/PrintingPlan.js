@@ -59,6 +59,10 @@ const printingPlanSchema = new mongoose.Schema({
   orderQty: {
     type: Number
   },
+  lacquerCoatingCompletedQty: {
+    type: Number,
+    default: 0
+  },
   balanceToMake: {
     type: Number
   },
@@ -78,6 +82,7 @@ const printingPlanSchema = new mongoose.Schema({
     subType: String,
     qty: Number,
     rejectionQty: { type: Number, default: 0 },
+    rejectionSeparate: { type: Boolean, default: false },
     rejectionBoxes: { type: Number, default: 0 },
     rejectionLooseQty: { type: Number, default: 0 },
     at: { type: Date, default: Date.now },
@@ -153,6 +158,10 @@ const printingPlanSchema = new mongoose.Schema({
     default: 0
   },
   isEditedAfterImport: {
+    type: Boolean,
+    default: false
+  },
+  isExcelViewOnly: {
     type: Boolean,
     default: false
   },

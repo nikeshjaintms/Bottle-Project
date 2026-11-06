@@ -1483,6 +1483,7 @@ exports.getLiveStock = async (req, res) => {
 
     const printingPlans = await PrintingPlan.find({
       isDeleted: { $ne: true },
+      isExcelViewOnly: { $ne: true },
       companyId: companyObjectId,
       bottleName: { $in: bottleRegexes }
     }).select("planDate").lean();

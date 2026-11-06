@@ -186,6 +186,10 @@ export default function AddVariant() {
   };
 
   const selectedSpec = bottleSpecs.find(s => s._id === formData.bottleSpecId);
+  const selectableBottleSpecs = bottleSpecs.filter(s =>
+    (s.isPrinting === true || s.isCoating !== true || s._id === location.state?.autoSelectSpecId) &&
+    ((s.status && s.brandId?.status) || s._id === location.state?.autoSelectSpecId)
+  );
 
   return (
     <div className="page-content">
@@ -210,9 +214,9 @@ export default function AddVariant() {
                       Bottle Specification <span className="text-danger">*</span>
                     </label>
                     <SearchableSelect
-                      options={bottleSpecs.filter(s => s.status && s.brandId?.status).map(s => ({
+                      options={selectableBottleSpecs.map(s => ({
                         value: s._id,
-                        label: `${s.bottleName} (${s.brandId?.name || 'N/A'})${s.isCoating ? ' [Coating]' : ` - ${s.printingTypeId?.name || 'N/A'} [${s.printingColorId?.name || 'N/A'}]`}`
+                        label: `${s.bottleName} (${s.brandId?.name || 'N/A'})${s.isCoating && !s.isPrinting ? ' [Coating]' : ` - ${s.printingTypeId?.name || 'N/A'} [${s.printingColorId?.name || 'N/A'}]`}`
                       }))}
                       value={formData.bottleSpecId}
                       onChange={(val) => {

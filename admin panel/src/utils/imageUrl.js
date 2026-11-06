@@ -1,5 +1,8 @@
+import { V_URL } from '../../Baseurl.js';
+
 /**
  * Constructs the full image URL from the relative path stored in database
+ * Uses the same V_URL pattern as variant images
  * @param {string} imagePath - Relative path from database (e.g., "uploads/1234567890.jpg" or "/uploads/1234567890.jpg")
  * @returns {string|null} - Full image URL or null if no path
  */
@@ -12,19 +15,8 @@ export const getFullImageUrl = (imagePath) => {
     return imagePath;
   }
 
-  // Get backend URL from environment or use default
-  const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5000';
-  
-  // Construct full URL
-  // imagePath can be:
-  //   - "uploads/filename.jpg" from database
-  //   - "/uploads/filename.jpg" 
-  // backendUrl is "http://localhost:5000"
-  // Result should be "http://localhost:5000/uploads/filename.jpg"
-  
-  const baseUrl = backendUrl.endsWith('/') ? backendUrl.slice(0, -1) : backendUrl;
-  
-  // Normalize path - always ensure it starts with /
+  // Use the same pattern as variant images with V_URL from Baseurl.js
+  // Normalize path - ensure it starts with /
   let path = imagePath;
   if (!path.startsWith('/')) {
     path = '/' + path;
@@ -33,9 +25,8 @@ export const getFullImageUrl = (imagePath) => {
   // Remove any double slashes
   path = path.replace(/\/+/g, '/');
   
-  // Add cache busting to prevent browser cache issues
-  const timestamp = Date.now();
-  return `${baseUrl}${path}?t=${timestamp}`;
+  // Return full URL using V_URL (same as variant images)
+  return `${V_URL}${path}`;
 };
 
 /**

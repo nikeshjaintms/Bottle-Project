@@ -47,7 +47,32 @@ const matchBottleOption = (item, options, bottlePerBoxes = []) => {
     item?.suggestedName,
     typeof bottleRef === 'string' && !/^[a-f\d]{24}$/i.test(bottleRef) ? bottleRef : '',
   ].map(normalizeBottleName).filter(Boolean);
-  return options.find((option) => names.includes(normalizeBottleName(option.label))) || null;
+
+  const matchedOpt = options.find((option) => names.includes(normalizeBottleName(option.label)));
+  if (matchedOpt) return matchedOpt;
+
+  // Fallback: If not in current options, check if bottle already exists in master bottlePerBoxes
+  const matchedMaster = bottle || bottlePerBoxes.find((entry) => {
+    const entryNames = [
+      entry.plainBottleName,
+      entry.bottleName,
+      ...(entry.bottleNames || [])
+    ].map(normalizeBottleName).filter(Boolean);
+    return names.some(n => entryNames.includes(n));
+  });
+
+  if (matchedMaster) {
+    return {
+      value: String(matchedMaster._id),
+      label: matchedMaster.plainBottleName || matchedMaster.bottleName,
+      plainBottleName: matchedMaster.plainBottleName || matchedMaster.bottleName,
+      bottlePerBox: matchedMaster.bottlePerBox,
+      isOtherBottle: true,
+      bottlePerBoxData: matchedMaster
+    };
+  }
+
+  return null;
 };
 
 const getScannedBottleHint = (item, bottlePerBoxes = []) =>
@@ -577,14 +602,54 @@ export default function EditIncoming() {
           });
         });
       }
+      const dedupedItems = [];
+      for (const item of itemsToSet) {
+        const itemTotal = Number(item.totalQty) || 0;
+        const itemBox = Number(item.box) || 0;
+        const itemQty = Number(item.qty) || 0;
+        const itemHint = (item.bottleLabel || item.bottleHint || '').toLowerCase().replace(/[-_\s]+/g, ' ').trim();
+
+        const existingIdx = dedupedItems.findIndex(existing => {
+          const exTotal = Number(existing.totalQty) || 0;
+          const sameTotal = itemTotal > 0 && exTotal > 0 && itemTotal === exTotal;
+          const sameId = item.bottleId && existing.bottleId && item.bottleId === existing.bottleId;
+          const exHint = (existing.bottleLabel || existing.bottleHint || '').toLowerCase().replace(/[-_\s]+/g, ' ').trim();
+          const sameName = itemHint && exHint && (
+            itemHint === exHint ||
+            itemHint.replace(/\s*-\s*$/, '') === exHint.replace(/\s*-\s*$/, '')
+          );
+          return (sameTotal && sameName) || (sameTotal && (item.bottleId || existing.bottleId)) || (sameId && sameTotal) || (sameId && !sameTotal && !exTotal);
+        });
+
+        if (existingIdx !== -1) {
+          const existing = dedupedItems[existingIdx];
+          const exBox = Number(existing.box) || 0;
+          const exBoxInvalid = !exBox || exBox >= 50000;
+          const itemBoxValid = itemBox > 0 && itemBox < 50000;
+
+          if (!existing.bottleId && item.bottleId) {
+            existing.bottleId = item.bottleId;
+            existing.bottleLabel = item.bottleLabel;
+          }
+
+          if (itemBoxValid && (exBoxInvalid || Math.abs(itemBox * itemQty - itemTotal) <= 2)) {
+            existing.box = item.box;
+            existing.qty = item.qty;
+            if (itemTotal > 0) existing.totalQty = item.totalQty;
+          }
+        } else {
+          dedupedItems.push(item);
+        }
+      }
+
       setItems(prevItems => {
         const newItems = [...prevItems];
         if (newItems.length === 1 && !newItems[0].bottleId && !newItems[0].qty) {
-          return itemsToSet.length > 0 ? itemsToSet : newItems;
+          return dedupedItems.length > 0 ? dedupedItems : newItems;
         }
-        return [...newItems, ...itemsToSet];
+        return [...newItems, ...dedupedItems];
       });
-      Swal.fire({ icon: 'success', title: 'Invoice Parsed', text: 'Appended ' + itemsToSet.length + ' items from new document.' });
+      Swal.fire({ icon: 'success', title: 'Invoice Parsed', text: 'Appended ' + dedupedItems.length + ' items from new document.' });
     } catch (err) {
       Swal.fire('Error', 'Failed to parse invoice: ' + err, 'error');
     }
@@ -683,8 +748,48 @@ export default function EditIncoming() {
         });
       }
 
-      if (itemsToSet.length > 0) {
-        setItems(itemsToSet);
+      const dedupedItems = [];
+      for (const item of itemsToSet) {
+        const itemTotal = Number(item.totalQty) || 0;
+        const itemBox = Number(item.box) || 0;
+        const itemQty = Number(item.qty) || 0;
+        const itemHint = (item.bottleLabel || item.bottleHint || '').toLowerCase().replace(/[-_\s]+/g, ' ').trim();
+
+        const existingIdx = dedupedItems.findIndex(existing => {
+          const exTotal = Number(existing.totalQty) || 0;
+          const sameTotal = itemTotal > 0 && exTotal > 0 && itemTotal === exTotal;
+          const sameId = item.bottleId && existing.bottleId && item.bottleId === existing.bottleId;
+          const exHint = (existing.bottleLabel || existing.bottleHint || '').toLowerCase().replace(/[-_\s]+/g, ' ').trim();
+          const sameName = itemHint && exHint && (
+            itemHint === exHint ||
+            itemHint.replace(/\s*-\s*$/, '') === exHint.replace(/\s*-\s*$/, '')
+          );
+          return (sameTotal && sameName) || (sameTotal && (item.bottleId || existing.bottleId)) || (sameId && sameTotal) || (sameId && !sameTotal && !exTotal);
+        });
+
+        if (existingIdx !== -1) {
+          const existing = dedupedItems[existingIdx];
+          const exBox = Number(existing.box) || 0;
+          const exBoxInvalid = !exBox || exBox >= 50000;
+          const itemBoxValid = itemBox > 0 && itemBox < 50000;
+
+          if (!existing.bottleId && item.bottleId) {
+            existing.bottleId = item.bottleId;
+            existing.bottleLabel = item.bottleLabel;
+          }
+
+          if (itemBoxValid && (exBoxInvalid || Math.abs(itemBox * itemQty - itemTotal) <= 2)) {
+            existing.box = item.box;
+            existing.qty = item.qty;
+            if (itemTotal > 0) existing.totalQty = item.totalQty;
+          }
+        } else {
+          dedupedItems.push(item);
+        }
+      }
+
+      if (dedupedItems.length > 0) {
+        setItems(dedupedItems);
         Swal.fire({
           icon: (res.unmatchedItems && res.unmatchedItems.length > 0) ? 'warning' : 'success',
           title: 'Invoice Parsed',

@@ -112,33 +112,48 @@ function PrintingQuantityModal({ show, plan, subType, onClose, onSave }) {
   }, [show, plan]);
 
   const updateQuantity = value => {
-    setError('');
     let nextQty = Number(value) || 0;
-    if (isReady && Number.isFinite(readyStockAvailable) && nextQty > 0 && nextQty + rejectedQuantity > readyStockAvailable) {
+    let nextError = '';
+    if (isReady && plainPlan && Number.isFinite(readyStockAvailable) && nextQty > 0 && nextQty + rejectedQuantity > readyStockAvailable) {
       nextQty = Math.max(0, readyStockAvailable - rejectedQuantity);
-      setError(`Ready Qty cannot exceed available ${plainPlan ? 'plain' : 'coated'} stock. Maximum additional quantity: ${readyStockAvailable}.`);
+      nextError = `Ready and rejected quantities exceed available plain stock. Maximum additional quantity: ${readyStockAvailable}.`;
+    } else if (isReady && !plainPlan && Number.isFinite(readyStockAvailable)) {
+      const currentReady = Number(details?.producedQty) || 0;
+      const currentRejected = Number(details?.readyRejectionQty) || 0;
+      const nextReady = Math.max(0, currentReady + nextQty);
+      if (nextReady + currentRejected + rejectedQuantity > readyStockAvailable) {
+        nextError = `Ready and rejected quantities exceed available coated stock. Available: ${readyStockAvailable}.`;
+      }
     }
+    setError(nextError);
     setAddQty(value === '' ? '' : String(nextQty));
     if (isReady && plainPlan) {
-      setSplit(sourceSplitSuggestion(nextQty + rejectedQuantity, sources, details?.stockAllocation || []));
+      setSplit(sourceSplitSuggestion(nextQty, sources, details?.stockAllocation || []));
     }
   };
 
   const updateRejectedTotal = requestedTotal => {
     let total = Math.max(0, Number(requestedTotal) || 0);
+    const currentRejectedQty = Number(details?.readyRejectionQty) || 0;
     const maxRejected = !Number.isFinite(readyStockAvailable)
       ? Number.POSITIVE_INFINITY
-      : Math.max(0, readyStockAvailable - Math.max(0, Number(addQty) || 0));
+      : Math.max(
+        0,
+        readyStockAvailable -
+          (plainPlan
+            ? Math.max(0, Number(addQty) || 0)
+            : (Number(details?.producedQty) || 0) + currentRejectedQty + Math.max(0, Number(addQty) || 0))
+      );
     if (total > maxRejected) {
       total = maxRejected;
-      setError(`Ready Qty cannot exceed available ${plainPlan ? 'plain' : 'coated'} stock. Maximum rejection quantity: ${maxRejected}.`);
+      setError(`Rejected Qty exceeds available ${plainPlan ? 'plain' : 'coated'} stock. Maximum rejection quantity: ${maxRejected}.`);
     } else {
       setError('');
     }
     setRejectionBoxes(boxSize > 0 ? String(Math.floor(total / boxSize)) : '');
     setRejectionQty(boxSize > 0 ? String(total % boxSize || '') : String(total || ''));
     if (plainPlan) {
-      setSplit(sourceSplitSuggestion((Number(addQty) || 0) + total, sources, details?.stockAllocation || []));
+      setSplit(sourceSplitSuggestion(Number(addQty) || 0, sources, details?.stockAllocation || []));
     }
   };
 
@@ -181,8 +196,8 @@ function PrintingQuantityModal({ show, plan, subType, onClose, onSave }) {
     const rejectedBoxes = Number(rejectionBoxes) || 0;
     const rejectedLooseQty = Number(rejectionQty) || 0;
     const rejectedQuantity = rejectedBoxes * boxSize + rejectedLooseQty;
-    const quantity = wholeQuantity + rejectedQuantity;
-    if ((!addQty && !rejectionQty && !rejectionBoxes) || !Number.isInteger(wholeQuantity) || !Number.isInteger(rejectedBoxes) || rejectedBoxes < 0 || !Number.isInteger(rejectedLooseQty) || rejectedLooseQty < 0 || (rejectedBoxes > 0 && boxSize <= 0) || quantity === 0) {
+    const quantity = wholeQuantity;
+    if ((!addQty && !rejectionQty && !rejectionBoxes) || !Number.isInteger(wholeQuantity) || !Number.isInteger(rejectedBoxes) || rejectedBoxes < 0 || !Number.isInteger(rejectedLooseQty) || rejectedLooseQty < 0 || (rejectedBoxes > 0 && boxSize <= 0) || (quantity === 0 && (!isReady || rejectedQuantity <= 0))) {
       setError('Enter whole and rejection quantities as whole numbers, with a non-zero total.');
       return;
     }
@@ -194,8 +209,14 @@ function PrintingQuantityModal({ show, plan, subType, onClose, onSave }) {
       setError('Available stock could not be verified. Reload the plan and try again.');
       return;
     }
-    if (isReady && quantity > 0 && Number.isFinite(readyStockAvailable) && quantity > readyStockAvailable) {
-      setError(`Ready Qty cannot exceed available ${plainPlan ? 'plain' : 'coated'} stock. Available: ${readyStockAvailable}.`);
+    const currentRejectedQty = Number(details?.readyRejectionQty) || 0;
+    const totalStockUse = isReady
+      ? (plainPlan
+        ? quantity + rejectedQuantity
+        : Math.max(0, (Number(details?.producedQty) || 0) + quantity) + currentRejectedQty + rejectedQuantity)
+      : quantity;
+    if (isReady && totalStockUse > 0 && Number.isFinite(readyStockAvailable) && totalStockUse > readyStockAvailable) {
+      setError(`${plainPlan ? 'Ready and rejected quantities exceed available plain stock' : 'Rejected quantities exceed available coated stock'}. Available: ${readyStockAvailable}.`);
       return;
     }
     if (!entryDate) {
@@ -258,12 +279,17 @@ function PrintingQuantityModal({ show, plan, subType, onClose, onSave }) {
   const currentReady = Number(details?.producedQty) || 0;
   const currentQty = isReady ? currentReady : currentOrder;
   const wholeQuantity = Number(addQty) || 0;
-  const quantityToAdd = wholeQuantity + (isReady ? rejectedQuantity : 0);
+  const quantityToAdd = wholeQuantity;
   const nextQty = currentQty + quantityToAdd;
   const currentAllocation = details?.stockAllocation || [];
-  const stockBeforePlan = readyStockAvailable + currentReady;
-  const plainStockAfterUpdate = stockBeforePlan - nextQty;
-  const nextBalance = nextQty - currentOrder;
+  const currentRejectedQty = Number(details?.readyRejectionQty) || 0;
+  const stockBeforePlan = plainPlan
+    ? readyStockAvailable + currentReady + currentRejectedQty
+    : readyStockAvailable;
+  const plainStockAfterUpdate = plainPlan
+    ? stockBeforePlan - nextQty - currentRejectedQty - rejectedQuantity
+    : stockBeforePlan - nextQty - currentRejectedQty - rejectedQuantity;
+  const nextBalance = currentOrder - nextQty;
 
   return (
     <div className="modal show lacquer-quantity-modal" style={{ display: 'block', backgroundColor: 'rgba(0,0,0,0.5)' }} onClick={onClose}>
@@ -296,13 +322,17 @@ function PrintingQuantityModal({ show, plan, subType, onClose, onSave }) {
                   <input type="date" className="form-control" value={entryDate} onChange={event => setEntryDate(event.target.value)} disabled={loading} />
                 </div>
                 <div className="mb-3">
-                  <label className="form-label">{isReady ? 'Whole Qty (Add / Subtract)' : 'Add / Subtract Qty'}</label>
+                  <label className="form-label">{isReady ? 'Ready (Printed) Qty' : 'Add / Subtract Qty'}</label>
                   <input
                     type="number"
                     className="form-control"
                     value={addQty}
                     onChange={event => updateQuantity(event.target.value)}
-                    max={isReady && Number.isFinite(readyStockAvailable) ? readyStockAvailable - rejectedQuantity : undefined}
+                    max={isReady && Number.isFinite(readyStockAvailable)
+                      ? (plainPlan
+                        ? readyStockAvailable - rejectedQuantity
+                        : readyStockAvailable - currentReady - currentRejectedQty - rejectedQuantity)
+                      : undefined}
                     placeholder={isReady ? 'Enter whole printed quantity' : 'Enter a whole quantity'}
                     disabled={loading}
                   />
@@ -318,7 +348,7 @@ function PrintingQuantityModal({ show, plan, subType, onClose, onSave }) {
                             step="1"
                             value={rejectionBoxes}
                             onChange={event => updateRejectionBoxes(event.target.value)}
-                            max={boxSize > 0 && Number.isFinite(readyStockAvailable) ? Math.floor(Math.max(0, readyStockAvailable - Math.max(0, wholeQuantity) - (Number(rejectionQty) || 0)) / boxSize) : undefined}
+                            max={boxSize > 0 && Number.isFinite(readyStockAvailable) ? Math.floor(Math.max(0, readyStockAvailable - (plainPlan ? Math.max(0, wholeQuantity) : currentReady + currentRejectedQty + Math.max(0, wholeQuantity)) - (Number(rejectionQty) || 0)) / boxSize) : undefined}
                             placeholder="Boxes"
                             disabled={loading || boxSize <= 0}
                           />
@@ -332,7 +362,7 @@ function PrintingQuantityModal({ show, plan, subType, onClose, onSave }) {
                             step="1"
                             value={rejectionQty}
                             onChange={event => updateRejectionQuantity(event.target.value)}
-                            max={Number.isFinite(readyStockAvailable) ? Math.max(0, readyStockAvailable - Math.max(0, wholeQuantity) - (Number(rejectionBoxes) || 0) * boxSize) : undefined}
+                            max={Number.isFinite(readyStockAvailable) ? Math.max(0, readyStockAvailable - (plainPlan ? Math.max(0, wholeQuantity) : currentReady + currentRejectedQty + Math.max(0, wholeQuantity)) - (Number(rejectionBoxes) || 0) * boxSize) : undefined}
                             placeholder="Loose bottles"
                             disabled={loading}
                           />
@@ -345,12 +375,12 @@ function PrintingQuantityModal({ show, plan, subType, onClose, onSave }) {
                     </>
                   )}
                   <small className="text-muted d-block mt-1">
-                    New total = {currentQty} + {wholeQuantity}{isReady ? ` + ${rejectedQuantity}` : ''} = <strong>{nextQty}</strong>
+                    New total = {currentQty} + {wholeQuantity} = <strong>{nextQty}</strong>
                   </small>
                   {isReady && (
                     <>
                       <small className="text-muted d-block">
-                        Balance to make = {nextQty} − {currentOrder} = <strong>{nextBalance}</strong>
+                        Balance to make = {currentOrder} − {nextQty} = <strong>{nextBalance}</strong>
                       </small>
                       {boxSize > 0 && (() => {
                         const readyBoxSummary = getReadyBoxFields({ boxQty: boxSize, producedQty: nextQty });
@@ -362,12 +392,12 @@ function PrintingQuantityModal({ show, plan, subType, onClose, onSave }) {
                       })()}
                       {plainPlan && (
                         <small className="text-muted d-block">
-                          Plain Stock = {stockBeforePlan} − {nextQty} = <strong className={plainStockAfterUpdate < 0 ? 'text-danger' : 'text-success'}>{plainStockAfterUpdate}</strong>
+                          Plain Stock = {stockBeforePlan} − {nextQty} − {currentRejectedQty + rejectedQuantity} rejected = <strong className={plainStockAfterUpdate < 0 ? 'text-danger' : 'text-success'}>{plainStockAfterUpdate}</strong>
                         </small>
                       )}
                       {!plainPlan && (
                         <small className="text-muted d-block">
-                          Coated Stock = {stockBeforePlan} − {nextQty} = <strong className={plainStockAfterUpdate < 0 ? 'text-danger' : 'text-success'}>{plainStockAfterUpdate}</strong>
+                          Coated Stock = {stockBeforePlan} − {nextQty} ready − {currentRejectedQty + rejectedQuantity} rejected = <strong className={plainStockAfterUpdate < 0 ? 'text-danger' : 'text-success'}>{plainStockAfterUpdate}</strong>
                         </small>
                       )}
                     </>
@@ -411,7 +441,7 @@ function PrintingQuantityModal({ show, plan, subType, onClose, onSave }) {
           </div>
           <div className="modal-footer lacquer-quantity-footer">
             <button type="button" className="btn btn-secondary" onClick={onClose} disabled={loading}>Cancel</button>
-            <button type="button" className="btn btn-primary" onClick={handleSave} disabled={loading || !details || (!addQty && !(isReady && rejectionQty))}>
+            <button type="button" className="btn btn-primary" onClick={handleSave} disabled={loading || !details || (!addQty && !(isReady && (rejectionQty || rejectionBoxes)))}>
               {loading ? 'Saving...' : 'Save'}
             </button>
           </div>

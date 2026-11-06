@@ -9,6 +9,7 @@ const BottleSpec = require("../models/Bottlespecs");
 const { derivePlainBottleName } = require("../utils/derivePlainBottleName");
 const mongoose = require("mongoose");
 const { recomputePlainStock } = require("../utils/stockRecompute");
+const { calculateBalanceToMake } = require("../utils/lacquerPlanCalculations");
 
 const splitStockAllocation = (allocations, splitQty, totalQty, fallbackCompanyId) => {
   const sourceAllocations = Array.isArray(allocations)
@@ -180,6 +181,7 @@ const computeGroupsAndSummary = (groups = []) => {
         brandName: vl.brandName || null,
         description: (vl.description || "").trim(),
         noOfBoxes,
+        readyBoxes: Number(vl.readyBoxes ?? noOfBoxes) || 0,
         producedQty,
         weight: weight,
         totalWeight: totalWeightCalc,
@@ -1310,6 +1312,10 @@ exports.createFromPlan = async (req, res) => {
       return res.status(400).json({ success: false, message: "Plan row is deleted" });
     }
 
+    if (source === "printing" && planRow.isExcelViewOnly) {
+      return res.status(403).json({ success: false, message: "Excel-imported Printing Plan rows are view-only." });
+    }
+
     if (source === "lacquer" && (planRow.isClosed || planRow.productionStatus === "CLOSED")) {
       return res.status(400).json({
         success: false,
@@ -1358,6 +1364,34 @@ exports.createFromPlan = async (req, res) => {
           return res.status(400).json({
             success: false,
             message: `Quantity (${parsedQty}) cannot exceed sendable quantity (${sendable})`,
+          });
+        }
+        sendQty = parsedQty;
+      } else {
+        sendQty = sendable;
+      }
+    } else {
+      sendable = Math.max(0, Number(planRow.producedQty || planRow.printedQty || 0));
+
+      if (sendable <= 0) {
+        return res.status(400).json({
+          success: false,
+          message: "No printed quantity available to send",
+        });
+      }
+
+      if (qty !== undefined && qty !== null && qty !== "") {
+        const parsedQty = Number(qty);
+        if (isNaN(parsedQty) || !Number.isInteger(parsedQty) || parsedQty <= 0) {
+          return res.status(400).json({
+            success: false,
+            message: "Invalid quantity. Must be a positive integer.",
+          });
+        }
+        if (parsedQty > sendable) {
+          return res.status(400).json({
+            success: false,
+            message: `Quantity (${parsedQty}) cannot exceed printed quantity (${sendable})`,
           });
         }
         sendQty = parsedQty;
@@ -1434,6 +1468,30 @@ exports.createFromPlan = async (req, res) => {
             }
 
             if (existingLine) {
+              const printedQty = Math.max(0, Number(planRow.producedQty || planRow.printedQty || 0));
+              const existingProducedQty = Number(existingLine.producedQty) || 0;
+              if (printedQty > 0 && existingProducedQty > printedQty) {
+                const bottleMaster = await getBottlePerBoxData(plainBottleName);
+                const unit = bottleMaster.unit || 0;
+                const correctedBoxes = unit > 0
+                  ? Math.ceil(printedQty / unit)
+                  : Number(planRow.readyBoxes || planRow.noOfBoxes || 0);
+
+                existingLine.producedQty = printedQty;
+                existingLine.noOfBoxes = correctedBoxes;
+                existingLine.readyBoxes = correctedBoxes;
+                if (bottleMaster.weight !== null && bottleMaster.weight > 0 && correctedBoxes > 0) {
+                  existingLine.weight = bottleMaster.weight;
+                  existingLine.totalWeight = unit > 0
+                    ? parseFloat(((printedQty / unit) * bottleMaster.weight).toFixed(3))
+                    : parseFloat((correctedBoxes * bottleMaster.weight).toFixed(3));
+                }
+
+                const { summary } = computeGroupsAndSummary(sheet.groups);
+                sheet.summary = summary;
+                await sheet.save();
+              }
+
               return res.json({
                 success: true,
                 message: "Already sent",
@@ -1472,17 +1530,13 @@ exports.createFromPlan = async (req, res) => {
         if (noOfBoxes === 0) hasZeroBoxWarning = true;
       }
     } else {
-      if (planRow.readyBoxes !== null && planRow.readyBoxes !== undefined && Number(planRow.readyBoxes) > 0) {
-        noOfBoxes = Number(planRow.readyBoxes);
-      } else if (planRow.noOfBoxes !== null && planRow.noOfBoxes !== undefined && Number(planRow.noOfBoxes) > 0) {
-        noOfBoxes = Number(planRow.noOfBoxes);
-      } else if (unit > 0 && (planRow.producedQty > 0 || planRow.printedQty > 0)) {
-        noOfBoxes = Math.ceil((planRow.producedQty || planRow.printedQty || 0) / unit);
+      if (unit > 0) {
+        noOfBoxes = Math.ceil(sendQty / unit);
       } else {
-        noOfBoxes = 0;
-        hasZeroBoxWarning = true;
+        noOfBoxes = Number(planRow.readyBoxes || planRow.noOfBoxes || 0);
+        if (noOfBoxes === 0) hasZeroBoxWarning = true;
       }
-      producedQtyCalc = unit > 0 ? noOfBoxes * unit : 0;
+      producedQtyCalc = sendQty;
     }
 
     const totalWeightCalc =
@@ -1586,6 +1640,7 @@ exports.createFromPlan = async (req, res) => {
         brandName: brandName,
         description: variantDescription,
         noOfBoxes: noOfBoxes,
+        readyBoxes: noOfBoxes,
         producedQty: producedQtyCalc,
         weight: boxWeight,
         totalWeight: totalWeightCalc,
@@ -1782,7 +1837,7 @@ exports.createFromPlan = async (req, res) => {
           planRow.coatingCompletedQty = remainingCoatedQty;
           planRow.coatedQty = remainingCoatedQty;
           planRow.coatedQtyInitial = remainingCoatedQty;
-          planRow.balanceToMake = remainingCoatedQty - remainingOrderQty;
+          planRow.balanceToMake = calculateBalanceToMake(remainingOrderQty, remainingCoatedQty);
           planRow.noOfBoxes = recalculatedNoOfBoxes;
           planRow.sentToReadyQty = 0;
           planRow.readyToDispatch = null;

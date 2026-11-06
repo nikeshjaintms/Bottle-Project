@@ -1,9 +1,5 @@
 /**
- * Rule L1: A row is COMPLETED when coated >= order, i.e. balance 0 or positive (over-completion counts).
- * Order 0 or coated 0 is not completed.
- *
- * Uses the larger of coatingCompletedQty and coatedQty (or whichever is present and non-zero),
- * preventing edge cases where coatingCompletedQty is 0 but coatedQty is 800.
+ * Returns the coating-completed quantity, tolerating legacy rows where only one alias is populated.
  *
  * @param {Object} item
  * @returns {number}
@@ -37,5 +33,8 @@ export const isPlanRowCompleted = (item) => {
     return false;
   }
 
-  return (coated - order) >= 0;
+  return getBalanceToMake(order, coated) <= 0;
 };
+import { getBalanceToMake } from './planQuantityUtils';
+
+export { getBalanceToMake };

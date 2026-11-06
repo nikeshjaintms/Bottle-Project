@@ -21,6 +21,7 @@ export const usePrintingPlanInfiniteScroll = (filters) => {
   const abortControllerRef = useRef(null);
   const requestIdRef = useRef(0);
   const loadedIdsRef = useRef(new Set());
+  const loadingMoreRef = useRef(false);
   const sentinelRef = useRef(null);
   const loadTimeoutRef = useRef(null);
 
@@ -57,54 +58,47 @@ export const usePrintingPlanInfiniteScroll = (filters) => {
 
   // Fetch paginated page with 20-second timeout
   const fetchPage = useCallback(async (pageC, requestId) => {
-    return new Promise(async (resolve, reject) => {
-      try {
-        const params = {
-          limit: 20,
-          date: (!fromDate && !toDate) ? selectedDate : '',
-          fromDate,
-          toDate,
-          search,
-          companyId: selectedCompanyId
-        };
+    const params = {
+      limit: 20,
+      date: (!fromDate && !toDate) ? selectedDate : '',
+      fromDate,
+      toDate,
+      search,
+      companyId: selectedCompanyId
+    };
 
-        if (pageC) {
-          params.cursor = pageC;
-        }
+    if (pageC) {
+      params.cursor = pageC;
+    }
 
-        const abortController = abortControllerRef.current;
+    const abortController = abortControllerRef.current;
+    const timeoutHandle = setTimeout(() => {
+      abortController?.abort();
+    }, 20000);
 
-        // 20-second timeout for fetch
-        const timeoutHandle = setTimeout(() => {
-          if (abortController) {
-            abortController.abort();
-          }
-        }, 20000);
+    try {
+      const res = await API.get('/printing-plan/paginated', {
+        params,
+        signal: abortController?.signal
+      });
 
-        const res = await API.get('/printing-plan/paginated', {
-          params,
-          signal: abortController?.signal
-        });
-
-        clearTimeout(timeoutHandle);
-
-        // Check for stale response
-        if (requestId !== requestIdRef.current) {
-          return resolve(null);
-        }
-
-        resolve({
-          items: res.data?.data?.items || [],
-          nextCursor: res.data?.data?.nextCursor || null,
-          hasMore: res.data?.data?.hasMore || false
-        });
-      } catch (err) {
-        if (err.name === 'AbortError') {
-          return resolve(null);
-        }
-        reject(err);
+      if (requestId !== requestIdRef.current) {
+        return null;
       }
-    });
+
+      return {
+        items: res.data?.data?.items || [],
+        nextCursor: res.data?.data?.nextCursor || null,
+        hasMore: res.data?.data?.hasMore || false
+      };
+    } catch (err) {
+      if (err.name === 'AbortError') {
+        return null;
+      }
+      throw err;
+    } finally {
+      clearTimeout(timeoutHandle);
+    }
   }, [selectedDate, fromDate, toDate, search, selectedCompanyId]);
 
   // Reset and reload from first page
@@ -120,6 +114,7 @@ export const usePrintingPlanInfiniteScroll = (filters) => {
     abortControllerRef.current = new AbortController();
     requestIdRef.current += 1;
     const requestId = requestIdRef.current;
+    loadingMoreRef.current = false;
 
     setStatus('loadingFirst');
     setError(null);
@@ -161,9 +156,10 @@ export const usePrintingPlanInfiniteScroll = (filters) => {
 
   // Load next page
   const loadNextPage = useCallback(async () => {
-    if (status === 'loadingMore' || !hasMore || !cursor) return;
+    if (loadingMoreRef.current || status === 'loadingMore' || !hasMore || !cursor) return;
 
     const requestId = requestIdRef.current;
+    loadingMoreRef.current = true;
     setStatus('loadingMore');
 
     try {
@@ -177,11 +173,17 @@ export const usePrintingPlanInfiniteScroll = (filters) => {
         setCursor(pageData.nextCursor);
         setHasMore(pageData.hasMore);
         setStatus('idle');
+      } else if (requestId === requestIdRef.current) {
+        setStatus('idle');
       }
     } catch (err) {
       if (requestId === requestIdRef.current) {
         setError(err.message || 'Failed to load more');
         setStatus('error');
+      }
+    } finally {
+      if (requestId === requestIdRef.current) {
+        loadingMoreRef.current = false;
       }
     }
   }, [status, hasMore, cursor, fetchPage]);

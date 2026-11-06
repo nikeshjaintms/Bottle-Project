@@ -14,6 +14,14 @@ const mongoose = require("mongoose");
 const { decodeCursor, encodeCursor, parseLimit } = require("../utils/keyset-pagination");
 const { isPrintingProcess } = require("../utils/processRouting");
 const {
+  calculateBalanceToMake,
+  getCoatingCompletedQty,
+  getCoatingRejectedQty,
+  getStockDeductibleRejectedQty,
+  getActiveCoatingEntryQty,
+  isCoatingHistoryEntry
+} = require("../utils/lacquerPlanCalculations");
+const {
   buildLacquerPrintingIdentity,
   getLacquerPrintingDayRange,
   normalizeLacquerPrintingId,
@@ -88,7 +96,7 @@ const withLacquerPrintingCompensation = async (plans, operation) => {
   };
 
   if (planIds.length) {
-    addPrintingSnapshots(await PrintingPlan.find({ lacquerPlanId: { $in: planIds } }).lean());
+    addPrintingSnapshots(await PrintingPlan.find({ lacquerPlanId: { $in: planIds }, isExcelViewOnly: { $ne: true } }).lean());
   }
   for (const plan of planValues) {
     if (!plan?._id || !plan.planDate || !plan.companyId || !plan.brandId) continue;
@@ -100,6 +108,7 @@ const withLacquerPrintingCompensation = async (plans, operation) => {
       companyId: plan.companyId,
       brandId: plan.brandId,
       isDeleted: { $ne: true },
+      isExcelViewOnly: { $ne: true },
       lacquerPlanId: null
     }).lean();
     for (const candidate of candidates) {
@@ -324,16 +333,39 @@ const getPlanCombinationKey = (item, resolveBrand = null, resolveVariant = null)
   return keys[0] || '';
 };
 
-const getCoatedQty = (item) => {
-  if (!item) return 0;
-  const c1 = Number(item.coatingCompletedQty);
-  const c2 = Number(item.coatedQty);
-  if (Number.isFinite(c1) && Number.isFinite(c2)) {
-    return Math.max(c1, c2);
+const getCoatedQty = getCoatingCompletedQty;
+const isExcelViewOnlyPlan = (plan) => Boolean(plan?.isExcelViewOnly);
+const rejectExcelViewOnlyMutation = (plan, res) => {
+  if (!isExcelViewOnlyPlan(plan)) return false;
+  res.status(409).json({ success: false, message: "Excel-imported rows are view-only" });
+  return true;
+};
+
+const getInitialStockAllocation = (plan, currentCoatedQty) => {
+  const currentAllocation = Array.isArray(plan.stockAllocation) ? plan.stockAllocation : [];
+  const activeEntries = (plan.qtyEntries || []).filter(entry => !entry.isDeleted);
+  if (currentAllocation.length > 0) {
+    const initialByCompany = new Map();
+    currentAllocation.forEach(allocation => {
+      const companyId = (allocation.companyId?._id || allocation.companyId)?.toString();
+      if (companyId) initialByCompany.set(companyId, (initialByCompany.get(companyId) || 0) + (Number(allocation.qty) || 0));
+    });
+    activeEntries.forEach(entry => {
+      (entry.stockAllocation || []).forEach(allocation => {
+        const companyId = (allocation.companyId?._id || allocation.companyId)?.toString();
+        if (companyId) initialByCompany.set(companyId, (initialByCompany.get(companyId) || 0) - (Number(allocation.qty) || 0));
+      });
+    });
+    return Array.from(initialByCompany.entries())
+      .filter(([, qty]) => qty > 0)
+      .map(([companyId, qty]) => ({ companyId: new mongoose.Types.ObjectId(companyId), qty }));
   }
-  if (Number.isFinite(c1)) return c1;
-  if (Number.isFinite(c2)) return c2;
-  return 0;
+
+  const initialQty = Math.max(0, currentCoatedQty - getActiveCoatingEntryQty(activeEntries));
+  const companyId = (plan.companyId?._id || plan.companyId)?.toString();
+  return initialQty > 0 && companyId
+    ? [{ companyId: new mongoose.Types.ObjectId(companyId), qty: initialQty }]
+    : [];
 };
 
 const isPlanRowCompleted = (item) => {
@@ -346,34 +378,17 @@ const isPlanRowCompleted = (item) => {
     return false;
   }
 
-  // 1. Coating completed qty >= order qty (order > 0)
-  if (coated >= order) {
-    return true;
-  }
-
-  // 2. Database balanceToMake: coated - order >= 0 with coated > 0
-  const bal = (item.balanceToMake !== undefined && item.balanceToMake !== null) ? Number(item.balanceToMake) : null;
-  if (bal !== null && bal >= 0 && coated >= order) {
-    return true;
-  }
-
-  return false;
+  return calculateBalanceToMake(order, coated) <= 0;
 };
 
 const getCompletedCombinationsSet = async (targetDate = null, resolveBrand = null, resolveVariant = null, includeTargetDate = false) => {
   const query = {
     isDeleted: false,
+    isExcelViewOnly: { $ne: true },
     orderQty: { $gt: 0 },
     $or: [
       { $expr: { $gte: ["$coatingCompletedQty", "$orderQty"] }, coatingCompletedQty: { $gt: 0 } },
-      { $expr: { $gte: ["$coatedQty", "$orderQty"] }, coatedQty: { $gt: 0 } },
-      {
-        balanceToMake: { $gte: 0 },
-        $or: [
-          { coatingCompletedQty: { $gt: 0 } },
-          { coatedQty: { $gt: 0 } }
-        ]
-      }
+      { $expr: { $gte: ["$coatedQty", "$orderQty"] }, coatedQty: { $gt: 0 } }
     ]
   };
 
@@ -412,6 +427,7 @@ const getCompletedCombinationsSet = async (targetDate = null, resolveBrand = nul
 const getSentToDispatchCombinationsSet = async (targetDate = null, resolveBrand = null, resolveVariant = null, includeTargetDate = false) => {
   const query = {
     isDeleted: false,
+    isExcelViewOnly: { $ne: true },
     readyToDispatch: { $exists: true, $ne: null } // Only rows with the readyToDispatch mark
   };
 
@@ -436,7 +452,7 @@ const getSentToDispatchCombinationsSet = async (targetDate = null, resolveBrand 
   const sentSet = new Set();
   sentPlans.forEach(p => {
     const order = Number(p.orderQty || 0);
-    const coated = Number(p.coatingCompletedQty ?? p.coatedQty ?? 0);
+    const coated = getCoatedQty(p);
     const sent = Number(p.sentToReadyQty || 0);
     const isCompleted = order > 0 && coated >= order;
     const isFullySent = (order > 0 && sent >= order) || (coated > 0 && sent >= coated && isCompleted);
@@ -466,7 +482,7 @@ const syncLacquerPlanStockDeduction = async (planDocOrId, newCoatedQty, userId =
 
   const targetDeduction = (newCoatedQty !== undefined && newCoatedQty !== null)
     ? (Number(newCoatedQty) || 0)
-    : (Number(plan.coatingCompletedQty ?? plan.coatedQty) || 0);
+    : getCoatedQty(plan);
 
   plan.appliedStockDeduction = targetDeduction;
   await LacquerPlan.findByIdAndUpdate(plan._id, { $set: { appliedStockDeduction: targetDeduction } });
@@ -527,13 +543,16 @@ const validatePlanCompanyBottleVariant = async (planData, isUpdate = false, exis
   if (planData.stockSources !== undefined) {
     let sources = Array.isArray(planData.stockSources) ? planData.stockSources : [planData.stockSources];
     sources = sources.map(s => s ? (s._id || s).toString() : null).filter(Boolean);
-    const suppliers = await Company.find({ isStockSupplier: true, isDeleted: { $ne: true } }).lean();
-    const validSupplierIds = new Set(suppliers.map(s => s._id.toString()));
+    const sourceCompanies = await Company.find({
+      _id: { $in: sources },
+      isDeleted: { $ne: true }
+    }).select('_id').lean();
+    const validSourceIds = new Set(sourceCompanies.map(source => source._id.toString()));
     const compIdStr = company._id.toString();
 
     for (const src of sources) {
-      if (src !== compIdStr && !validSupplierIds.has(src)) {
-        throw new Error("Invalid stock sources. Only own company and stock supplier companies are allowed.");
+      if (src !== compIdStr && !validSourceIds.has(src)) {
+        throw new Error("Invalid stock source company.");
       }
     }
     planData.stockSources = sources.filter(s => s && mongoose.isValidObjectId(s)).map(s => new mongoose.Types.ObjectId(s));
@@ -644,7 +663,8 @@ const findMatchingPrintingPlan = async (plan, session = null) => {
     planDate: { $gte: start, $lte: end },
     companyId: plan.companyId,
     brandId: plan.brandId,
-    isDeleted: { $ne: true }
+    isDeleted: { $ne: true },
+    isExcelViewOnly: { $ne: true }
   };
 
   const candidateQuery = PrintingPlan.find(baseQuery).sort({ createdAt: 1, _id: 1 });
@@ -680,7 +700,7 @@ const syncPrintingPlanForLacquerPlan = async (plan, userId = null, { session = n
       !isPrintingProcess(plan.process)) {
     if (plan._id) {
       await PrintingPlan.updateMany(
-        { lacquerPlanId: plan._id, isDeleted: false },
+        { lacquerPlanId: plan._id, isDeleted: false, isExcelViewOnly: { $ne: true } },
         { $set: { isDeleted: true } },
         session ? { session } : {}
       );
@@ -732,8 +752,12 @@ const syncPrintingPlanForLacquerPlan = async (plan, userId = null, { session = n
 
   const shade = plan.coatingShade || plan.colour || "";
   const plainStock = plan.process === 'P'
-    ? await computeLivePlainStock(plan.bottleName, plan.companyId, plan.planDate)
-    : (plan.coatingCompletedQty ?? plan.coatedQty ?? 0);
+    ? await computeLivePlainStock(
+      plan.bottleName,
+      (plan.stockSources || []).length > 0 ? plan.stockSources : [plan.companyId],
+      plan.planDate
+    )
+    : getCoatedQty(plan);
   const planData = typeof plan.toObject === 'function' ? plan.toObject() : plan;
   const targetIdentity = await buildLacquerPrintingIdentity({
     ...planData,
@@ -741,7 +765,7 @@ const syncPrintingPlanForLacquerPlan = async (plan, userId = null, { session = n
     coatingShade: shade
   }, session);
 
-  let linkedQuery = PrintingPlan.findOne({ lacquerPlanId: plan._id, isDeleted: { $ne: true } });
+  let linkedQuery = PrintingPlan.findOne({ lacquerPlanId: plan._id, isDeleted: { $ne: true }, isExcelViewOnly: { $ne: true } });
   if (session) linkedQuery = linkedQuery.session(session);
   let existingPlan = await linkedQuery;
   let adoptedCandidateCount = 0;
@@ -754,7 +778,8 @@ const syncPrintingPlanForLacquerPlan = async (plan, userId = null, { session = n
       planDate: { $gte: start, $lte: end },
       companyId: plan.companyId,
       brandId: plan.brandId,
-      isDeleted: { $ne: true }
+      isDeleted: { $ne: true },
+      isExcelViewOnly: { $ne: true }
     }).sort({ createdAt: 1, _id: 1 });
     if (session) candidatesQuery = candidatesQuery.session(session);
     const candidates = await candidatesQuery;
@@ -791,6 +816,7 @@ const syncPrintingPlanForLacquerPlan = async (plan, userId = null, { session = n
     existingPlan.printingVariant = pToBeDone || existingPlan.printingVariant || "";
     existingPlan.plainBottleStock = plainStock;
     existingPlan.process = plan.process;
+    existingPlan.lacquerCoatingCompletedQty = getCoatedQty(plan);
     const printingOrderEntriesQty = (existingPlan.qtyEntries || [])
       .filter(entry => !entry.isDeleted && entry.subType === "order")
       .reduce((sum, entry) => sum + (Number(entry.qty) || 0), 0);
@@ -802,13 +828,7 @@ const syncPrintingPlanForLacquerPlan = async (plan, userId = null, { session = n
     }
     if (plan.remarks !== undefined) existingPlan.remarks = plan.remarks;
     if (spec) existingPlan.itemId = spec._id;
-    const readyEntriesQty = (existingPlan.qtyEntries || [])
-      .filter(entry => !entry.isDeleted && entry.subType === "ready")
-      .reduce((sum, entry) => sum + (Number(entry.qty) || 0), 0);
-    const producedQtyInitial = existingPlan.producedQtyInitial !== null && existingPlan.producedQtyInitial !== undefined
-      ? Number(existingPlan.producedQtyInitial)
-      : Math.max(0, (Number(existingPlan.producedQty) || 0) - readyEntriesQty);
-    existingPlan.balanceToMake = producedQtyInitial + readyEntriesQty - (Number(plan.orderQty) || 0);
+    existingPlan.balanceToMake = calculateBalanceToMake(plan.orderQty, existingPlan.producedQty);
     existingPlan.isDeleted = false;
     await existingPlan.save(session ? { session } : undefined);
     return { plan: existingPlan, adoptedCandidateCount, leftUnlinkedCandidateCount };
@@ -832,10 +852,11 @@ const syncPrintingPlanForLacquerPlan = async (plan, userId = null, { session = n
     printingVariant: pToBeDone,
     textColor: tColor,
     plainBottleStock: plainStock,
-    balanceToMake: 0 - (Number(plan.orderQty) || 0),
+    balanceToMake: calculateBalanceToMake(plan.orderQty, 0),
     producedQty: 0,
     process: plan.process,
     orderQty: plan.orderQty,
+    lacquerCoatingCompletedQty: getCoatedQty(plan),
     boxQty: plan.boxQty,
     noOfBoxes: plan.noOfBoxes,
     status: plan.status !== false,
@@ -968,7 +989,7 @@ const getReadyBoxFields = (row) => {
     return { readyBoxes: null, looseQty: null, showLooseQty: false };
   }
 
-  const rawCoatedQty = Number(row.coatingCompletedQty ?? row.coatedQty ?? 0);
+  const rawCoatedQty = getCoatedQty(row);
   const coatingCompletedQty = Number.isFinite(rawCoatedQty) ? rawCoatedQty : 0;
   const readyBoxes = Math.floor(coatingCompletedQty / bottlePerBox);
   const looseQty = coatingCompletedQty - (readyBoxes * bottlePerBox);
@@ -1008,6 +1029,7 @@ const calculatePoolStockWarnings = async (
       return LacquerPlan.find({
         planDate: { $gte: start, $lte: end },
         isDeleted: { $ne: true },
+        isExcelViewOnly: { $ne: true },
         isArchived: { $ne: true },
         isSoftRemoved: { $ne: true },
         isSibling: { $ne: true }
@@ -1112,9 +1134,9 @@ const calculatePoolStockWarnings = async (
     }));
     const sourceMessage = sourceStockBreakdown
       .map(source => `${source.companyName}: ${source.openingStock}`)
-      .join(" · ");
+      .join(" Â· ");
     const warningMessage = stockWarning
-      ? `Total order of this bottle: ${poolOrderTotal} · Opening stock: ${openingStock} · Short by: ${shortBy}${sourceMessage ? ` · Sources: ${sourceMessage}` : ""}`
+      ? `Total order of this bottle: ${poolOrderTotal} Â· Opening stock: ${openingStock} Â· Short by: ${shortBy}${sourceMessage ? ` Â· Sources: ${sourceMessage}` : ""}`
       : "";
     warningByPool.set(key, {
       stockWarning,
@@ -1128,6 +1150,20 @@ const calculatePoolStockWarnings = async (
   }));
 
   return Promise.all(targetRows.map(async (row, index) => {
+    if (isExcelViewOnlyPlan(row)) {
+      return {
+        ...row,
+        stockWarning: false,
+        isYellow: false,
+        stockWarningTooltip: "",
+        groupStockWarning: false,
+        groupStockWarningTooltip: "",
+        readyActions: [],
+        poolOpeningStock: null,
+        poolTotalOrder: 0
+      };
+    }
+
     const identity = await getIdentity(row, planDate);
     const warning = identity ? warningByPool.get(identity.key) : null;
     const result = warning || {
@@ -1168,7 +1204,7 @@ const validateCoatedQtyLimit = async (items, excludePlanIds = null) => {
   const pools = new Map();
 
   for (const item of items) {
-    if (!item) continue;
+    if (!item || isExcelViewOnlyPlan(item)) continue;
     const compId = (item.canonicalCompanyId || (item.companyId?._id || item.companyId) || '').toString();
     const rawBottle = (item.plainBottle || item.plainBottleName || item.bottleName || '').trim();
     if (!compId || !rawBottle) continue;
@@ -1392,7 +1428,7 @@ exports.createPlan = async (req, res) => {
 
     // Validate stock allocation and source eligibility first
     for (const item of submissionItems) {
-      const c = item.coatingCompletedQty !== undefined ? Number(item.coatingCompletedQty) : (Number(item.coatedQty) || 0);
+      const c = getCoatedQty(item);
       item.coatingCompletedQty = c;
       item.coatedQty = c;
       const allocRes = await validateStockAllocation(
@@ -1402,7 +1438,10 @@ exports.createPlan = async (req, res) => {
         item.stockSources,
         c,
         item.stockAllocation,
-        null
+        null,
+        null,
+        null,
+        { includeNonSupplierSources: true }
       );
       item.stockSources = allocRes.stockSources;
       item.stockAllocation = allocRes.stockAllocation;
@@ -1467,6 +1506,7 @@ exports.createPlan = async (req, res) => {
             planDate: { $gte: startOfDay, $lte: endOfDay },
             companyId: item.companyId,
             bottleName: { $regex: new RegExp("^" + item.bottleName.trim() + "$", "i") },
+            isExcelViewOnly: { $ne: true },
             isDeleted: false
           };
           if (item.brandId) dupQuery.brandId = item.brandId;
@@ -1490,9 +1530,9 @@ exports.createPlan = async (req, res) => {
         }
       }
       for (const item of req.body) {
-        const c = item.coatingCompletedQty !== undefined ? Number(item.coatingCompletedQty) : (Number(item.coatedQty) || 0);
+        const c = getCoatedQty(item);
         const o = Number(item.orderQty) || 0;
-        item.balanceToMake = Number(c) - Number(o);
+        item.balanceToMake = calculateBalanceToMake(o, c);
         item.status = (Number(o) > 0 && Number(c) >= Number(o));
       }
       let plans;
@@ -1512,7 +1552,7 @@ exports.createPlan = async (req, res) => {
         plans = await LacquerPlan.insertMany(req.body);
       }
       for (const plan of plans) {
-        await syncLacquerPlanStockDeduction(plan, plan.coatingCompletedQty ?? plan.coatedQty, req.user?._id);
+        await syncLacquerPlanStockDeduction(plan, getCoatedQty(plan), req.user?._id);
 
         await replayStockAllocations(
           plan.bottleName,
@@ -1580,6 +1620,7 @@ exports.createPlan = async (req, res) => {
           planDate: { $gte: startOfDay, $lte: endOfDay },
           companyId: req.body.companyId,
           bottleName: { $regex: new RegExp("^" + req.body.bottleName.trim() + "$", "i") },
+          isExcelViewOnly: { $ne: true },
           isDeleted: false
         };
         if (req.body.brandId) dupQuery.brandId = req.body.brandId;
@@ -1602,14 +1643,14 @@ exports.createPlan = async (req, res) => {
         }
       }
 
-      const c = req.body.coatingCompletedQty !== undefined ? Number(req.body.coatingCompletedQty) : (Number(req.body.coatedQty) || 0);
+      const c = getCoatedQty(req.body);
       const o = Number(req.body.orderQty) || 0;
-      req.body.balanceToMake = Number(c) - Number(o);
+      req.body.balanceToMake = calculateBalanceToMake(o, c);
       req.body.status = (Number(o) > 0 && Number(c) >= Number(o));
 
       const plan = new LacquerPlan(req.body);
       const printingSyncResult = await savePlanWithPrintingSync(plan, req.user?._id);
-      await syncLacquerPlanStockDeduction(plan, plan.coatingCompletedQty ?? plan.coatedQty, req.user?._id);
+      await syncLacquerPlanStockDeduction(plan, getCoatedQty(plan), req.user?._id);
 
       // Auto-send to Ready To Dispatch if completed process C row
       const { syncLacquerPlanReadyToDispatch } = require('./readyToDispatch.controller');
@@ -1695,7 +1736,7 @@ function computeReadyActions(plan) {
     };
   }
 
-  const coated = Number(plan.coatingCompletedQty ?? plan.coatedQty ?? 0);
+  const coated = getCoatedQty(plan);
   const sentQty = Number(plan.sentToReadyQty || 0);
   const sendable = Math.max(0, coated - sentQty);
   const order = Number(plan.orderQty || 0);
@@ -1960,31 +2001,36 @@ exports.getPlans = async (req, res) => {
 
     const plans = await LacquerPlan.aggregate(pipeline).collation({ locale: 'en', strength: 2 });
 
-    const allCompaniesList = await Company.find({ isDeleted: { $ne: true } }).select('_id name isStockSupplier').lean();
+    const allCompaniesList = await Company.find({ isDeleted: { $ne: true } }).select('_id name').lean();
     const companyNameMap = new Map(allCompaniesList.map(c => [c._id.toString(), c.name]));
-    const supplierIdSet = new Set(allCompaniesList.filter(c => c.isStockSupplier).map(c => c._id.toString()));
 
     // Augment plans with computed fields using live day-based stock (Rule L3)
     const stockCache = new Map();
     const augmentedPlans = await Promise.all(plans.map(async (plan) => {
-      let plainStock = 0;
-      let coatedQty = 0;
+      const viewOnlyImport = isExcelViewOnlyPlan(plan);
+      let plainStock = viewOnlyImport ? plan.plainStock : 0;
+      const coatedQty = viewOnlyImport
+        ? (plan.coatingCompletedQty ?? plan.coatedQty)
+        : getCoatedQty(plan);
 
       let openingStock = 0;
 
       // 1. Fetch live day-based plain stock (Rule L3)
-      if (plan.bottleName) {
+      if (!viewOnlyImport && plan.bottleName) {
         const rawCompId = plan.canonicalCompanyId || (plan.companyId?._id || plan.companyId);
         const compId = (rawCompId && rawCompId.toString) ? rawCompId.toString() : (rawCompId || '');
         const dayStr = plan.planDate ? new Date(plan.planDate).toISOString().split('T')[0] : '';
         const canonicalBottle = await resolveCanonicalPlainBottle(plan.plainBottle || plan.bottleName, compId);
-        const cacheKey = `${compId}::${canonicalBottle}::${dayStr}`;
+        const stockSources = Array.isArray(plan.stockSources) && plan.stockSources.length > 0
+          ? plan.stockSources.map(source => (source?._id || source).toString())
+          : [compId];
+        const cacheKey = `${compId}::${canonicalBottle}::${dayStr}::${stockSources.slice().sort().join(',')}`;
         if (stockCache.has(cacheKey)) {
           const cached = stockCache.get(cacheKey);
           plainStock = cached.plainStock;
           openingStock = cached.openingStock;
         } else {
-          const stock = await computeLivePlainStock(canonicalBottle, compId, plan.planDate);
+          const stock = await computeLivePlainStock(canonicalBottle, stockSources, plan.planDate);
           const rawPlain = stock && stock.plainStock !== undefined ? stock.plainStock : stock;
           const rawOpening = stock && stock.openingStock !== undefined ? stock.openingStock : rawPlain;
           plainStock = Number.isFinite(Number(rawPlain)) ? Number(rawPlain) : 0;
@@ -1993,24 +2039,9 @@ exports.getPlans = async (req, res) => {
         }
       }
 
-      // 2. Fetch cumulative coatedQty
-      if (plan.bottleName && plan.brandId) {
-        const BottleSpec = require("../models/Bottlespecs");
-        const bSpec = await BottleSpec.findOne({ bottleName: plan.bottleName, isDeleted: false });
-
-        if (bSpec) {
-          const coatingRecords = await CoatingProduction.find({
-            coatingSpecId: bSpec._id,
-            brandId: plan.brandId._id,
-            coatingShade: plan.colour,
-            isDeleted: false
-          });
-
-          coatedQty = coatingRecords.reduce((sum, rec) => sum + (rec.actualQuantity || 0), 0);
-        }
-      }
-
-      const balanceToMake = coatedQty - (plan.orderQty || 0);
+      const balanceToMake = viewOnlyImport
+        ? plan.balanceToMake
+        : calculateBalanceToMake(plan.orderQty, coatedQty);
 
       // Extract plain bottle name from BottleSpec if not already set
       let plainBottleName = plan.plainBottle || plan.bottleName || '';
@@ -2030,19 +2061,26 @@ exports.getPlans = async (req, res) => {
         groupKey: plan.groupKey,
         rowSeq: plan.rowSeq || 1,
         plainBottleName,
-        availableStock: plainStock,
-        livePlainStock: plainStock,
-        liveCoatedQty: coatedQty,
-        liveBalanceToMake: balanceToMake,
-        plainStock: plainStock,  // ALWAYS use live stock for list display, NOT stored snapshot
-        openingStock: openingStock,
-        coatedQty: plan.coatedQty !== null && plan.coatedQty !== undefined ? plan.coatedQty : coatedQty,
+        availableStock: viewOnlyImport ? null : plainStock,
+        livePlainStock: viewOnlyImport ? null : plainStock,
+        liveCoatedQty: viewOnlyImport ? null : coatedQty,
+        liveBalanceToMake: viewOnlyImport ? null : balanceToMake,
+        plainStock,
+        openingStock: viewOnlyImport ? null : openingStock,
+        coatingCompletedQty: coatedQty,
+        coatedQty,
+        coatingRejectedQty: viewOnlyImport ? 0 : getCoatingRejectedQty(plan.qtyEntries, plan.boxQty),
         balanceToMake: balanceToMake,
-        status: ((plan.orderQty || 0) > 0 && coatedQty >= (plan.orderQty || 0)),
+        status: viewOnlyImport
+          ? plan.status
+          : ((plan.orderQty || 0) > 0 && coatedQty >= (plan.orderQty || 0)),
         usedFrom: (() => {
           if (!Array.isArray(plan.stockAllocation) || plan.stockAllocation.length === 0) return [];
-          const hasSupplier = plan.stockAllocation.some(a => supplierIdSet.has((a.companyId?._id || a.companyId)?.toString()) && Number(a.qty) > 0);
-          if (!hasSupplier) return [];
+          const planCompanyId = (plan.companyId?._id || plan.companyId)?.toString();
+          const hasExternalSource = plan.stockAllocation.some(a =>
+            (a.companyId?._id || a.companyId)?.toString() !== planCompanyId && Number(a.qty) > 0
+          );
+          if (!hasExternalSource) return [];
           return plan.stockAllocation
             .filter(a => Number(a.qty) > 0)
             .map(a => {
@@ -2056,8 +2094,11 @@ exports.getPlans = async (req, res) => {
         })(),
         usedFromTooltip: (() => {
           if (!Array.isArray(plan.stockAllocation) || plan.stockAllocation.length === 0) return '';
-          const hasSupplier = plan.stockAllocation.some(a => supplierIdSet.has((a.companyId?._id || a.companyId)?.toString()) && Number(a.qty) > 0);
-          if (!hasSupplier) return '';
+          const planCompanyId = (plan.companyId?._id || plan.companyId)?.toString();
+          const hasExternalSource = plan.stockAllocation.some(a =>
+            (a.companyId?._id || a.companyId)?.toString() !== planCompanyId && Number(a.qty) > 0
+          );
+          if (!hasExternalSource) return '';
           return plan.stockAllocation
             .filter(a => Number(a.qty) > 0)
             .map(a => `${companyNameMap.get((a.companyId?._id || a.companyId)?.toString()) || 'Company'}: ${a.qty}`)
@@ -2163,7 +2204,7 @@ exports.getPlans = async (req, res) => {
       const dateStr = plan.planDate ? new Date(plan.planDate).toISOString().split('T')[0] : '';
       const rawCompId = plan.canonicalCompanyId || (plan.companyId?._id || plan.companyId) || plan.companyName || 'UNASSIGNED';
       const compIdStr = String(rawCompId).trim();
-      const bKey = `${dateStr}__${compIdStr}__${plan.canonicalBottleNormalized}`;
+      const bKey = `${dateStr}__${compIdStr}__${plan.canonicalBottleNormalized}${isExcelViewOnlyPlan(plan) ? '__excel' : ''}`;
 
       if (bKey !== currentBlockKey) {
         if (currentBlock.length > 0) {
@@ -2182,7 +2223,7 @@ exports.getPlans = async (req, res) => {
     // Compute pool block fields and sub-block spans
     for (const block of poolBlocks) {
       const blockSize = block.length;
-      const blockKey = `${block[0].planDate ? new Date(block[0].planDate).toISOString().split('T')[0] : ''}__${String(block[0].canonicalCompanyId || (block[0].companyId?._id || block[0].companyId) || block[0].companyName || 'UNASSIGNED').trim()}__${block[0].canonicalBottleNormalized}`;
+      const blockKey = `${block[0].planDate ? new Date(block[0].planDate).toISOString().split('T')[0] : ''}__${String(block[0].canonicalCompanyId || (block[0].companyId?._id || block[0].companyId) || block[0].companyName || 'UNASSIGNED').trim()}__${block[0].canonicalBottleNormalized}${isExcelViewOnlyPlan(block[0]) ? '__excel' : ''}`;
 
       // Process spans: merge across all consecutive rows with same process (across brands)
       let procRunStart = 0;
@@ -2234,7 +2275,14 @@ exports.getPlans = async (req, res) => {
     const enablePagination = pagination === "true";
 
     if (!enablePagination) {
-      return res.status(200).json({ success: true, data: filteredPlans.map(p => ({ ...p, readyActions: computeReadyActions(p) })), total });
+      return res.status(200).json({
+        success: true,
+        data: filteredPlans.map(p => ({
+          ...p,
+          readyActions: isExcelViewOnlyPlan(p) ? [] : computeReadyActions(p)
+        })),
+        total
+      });
     }
 
     const parsedPage = parseInt(page) || 1;
@@ -2263,7 +2311,10 @@ exports.getPlans = async (req, res) => {
 
     res.status(200).json({
       success: true,
-      data: paginatedPlans.map(p => ({ ...p, readyActions: computeReadyActions(p) })),
+      data: paginatedPlans.map(p => ({
+        ...p,
+        readyActions: isExcelViewOnlyPlan(p) ? [] : computeReadyActions(p)
+      })),
       total,
       page: parsedPage,
       totalPages,
@@ -2351,7 +2402,15 @@ exports.getPlansTotals = async (req, res) => {
           _id: null,
           totalCount: { $sum: 1 },
           totalOrderQty: { $sum: { $ifNull: [{ $toInt: "$orderQty" }, 0] } },
-          totalCoatingCompletedQty: { $sum: { $ifNull: [{ $toInt: "$coatingCompletedQty" }, { $ifNull: [{ $toInt: "$coatedQty" }, 0] }] } },
+          totalCoatingCompletedQty: {
+            $sum: {
+              $cond: [
+                { $gt: [{ $ifNull: [{ $toInt: "$coatingCompletedQty" }, 0] }, { $ifNull: [{ $toInt: "$coatedQty" }, 0] }] },
+                { $ifNull: [{ $toInt: "$coatingCompletedQty" }, 0] },
+                { $ifNull: [{ $toInt: "$coatedQty" }, 0] }
+              ]
+            }
+          },
           totalSoldQty: { $sum: { $ifNull: [{ $toInt: "$soldQty" }, 0] } },
           totalDispatchPendingQty: { $sum: { $ifNull: [{ $toInt: "$dispatchPendingQty" }, 0] } }
         }
@@ -2371,7 +2430,7 @@ exports.getPlansTotals = async (req, res) => {
       totalCount: agg.totalCount,
       totalOrderQty: agg.totalOrderQty,
       totalCoatingCompletedQty: agg.totalCoatingCompletedQty,
-      totalBalanceToMake: agg.totalCoatingCompletedQty - agg.totalOrderQty,
+      totalBalanceToMake: calculateBalanceToMake(agg.totalOrderQty, agg.totalCoatingCompletedQty),
       totalSoldQty: agg.totalSoldQty,
       totalDispatchPendingQty: agg.totalDispatchPendingQty
     };
@@ -2611,7 +2670,7 @@ exports.getPlansPaginated = async (req, res) => {
       const dateStr = plan.planDate ? new Date(plan.planDate).toISOString().split('T')[0] : '';
       const rawCompId = plan.canonicalCompanyId || (plan.companyId?._id || plan.companyId) || plan.companyName || 'UNASSIGNED';
       const compIdStr = String(rawCompId).trim();
-      const bKey = `${dateStr}__${compIdStr}__${plan.canonicalBottleNormalized}`;
+      const bKey = `${dateStr}__${compIdStr}__${plan.canonicalBottleNormalized}${isExcelViewOnlyPlan(plan) ? '__excel' : ''}`;
 
       if (bKey !== currentBlockKey) {
         if (currentBlock.length > 0) {
@@ -2639,7 +2698,7 @@ exports.getPlansPaginated = async (req, res) => {
           const sortValStr = String(decoded.sortValue);
           foundBlockIdx = poolBlocks.findIndex(block => {
             const first = block[0];
-            const bKey = `${first.planDate ? new Date(first.planDate).toISOString().split('T')[0] : ''}__${String(first.canonicalCompanyId || first.companyId?._id || first.companyId || first.companyName || 'UNASSIGNED').trim()}__${first.canonicalBottleNormalized}`;
+            const bKey = `${first.planDate ? new Date(first.planDate).toISOString().split('T')[0] : ''}__${String(first.canonicalCompanyId || first.companyId?._id || first.companyId || first.companyName || 'UNASSIGNED').trim()}__${first.canonicalBottleNormalized}${isExcelViewOnlyPlan(first) ? '__excel' : ''}`;
             return bKey === sortValStr;
           });
         }
@@ -2679,17 +2738,28 @@ exports.getPlansPaginated = async (req, res) => {
     const poolStockMap = new Map();
     const uniquePools = new Map();
     for (const plan of items) {
+      if (isExcelViewOnlyPlan(plan)) continue;
       const rawCompId = plan.canonicalCompanyId || (plan.companyId?._id || plan.companyId);
       const compId = (rawCompId && rawCompId.toString) ? rawCompId.toString() : (rawCompId || '');
       const dayStr = plan.planDate ? new Date(plan.planDate).toISOString().split('T')[0] : '';
       const poolKey = `${compId}::${plan.canonicalBottle}::${dayStr}`;
       if (!uniquePools.has(poolKey)) {
-        uniquePools.set(poolKey, { compId, canonicalBottle: plan.canonicalBottle, planDate: plan.planDate });
+        uniquePools.set(poolKey, {
+          compId,
+          canonicalBottle: plan.canonicalBottle,
+          planDate: plan.planDate,
+          sourceIds: new Set()
+        });
       }
+      const pool = uniquePools.get(poolKey);
+      const sourceIds = Array.isArray(plan.stockSources) && plan.stockSources.length > 0
+        ? plan.stockSources.map(source => (source?._id || source).toString())
+        : [compId];
+      sourceIds.filter(Boolean).forEach(sourceId => pool.sourceIds.add(sourceId));
     }
 
     await Promise.all(Array.from(uniquePools.entries()).map(async ([poolKey, pInfo]) => {
-      const stock = await computeLivePlainStock(pInfo.canonicalBottle, pInfo.compId, pInfo.planDate);
+      const stock = await computeLivePlainStock(pInfo.canonicalBottle, Array.from(pInfo.sourceIds), pInfo.planDate);
       const rawPlain = stock && stock.plainStock !== undefined ? stock.plainStock : stock;
       const rawOpening = stock && stock.openingStock !== undefined ? stock.openingStock : rawPlain;
       const plainStock = Number.isFinite(Number(rawPlain)) ? Number(rawPlain) : 0;
@@ -2697,37 +2767,8 @@ exports.getPlansPaginated = async (req, res) => {
       poolStockMap.set(poolKey, { plainStock, openingStock });
     }));
 
-    // 2. BottleSpec & CoatingProduction batch lookups
-    const uniqueBottleNames = Array.from(new Set(items.map(p => p.bottleName).filter(Boolean)));
-    const bSpecs = await BottleSpec.find({ bottleName: { $in: uniqueBottleNames }, isDeleted: false }).lean().maxTimeMS(15000);
-    const bSpecMap = new Map(bSpecs.map(s => [s.bottleName, s]));
-
-    const coatingOrConditions = [];
-    for (const p of items) {
-      const spec = bSpecMap.get(p.bottleName);
-      const brandOid = p.brandId?._id || p.brandId;
-      if (spec && brandOid && p.colour) {
-        coatingOrConditions.push({
-          coatingSpecId: spec._id,
-          brandId: brandOid,
-          coatingShade: p.colour,
-          isDeleted: false
-        });
-      }
-    }
-
-    const coatingSumMap = new Map();
-    if (coatingOrConditions.length > 0) {
-      const coatingRecords = await CoatingProduction.find({ $or: coatingOrConditions }).lean().maxTimeMS(15000);
-      for (const rec of coatingRecords) {
-        const key = `${rec.coatingSpecId}_${rec.brandId}_${rec.coatingShade}`;
-        coatingSumMap.set(key, (coatingSumMap.get(key) || 0) + (rec.actualQuantity || 0));
-      }
-    }
-
-    const allCompaniesList = await Company.find({ isDeleted: { $ne: true } }).select('_id name isStockSupplier').lean();
+    const allCompaniesList = await Company.find({ isDeleted: { $ne: true } }).select('_id name').lean();
     const companyNameMap = new Map(allCompaniesList.map(c => [c._id.toString(), c.name]));
-    const supplierIdSet = new Set(allCompaniesList.filter(c => c.isStockSupplier).map(c => c._id.toString()));
 
     // 3. Spans & Block calculations
     const augmentedItems = [];
@@ -2737,7 +2778,7 @@ exports.getPlansPaginated = async (req, res) => {
       const dateStr = firstRow.planDate ? new Date(firstRow.planDate).toISOString().split('T')[0] : '';
       const rawCompId = firstRow.canonicalCompanyId || (firstRow.companyId?._id || firstRow.companyId) || firstRow.companyName || 'UNASSIGNED';
       const compIdStr = String(rawCompId).trim();
-      const blockKey = `${dateStr}__${compIdStr}__${firstRow.canonicalBottleNormalized}`;
+      const blockKey = `${dateStr}__${compIdStr}__${firstRow.canonicalBottleNormalized}${isExcelViewOnlyPlan(firstRow) ? '__excel' : ''}`;
 
       const poolKey = `${compIdStr}::${firstRow.canonicalBottle}::${dateStr}`;
       const poolStock = poolStockMap.get(poolKey) || { plainStock: 0, openingStock: 0 };
@@ -2774,19 +2815,23 @@ exports.getPlansPaginated = async (req, res) => {
       // Assign block fields & Yellow Warning flags
       for (let i = 0; i < blockSize; i++) {
         const row = block[i];
-        const spec = bSpecMap.get(row.bottleName);
-        const brandOid = row.brandId?._id || row.brandId;
-        const cKey = spec && brandOid && row.colour ? `${spec._id}_${brandOid}_${row.colour}` : null;
-        const liveCoated = cKey ? (coatingSumMap.get(cKey) || 0) : 0;
-        const coatedQty = row.coatedQty !== null && row.coatedQty !== undefined ? row.coatedQty : (row.coatingCompletedQty !== null && row.coatingCompletedQty !== undefined ? row.coatingCompletedQty : liveCoated);
-        const balanceToMake = coatedQty - (row.orderQty || 0);
-        const isCompleted = (row.orderQty || 0) > 0 && coatedQty >= (row.orderQty || 0);
+        const viewOnlyImport = isExcelViewOnlyPlan(row);
+        const coatedQty = viewOnlyImport
+          ? (row.coatingCompletedQty ?? row.coatedQty)
+          : getCoatedQty(row);
+        const balanceToMake = viewOnlyImport
+          ? row.balanceToMake
+          : calculateBalanceToMake(row.orderQty, coatedQty);
+        const isCompleted = !viewOnlyImport && (row.orderQty || 0) > 0 && coatedQty >= (row.orderQty || 0);
 
         let rowUsedFrom = [];
         let rowUsedFromTooltip = '';
         if (Array.isArray(row.stockAllocation) && row.stockAllocation.length > 0) {
-          const hasSupplier = row.stockAllocation.some(a => supplierIdSet.has((a.companyId?._id || a.companyId)?.toString()) && Number(a.qty) > 0);
-          if (hasSupplier) {
+          const planCompanyId = (row.companyId?._id || row.companyId)?.toString();
+          const hasExternalSource = row.stockAllocation.some(a =>
+            (a.companyId?._id || a.companyId)?.toString() !== planCompanyId && Number(a.qty) > 0
+          );
+          if (hasExternalSource) {
             rowUsedFrom = row.stockAllocation
               .filter(a => Number(a.qty) > 0)
               .map(a => {
@@ -2802,9 +2847,11 @@ exports.getPlansPaginated = async (req, res) => {
           }
         }
 
-        const displayedPlainStock = row.poolPlainStock !== null && row.poolPlainStock !== undefined
-          ? Number(row.poolPlainStock)
-          : poolStock.plainStock;
+        const displayedPlainStock = viewOnlyImport
+          ? row.plainStock
+          : (row.poolPlainStock !== null && row.poolPlainStock !== undefined
+            ? Number(row.poolPlainStock)
+            : poolStock.plainStock);
         const augmentedRow = {
           ...row,
           blockKey,
@@ -2815,24 +2862,23 @@ exports.getPlansPaginated = async (req, res) => {
           stockSpan: (i === 0) ? blockSize : 0,
           boxSpan: (i === 0) ? blockSize : 0,
           plainStock: displayedPlainStock,
-          openingStock: row.openingStock,
-          availableStock: displayedPlainStock,
-          livePlainStock: displayedPlainStock,
+          openingStock: viewOnlyImport ? null : (row.openingStock ?? poolStock.openingStock),
+          availableStock: viewOnlyImport ? null : displayedPlainStock,
+          livePlainStock: viewOnlyImport ? null : displayedPlainStock,
+          coatingCompletedQty: coatedQty,
           coatedQty,
-          coatingRejectedQty: (row.qtyEntries || [])
-            .filter(entry => !entry.isDeleted && (entry.subType === 'coated' || entry.type === 'coatedQty' || (entry.type === 'edit-adjustment' && entry.subType === 'coated')))
-            .reduce((sum, entry) => sum + (Number(entry.rejectionQty) || 0), 0),
+          coatingRejectedQty: viewOnlyImport ? 0 : getCoatingRejectedQty(row.qtyEntries, row.boxQty),
           balanceToMake,
-          status: isCompleted,
+          status: viewOnlyImport ? row.status : isCompleted,
           sentToReadyQty: row.sentToReadyQty || 0,
           usedFrom: rowUsedFrom,
           usedFromTooltip: rowUsedFromTooltip,
-          readyActions: computeReadyActions(row),
-          stockWarning: Boolean(row.stockWarning),
-          isYellow: Boolean(row.stockWarning),
-          stockWarningTooltip: row.warningMessage || "",
-          groupStockWarning: Boolean(row.stockWarning),
-          groupStockWarningTooltip: row.warningMessage || ""
+          readyActions: viewOnlyImport ? [] : computeReadyActions(row),
+          stockWarning: viewOnlyImport ? false : Boolean(row.stockWarning),
+          isYellow: viewOnlyImport ? false : Boolean(row.stockWarning),
+          stockWarningTooltip: viewOnlyImport ? "" : (row.warningMessage || ""),
+          groupStockWarning: viewOnlyImport ? false : Boolean(row.stockWarning),
+          groupStockWarningTooltip: viewOnlyImport ? "" : (row.warningMessage || "")
         };
         augmentedItems.push(augmentedRow);
       }
@@ -2895,6 +2941,16 @@ exports.validateStockWarning = async (req, res) => {
       });
     }
 
+    if (excludeRowId) {
+      const excludedPlan = await LacquerPlan.findById(excludeRowId).select("isExcelViewOnly").lean();
+      if (isExcelViewOnlyPlan(excludedPlan)) {
+        return res.status(200).json({
+          success: true,
+          data: { hasWarning: false, orderQty: Number(orderQty) || 0, availableStock: 0, openingStock: 0, overBy: 0, details: null }
+        });
+      }
+    }
+
     const warning = await validateRowStockWarning(
       bottleName,
       companyId,
@@ -2911,19 +2967,18 @@ exports.validateStockWarning = async (req, res) => {
 };
 
 // Dedicated completion checker for Previous-Day Import
-// Rule: balanceToMake = coatingCompletedQty - orderQty
-// - Negative balance: production is pending.
+// Rule: balanceToMake = orderQty - coatingCompletedQty
+// - Positive balance: production is pending.
 // - Zero balance: production is completed.
-// - Positive balance: production is completed, including overproduction.
+// - Negative balance: production is completed, including overproduction.
 // Valid completed row requires orderQty > 0 and coatingCompletedQty > 0.
 const isPreviousDaySourcePlanCompleted = (p) => {
   if (!p) return false;
   if (p.isClosed || p.productionStatus === 'CLOSED') return true;
   const order = Number(p.orderQty) || 0;
-  const coated = Number(p.coatingCompletedQty ?? p.coatedQty ?? 0);
+  const coated = getCoatedQty(p);
   if (order <= 0 || coated <= 0) return false;
-  const balanceToMake = coated - order;
-  return balanceToMake >= 0;
+  return calculateBalanceToMake(order, coated) <= 0;
 };
 
 // Import Previous Day
@@ -2950,6 +3005,7 @@ exports.importPreviousDay = async (req, res) => {
 
     const oldPlans = await LacquerPlan.find({
       isDeleted: false,
+      isExcelViewOnly: { $ne: true },
       isArchived: { $ne: true },
       isSoftRemoved: { $ne: true },
       isSibling: { $ne: true },
@@ -2967,6 +3023,7 @@ exports.importPreviousDay = async (req, res) => {
 
     const existingTargetPlans = await LacquerPlan.find({
       isDeleted: false,
+      isExcelViewOnly: { $ne: true },
       isArchived: { $ne: true },
       isSoftRemoved: { $ne: true },
       isSibling: { $ne: true },
@@ -3001,7 +3058,7 @@ exports.importPreviousDay = async (req, res) => {
 
     for (const cp of completedCandidates) {
       const isProcessC = String(cp.process || '').trim().toUpperCase() === 'C';
-      const coated = Number(cp.coatingCompletedQty ?? cp.coatedQty ?? 0);
+      const coated = getCoatedQty(cp);
       const sentQty = Number(cp.sentToReadyQty || 0);
       const sendable = Math.max(0, coated - sentQty);
 
@@ -3029,7 +3086,7 @@ exports.importPreviousDay = async (req, res) => {
     // Apply exact carry-forward formula from Section 4:
     // carryForwardOrder = Math.max(0, originalOrderQty - dispatchedQty)
     // carryForwardCoated = Math.max(0, originalCoatingCompletedQty - dispatchedQty)
-    // balanceToMake = carryForwardCoated - carryForwardOrder
+    // balanceToMake = carryForwardOrder - carryForwardCoated
     const newPlansData = oldPlans.map(p => {
       const { _id, createdAt, updatedAt, __v, ...rest } = p;
       let values = { ...rest };
@@ -3045,14 +3102,15 @@ exports.importPreviousDay = async (req, res) => {
       }
 
       const originalOrder = Number(values.orderQty) || 0;
-      const sourceCoated = Number(p.coatingCompletedQty ?? p.coatedQty ?? 0);
+      const sourceCoated = getCoatedQty(p);
+      const sourceRejected = getCoatingRejectedQty(p.qtyEntries, p.boxQty);
       const dispatchedQty = freshlyDispatchedMap.has(p._id.toString())
         ? freshlyDispatchedMap.get(p._id.toString())
         : Number(p.sentToReadyQty || 0);
 
       const carryForwardOrder = Math.max(0, originalOrder - dispatchedQty);
       const carryForwardCoated = Math.max(0, sourceCoated - dispatchedQty);
-      const recalculatedBalanceToMake = carryForwardCoated - carryForwardOrder;
+      const recalculatedBalanceToMake = calculateBalanceToMake(carryForwardOrder, carryForwardCoated);
 
       // Calculate carried stock allocation proportionally from source allocation
       let carriedSplit = [];
@@ -3124,6 +3182,9 @@ exports.importPreviousDay = async (req, res) => {
             type: 'coatingCompletedQty',
             subType: 'carried',
             qty: carryForwardCoated,
+            rejectionQty: sourceRejected,
+            rejectionBoxes: 0,
+            rejectionLooseQty: sourceRejected,
             runningTotal: carryForwardCoated,
             stockAllocation: carriedSplit,
             note: `Carried from ${sourceDateFormatted}`,
@@ -3209,7 +3270,7 @@ exports.importPreviousDay = async (req, res) => {
         await assignGroupsAndSequences(plansToInsert);
         newPlans = await LacquerPlan.insertMany(plansToInsert);
         for (const plan of newPlans) {
-          await syncLacquerPlanStockDeduction(plan, plan.coatingCompletedQty ?? plan.coatedQty, req.user?._id);
+          await syncLacquerPlanStockDeduction(plan, getCoatedQty(plan), req.user?._id);
         }
       }
     } else if (importMode === 'without_changes' && hasExistingImport) {
@@ -3222,7 +3283,7 @@ exports.importPreviousDay = async (req, res) => {
         await assignGroupsAndSequences(plansToInsert);
         newPlans = await LacquerPlan.insertMany(plansToInsert);
         for (const plan of newPlans) {
-          await syncLacquerPlanStockDeduction(plan, plan.coatingCompletedQty ?? plan.coatedQty, req.user?._id);
+          await syncLacquerPlanStockDeduction(plan, getCoatedQty(plan), req.user?._id);
         }
       }
     } else {
@@ -3237,7 +3298,7 @@ exports.importPreviousDay = async (req, res) => {
         await assignGroupsAndSequences(plansToInsert);
         newPlans = await LacquerPlan.insertMany(plansToInsert);
         for (const plan of newPlans) {
-          await syncLacquerPlanStockDeduction(plan, plan.coatingCompletedQty ?? plan.coatedQty, req.user?._id);
+          await syncLacquerPlanStockDeduction(plan, getCoatedQty(plan), req.user?._id);
         }
       }
     }
@@ -3311,18 +3372,18 @@ function formatUsedFrom(allocation, fallbackCompanyId, fallbackCompanyName, fall
         return {
           companyId: cid,
           companyName: cName,
-          qty: Math.abs(Number(a.qty))
+          qty: Number(a.qty)
         };
       });
   }
 
-  if (list.length === 0 && Number(fallbackQty) > 0) {
+  if (list.length === 0 && Number(fallbackQty) !== 0) {
     const cid = (fallbackCompanyId?._id || fallbackCompanyId)?.toString();
     const cName = fallbackCompanyName || (companyNameMap && companyNameMap.get(cid)) || 'Own Company';
     list = [{
       companyId: cid,
       companyName: cName,
-      qty: Math.abs(Number(fallbackQty) || 0)
+      qty: Number(fallbackQty) || 0
     }];
   }
 
@@ -3353,11 +3414,14 @@ function computePlanRowHistory(plan, plainStock, companyNameMap = new Map()) {
   if (initialOrder < 0) initialOrder = 0;
 
   // 2. Coated initial & active additions
-  const coatingEntries = entries.filter(e => e.subType === 'coated' || e.type === 'coatedQty' || (e.type === 'edit-adjustment' && e.subType === 'coated'));
+  const coatingEntries = entries.filter(isCoatingHistoryEntry);
   const activeCoatedEntriesSum = coatingEntries.filter(e => !e.isDeleted).reduce((sum, e) => sum + Number(e.qty || 0), 0);
-  const coatingRejectionQty = coatingEntries.filter(e => !e.isDeleted).reduce((sum, e) => sum + (Number(e.rejectionQty) || 0), 0);
+  const coatingRejectionQty = getCoatingRejectedQty(entries, plan.boxQty);
+  const carriedRejectionQty = entries
+    .filter(entry => !entry.isDeleted && entry.type === 'coatingCompletedQty' && entry.subType === 'carried')
+    .reduce((sum, entry) => sum + (Number(entry.rejectionQty) || 0), 0);
 
-  const currentCoated = Number(plan.coatingCompletedQty ?? plan.coatedQty ?? 0);
+  const currentCoated = getCoatedQty(plan);
   let initialCoated = (typeof plan.coatedQtyInitial === 'number' && plan.coatedQtyInitial >= 0)
     ? plan.coatedQtyInitial
     : (currentCoated - activeCoatedEntriesSum);
@@ -3377,7 +3441,7 @@ function computePlanRowHistory(plan, plainStock, companyNameMap = new Map()) {
     qtyChange: `${initialOrder}`,
     displayQty: `${initialOrder}`,
     runningTotal: initialOrder,
-    balance: initialCoated - initialOrder,
+    balance: calculateBalanceToMake(initialOrder, initialCoated),
     by: plan.createdBy?.name || plan.createdBy || 'System',
     note: 'Opening balance',
     isDeleted: false
@@ -3399,7 +3463,7 @@ function computePlanRowHistory(plan, plainStock, companyNameMap = new Map()) {
       qtyChange: signPrefix,
       displayQty: signPrefix,
       runningTotal: runningOrder,
-      balance: finalCoated - runningOrder,
+      balance: calculateBalanceToMake(runningOrder, finalCoated),
       by: isDel ? (entry.deletedBy || entry.by || 'unknown') : (entry.by || 'unknown'),
       deletedAt: entry.deletedAt,
       note: entry.note || (isDel ? `Removed by ${entry.deletedBy || 'unknown'}` : ''),
@@ -3440,9 +3504,12 @@ function computePlanRowHistory(plan, plainStock, companyNameMap = new Map()) {
     displayQty: `${initialCoated}`,
     runningTotal: initialCoated,
     stockRemaining: plainStock !== undefined ? plainStock : (plan.plainStock ?? 0),
-    balance: initialCoated - finalOrder,
+    balance: calculateBalanceToMake(finalOrder, initialCoated),
     by: plan.createdBy?.name || plan.createdBy || 'System',
     note: isCarried ? `Carried from ${carriedDateStr}: coated ${carriedCoated}` : 'Opening balance',
+    rejectionQty: carriedRejectionQty,
+    rejectionBoxes: 0,
+    rejectionLooseQty: carriedRejectionQty,
     isDeleted: false,
     usedFrom: openingUsedFrom.usedFrom,
     usedFromText: openingUsedFrom.usedFromText
@@ -3456,7 +3523,7 @@ function computePlanRowHistory(plan, plainStock, companyNameMap = new Map()) {
     }
     const typeLabel = isDel ? 'Removed' : (entry.type === 'edit-adjustment' ? 'Edit adjustment' : 'Added');
     const signPrefix = qtyVal > 0 ? `+${qtyVal}` : `${qtyVal}`;
-    const entryUsedFrom = formatUsedFrom(entry.stockAllocation, ownCompId, ownCompName, Math.abs(qtyVal), companyNameMap);
+    const entryUsedFrom = formatUsedFrom(entry.stockAllocation, ownCompId, ownCompName, qtyVal, companyNameMap);
 
     coatingRows.push({
       sr: idx + 2,
@@ -3467,7 +3534,7 @@ function computePlanRowHistory(plan, plainStock, companyNameMap = new Map()) {
       displayQty: signPrefix,
       runningTotal: runningCoated,
       stockRemaining: plainStock !== undefined ? plainStock : (plan.plainStock ?? 0),
-      balance: runningCoated - finalOrder,
+      balance: calculateBalanceToMake(finalOrder, runningCoated),
       by: isDel ? (entry.deletedBy || entry.by || 'unknown') : (entry.by || 'unknown'),
       deletedAt: entry.deletedAt,
       note: entry.note || (isDel ? `Removed by ${entry.deletedBy || 'unknown'}` : ''),
@@ -3552,6 +3619,31 @@ exports.getPlanById = async (req, res) => {
       return res.status(404).json({ success: false, message: "Plan not found" });
     }
 
+    if (isExcelViewOnlyPlan(plan)) {
+      const planObj = plan.toObject();
+      const groupPlanIds = [plan._id.toString()];
+      return res.status(200).json({
+        success: true,
+        data: {
+          ...planObj,
+          groupPlans: [planObj],
+          groupPlanIds,
+          plainStock: plan.plainStock,
+          livePlainStock: null,
+          openingStock: null,
+          stockWarning: false,
+          isYellow: false
+        },
+        groupPlans: [planObj],
+        groupPlanIds,
+        plainStock: plan.plainStock,
+        openingStock: null,
+        sources: [],
+        hasSuppliers: false,
+        eligibleSuppliers: []
+      });
+    }
+
     let groupPlans = [];
     let groupPlanIds = [];
     if (plan.groupKey) {
@@ -3579,8 +3671,8 @@ exports.getPlanById = async (req, res) => {
       ? plan.stockSources.map(s => (s._id || s).toString())
       : [compId ? compId.toString() : ''];
 
-    // Compute accurate live day-based plain stock for this pool (excluding group plans for edit accuracy)
-    const stockRes = await computeLivePlainStock(canonicalBottle, compSources, plan.planDate, groupPlanIds);
+    // Compute live stock for the whole same-day pool so View matches List.
+    const stockRes = await computeLivePlainStock(canonicalBottle, compSources, plan.planDate);
     const plainStock = stockRes.plainStock !== undefined ? stockRes.plainStock : Number(stockRes);
     const openingStock = stockRes.openingStock !== undefined ? stockRes.openingStock : plainStock;
 
@@ -3588,19 +3680,25 @@ exports.getPlanById = async (req, res) => {
     const companyNameMap = new Map(allCompanies.map(c => [c._id.toString(), c.name]));
 
     const planObj = plan.toObject();
-    planObj.coatingRejectedQty = (planObj.qtyEntries || [])
-      .filter(entry => !entry.isDeleted && (entry.subType === 'coated' || entry.type === 'coatedQty' || (entry.type === 'edit-adjustment' && entry.subType === 'coated')))
-      .reduce((sum, entry) => sum + (Number(entry.rejectionQty) || 0), 0);
+    planObj.coatingCompletedQty = getCoatedQty(planObj);
+    planObj.coatedQty = planObj.coatingCompletedQty;
+    planObj.balanceToMake = calculateBalanceToMake(planObj.orderQty, planObj.coatingCompletedQty);
+    planObj.status = Number(planObj.orderQty) > 0 && planObj.coatingCompletedQty >= Number(planObj.orderQty);
+    planObj.coatingRejectedQty = getCoatingRejectedQty(planObj.qtyEntries, planObj.boxQty);
     planObj.livePlainStock = plainStock;
+    planObj.remainingPlainStock = plainStock;
     planObj.plainStock = plainStock;
     planObj.openingStock = openingStock;
 
     groupPlans = groupPlans.map(p => ({
       ...p,
-      coatingRejectedQty: (p.qtyEntries || [])
-        .filter(entry => !entry.isDeleted && (entry.subType === 'coated' || entry.type === 'coatedQty' || (entry.type === 'edit-adjustment' && entry.subType === 'coated')))
-        .reduce((sum, entry) => sum + (Number(entry.rejectionQty) || 0), 0),
+      coatingCompletedQty: getCoatedQty(p),
+      coatedQty: getCoatedQty(p),
+      balanceToMake: calculateBalanceToMake(p.orderQty, getCoatedQty(p)),
+      status: Number(p.orderQty) > 0 && getCoatedQty(p) >= Number(p.orderQty),
+      coatingRejectedQty: getCoatingRejectedQty(p.qtyEntries, p.boxQty),
       livePlainStock: plainStock,
+      remainingPlainStock: plainStock,
       plainStock: plainStock,
       openingStock: openingStock
     }));
@@ -3611,6 +3709,7 @@ exports.getPlanById = async (req, res) => {
       const pObj = {
         ...p,
         livePlainStock: plainStock,
+        remainingPlainStock: plainStock,
         plainStock: plainStock,
         openingStock: openingStock
       };
@@ -3648,6 +3747,7 @@ exports.updatePlan = async (req, res) => {
     if (!existingPlan || existingPlan.isDeleted) {
       return res.status(404).json({ success: false, message: "Plan not found" });
     }
+    if (rejectExcelViewOnlyMutation(existingPlan, res)) return;
 
     const excludeIds = req.body.excludePlanIds ? req.body.excludePlanIds : [req.params.id];
     const itemsToCheck = req.body.allFormRows && Array.isArray(req.body.allFormRows)
@@ -3665,6 +3765,9 @@ exports.updatePlan = async (req, res) => {
 
     const oldBottleName = existingPlan.bottleName;
     const oldCompanyId = existingPlan.canonicalCompanyId || existingPlan.companyId;
+    const oldPlanDate = existingPlan.planDate;
+    const oldStockSources = (existingPlan.stockSources || []).map(source => (source?._id || source).toString());
+    const oldPlainBottle = existingPlan.plainBottle || existingPlan.bottleName;
 
     await validatePlanCompanyBottleVariant(req.body, true, existingPlan);
 
@@ -3708,6 +3811,7 @@ exports.updatePlan = async (req, res) => {
         companyId: companyId,
         brandId: brandId,
         bottleName: { $regex: new RegExp("^" + bottleName.trim() + "$", "i") },
+        isExcelViewOnly: { $ne: true },
         isDeleted: false
       };
 
@@ -3741,11 +3845,11 @@ exports.updatePlan = async (req, res) => {
     delete updateData.readyToDispatch;
 
     if (req.body.coatingCompletedQty !== undefined || req.body.coatedQty !== undefined || req.body.orderQty !== undefined || updateData.balanceToMake !== undefined) {
-      const newCoated = updateData.coatingCompletedQty !== undefined ? updateData.coatingCompletedQty : (updateData.coatedQty !== undefined ? updateData.coatedQty : (existingPlan.coatingCompletedQty ?? existingPlan.coatedQty ?? 0));
+      const newCoated = updateData.coatingCompletedQty !== undefined ? updateData.coatingCompletedQty : (updateData.coatedQty !== undefined ? updateData.coatedQty : getCoatedQty(existingPlan));
       const newOrder = updateData.orderQty !== undefined ? updateData.orderQty : (existingPlan.orderQty ?? 0);
       updateData.coatingCompletedQty = Number(newCoated);
       updateData.coatedQty = Number(newCoated);
-      updateData.balanceToMake = Number(newCoated) - Number(newOrder);
+      updateData.balanceToMake = calculateBalanceToMake(newOrder, newCoated);
       if (updateData.status === undefined || req.body.status === undefined) {
         updateData.status = (Number(newOrder) > 0 && Number(newCoated) >= Number(newOrder));
       }
@@ -3813,7 +3917,7 @@ exports.updatePlan = async (req, res) => {
     // Validate stock allocation for updated plan
     const newCoatedVal = updateData.coatingCompletedQty !== undefined
       ? Number(updateData.coatingCompletedQty)
-      : (updateData.coatedQty !== undefined ? Number(updateData.coatedQty) : Number(existingPlan.coatingCompletedQty ?? existingPlan.coatedQty ?? 0));
+      : (updateData.coatedQty !== undefined ? Number(updateData.coatedQty) : getCoatedQty(existingPlan));
     const allocDate = updateData.planDate || existingPlan.planDate;
     const allocBottle = updateData.bottleName || existingPlan.bottleName;
     const allocComp = updateData.companyId || existingPlan.companyId;
@@ -3829,7 +3933,8 @@ exports.updatePlan = async (req, res) => {
       allocSplit,
       existingPlan._id,
       null,
-      existingPlan.carriedStockAllocation
+      existingPlan.carriedStockAllocation,
+      { includeNonSupplierSources: true }
     );
     updateData.stockSources = allocRes.stockSources;
     updateData.stockAllocation = allocRes.stockAllocation;
@@ -3839,21 +3944,22 @@ exports.updatePlan = async (req, res) => {
     const newOrder = updateData.orderQty !== undefined ? Number(updateData.orderQty) : oldOrder;
     const diffOrder = newOrder - oldOrder;
 
-    const oldCoated = Number(existingPlan.coatingCompletedQty ?? existingPlan.coatedQty ?? 0);
+    const oldCoated = getCoatedQty(existingPlan);
     const newCoated = newCoatedVal;
     const diffCoated = newCoated - oldCoated;
 
     if (diffOrder !== 0 || diffCoated !== 0) {
       if (existingPlan.orderQtyInitial === null || existingPlan.orderQtyInitial === undefined) {
-        updateData.orderQtyInitial = oldOrder;
+        const activeOrderQty = (existingPlan.qtyEntries || [])
+          .filter(entry => !entry.isDeleted && (entry.subType === 'order' || entry.type === 'orderQty' || (entry.type === 'edit-adjustment' && entry.subType === 'order')))
+          .reduce((sum, entry) => sum + (Number(entry.qty) || 0), 0);
+        updateData.orderQtyInitial = oldOrder - activeOrderQty;
       }
       if (existingPlan.coatedQtyInitial === null || existingPlan.coatedQtyInitial === undefined) {
-        updateData.coatedQtyInitial = oldCoated;
+        updateData.coatedQtyInitial = oldCoated - getActiveCoatingEntryQty(existingPlan.qtyEntries);
       }
       if (existingPlan.stockAllocationInitial === null || existingPlan.stockAllocationInitial === undefined || existingPlan.stockAllocationInitial.length === 0) {
-        updateData.stockAllocationInitial = (existingPlan.stockAllocation && existingPlan.stockAllocation.length > 0)
-          ? existingPlan.stockAllocation
-          : (oldCoated > 0 ? [{ companyId: existingPlan.companyId, qty: oldCoated }] : []);
+        updateData.stockAllocationInitial = getInitialStockAllocation(existingPlan, oldCoated);
       }
 
       const editUser = req.user?.email || req.user?.name || 'unknown';
@@ -3983,9 +4089,24 @@ exports.updatePlan = async (req, res) => {
       await syncSameDayPlansPlainStock(pBottle, pComp, plan.planDate, req.user?._id);
     }
 
-    // Rule L4: If bottle changed on a saved row, recompute old bottle as well so usage moves cleanly
-    if (oldBottleName && (oldBottleName.trim().toUpperCase() !== (plan.bottleName || '').trim().toUpperCase() || oldCompanyId?.toString() !== (plan.canonicalCompanyId || plan.companyId)?.toString())) {
-      await syncSameDayPlansPlainStock(oldBottleName, oldCompanyId, plan.planDate, req.user?._id);
+    const oldPoolBottle = (oldPlainBottle || oldBottleName || '').trim();
+    const oldPoolCompany = (oldCompanyId?._id || oldCompanyId)?.toString() || '';
+    const newPoolCompany = (pComp?._id || pComp)?.toString() || '';
+    const oldDateKey = oldPlanDate ? new Date(oldPlanDate).toISOString().slice(0, 10) : '';
+    const newDateKey = plan.planDate ? new Date(plan.planDate).toISOString().slice(0, 10) : '';
+    const newStockSources = (plan.stockSources || []).map(source => (source?._id || source).toString());
+    const oldPoolChanged = oldPoolBottle.toUpperCase() !== pBottle.toUpperCase() ||
+      oldPoolCompany !== newPoolCompany ||
+      oldDateKey !== newDateKey ||
+      oldStockSources.slice().sort().join(',') !== newStockSources.slice().sort().join(',');
+    if (oldPoolChanged && oldPoolBottle && oldPlanDate) {
+      await replayStockAllocations(
+        oldPoolBottle,
+        oldPlanDate,
+        [oldCompanyId, ...oldStockSources],
+        req.user?._id
+      );
+      await syncSameDayPlansPlainStock(oldPoolBottle, oldCompanyId, oldPlanDate, req.user?._id);
     }
 
     res.status(200).json({
@@ -4006,6 +4127,12 @@ exports.updatePlan = async (req, res) => {
 // Delete Plan
 exports.deletePlan = async (req, res) => {
   try {
+    const existingPlan = await LacquerPlan.findById(req.params.id);
+    if (!existingPlan || existingPlan.isDeleted) {
+      return res.status(404).json({ success: false, message: "Plan not found" });
+    }
+    if (rejectExcelViewOnlyMutation(existingPlan, res)) return;
+
     const plan = await LacquerPlan.findByIdAndUpdate(req.params.id, { isDeleted: true }, { new: true });
 
     if (!plan) {
@@ -4014,7 +4141,7 @@ exports.deletePlan = async (req, res) => {
 
     // Soft-delete the linked PrintingPlan
     await PrintingPlan.updateMany(
-      { lacquerPlanId: plan._id, isDeleted: false },
+      { lacquerPlanId: plan._id, isDeleted: false, isExcelViewOnly: { $ne: true } },
       { $set: { isDeleted: true } }
     );
 
@@ -4078,11 +4205,23 @@ exports.getComputedStats = async (req, res) => {
     let stockRes = null;
     if (bottleName) {
       const canonicalBottle = await resolveCanonicalPlainBottle(bottleName, effectiveCompanyId);
-      stockRes = await computeLivePlainStock(canonicalBottle, sourcesToQuery, planDate, excludePlanIds);
+      stockRes = await computeLivePlainStock(canonicalBottle, sourcesToQuery, planDate, excludePlanIds, null, {
+        includeNonSupplierSources: true
+      });
       plainStock = stockRes.plainStock !== undefined ? stockRes.plainStock : Number(stockRes);
       openingStock = stockRes.openingStock !== undefined ? stockRes.openingStock : plainStock;
       totalCoatedToday = stockRes.sameDayCoated || 0;
-      sources = stockRes.sources || [];
+      const allSourcesMap = new Map();
+      (stockRes.sources || []).forEach(s => allSourcesMap.set((s.companyId?._id || s.companyId)?.toString(), s));
+      (stockRes.eligibleSuppliers || []).forEach(s => {
+        const id = (s.companyId?._id || s.companyId)?.toString();
+        if (id && !allSourcesMap.has(id)) allSourcesMap.set(id, s);
+      });
+      (stockRes.eligibleIncomingCompanies || []).forEach(s => {
+        const id = (s.companyId?._id || s.companyId)?.toString();
+        if (id && !allSourcesMap.has(id)) allSourcesMap.set(id, s);
+      });
+      sources = Array.from(allSourcesMap.values());
     }
 
     // 2. Fetch cumulative coatedQty
@@ -4130,7 +4269,8 @@ exports.getComputedStats = async (req, res) => {
         coatedQty: Number(coatedQty),
         sources: sources || [],
         hasSuppliers: stockRes ? (stockRes.hasSuppliers || false) : false,
-        eligibleSuppliers: stockRes ? (stockRes.eligibleSuppliers || []) : []
+        eligibleSuppliers: stockRes ? (stockRes.eligibleSuppliers || []) : [],
+        eligibleIncomingCompanies: stockRes ? (stockRes.eligibleIncomingCompanies || []) : []
       }
     });
   } catch (error) {
@@ -5749,6 +5889,7 @@ exports.verifyImportedData = async (req, res) => {
 
 
 // Per-pool locks to serialize quantity updates (keyed by "companyId|plainBottleName")
+// Per-pool locks to serialize quantity updates (keyed by "companyId|plainBottleName")
 const poolLocks = new Map();
 
 async function acquirePoolLock(companyId, plainBottleName) {
@@ -5789,12 +5930,16 @@ exports.addOrderQty = async (req, res) => {
     if (plan.isDeleted) {
       return res.status(400).json({ success: false, message: 'Cannot modify deleted plan' });
     }
+    if (rejectExcelViewOnlyMutation(plan, res)) return;
 
     if (plan.orderQtyInitial === null || plan.orderQtyInitial === undefined) {
-      plan.orderQtyInitial = plan.orderQty || 0;
+      const activeOrderQty = (plan.qtyEntries || [])
+        .filter(entry => !entry.isDeleted && (entry.subType === 'order' || entry.type === 'orderQty' || (entry.type === 'edit-adjustment' && entry.subType === 'order')))
+        .reduce((sum, entry) => sum + (Number(entry.qty) || 0), 0);
+      plan.orderQtyInitial = (Number(plan.orderQty) || 0) - activeOrderQty;
     }
     if (plan.coatedQtyInitial === null || plan.coatedQtyInitial === undefined) {
-      plan.coatedQtyInitial = plan.coatingCompletedQty ?? plan.coatedQty ?? 0;
+      plan.coatedQtyInitial = getCoatedQty(plan) - getActiveCoatingEntryQty(plan.qtyEntries);
     }
 
     // Create entry
@@ -5814,10 +5959,11 @@ exports.addOrderQty = async (req, res) => {
 
     // Update plan
     plan.orderQty = newOrderQty;
-    plan.balanceToMake = (plan.coatingCompletedQty || 0) - newOrderQty;
+    const coatedQty = getCoatedQty(plan);
+    plan.balanceToMake = calculateBalanceToMake(newOrderQty, coatedQty);
 
     // Update status based on completion
-    const isCompleted = newOrderQty > 0 && (plan.coatingCompletedQty || 0) >= newOrderQty;
+    const isCompleted = newOrderQty > 0 && coatedQty >= newOrderQty;
     plan.status = isCompleted;
 
     // Recompute boxes if applicable
@@ -5868,17 +6014,18 @@ exports.addCoatedQty = async (req, res) => {
     const quantity = Number(qty);
     const rejectedQuantity = Number(rejectionQty);
     const rejectedBoxCount = Number(rejectionBoxes);
-    const rejectedLooseBottleCount = rejectionLooseQty === undefined ? rejectedQuantity : Number(rejectionLooseQty);
+    const rawRejectedLooseBottleCount = rejectionLooseQty === undefined ? null : Number(rejectionLooseQty);
     if (qty === undefined || qty === null || !Number.isInteger(quantity) || quantity === 0) {
       return res.status(400).json({ success: false, message: 'Qty must be a non-zero integer' });
     }
     if (!Number.isInteger(rejectedQuantity) || rejectedQuantity < 0 ||
       !Number.isInteger(rejectedBoxCount) || rejectedBoxCount < 0 ||
-      !Number.isInteger(rejectedLooseBottleCount) || rejectedLooseBottleCount < 0 ||
-      (quantity < 0 && rejectedQuantity > 0)) {
+      (rawRejectedLooseBottleCount !== null && (!Number.isInteger(rawRejectedLooseBottleCount) || rawRejectedLooseBottleCount < 0))) {
       return res.status(400).json({ success: false, message: 'Rejection Qty must be a non-negative whole quantity and cannot be added when subtracting.' });
     }
-
+    if (quantity < 0 && (rejectedQuantity > 0 || rejectedBoxCount > 0 || (rawRejectedLooseBottleCount || 0) > 0)) {
+      return res.status(400).json({ success: false, message: 'Rejection Qty cannot be added when subtracting quantity.' });
+    }
     const plan = await LacquerPlan.findById(id);
     if (!plan) {
       return res.status(404).json({ success: false, message: 'Plan not found' });
@@ -5887,7 +6034,14 @@ exports.addCoatedQty = async (req, res) => {
     if (plan.isDeleted) {
       return res.status(400).json({ success: false, message: 'Cannot modify deleted plan' });
     }
-    if (rejectedBoxCount * (Number(plan.boxQty) || 0) + rejectedLooseBottleCount !== rejectedQuantity) {
+    if (rejectExcelViewOnlyMutation(plan, res)) return;
+    const boxSize = Number(plan.boxQty) || 0;
+    const rejectedLooseBottleCount = rawRejectedLooseBottleCount === null
+      ? rejectedQuantity - rejectedBoxCount * boxSize
+      : rawRejectedLooseBottleCount;
+    if (rejectedLooseBottleCount < 0 || !Number.isInteger(rejectedLooseBottleCount) ||
+      (rejectedBoxCount > 0 && boxSize <= 0) ||
+      rejectedBoxCount * boxSize + rejectedLooseBottleCount !== rejectedQuantity) {
       return res.status(400).json({ success: false, message: 'Rejection boxes and loose bottles do not match the rejection quantity.' });
     }
 
@@ -5899,7 +6053,8 @@ exports.addCoatedQty = async (req, res) => {
     try {
       // Re-fetch after lock to get latest state
       const freshPlan = await LacquerPlan.findById(id);
-      const newCoatedQty = (freshPlan.coatingCompletedQty || 0) + quantity;
+      const currentCoatedQty = getCoatedQty(freshPlan);
+      const newCoatedQty = currentCoatedQty + quantity;
       if (newCoatedQty < 0) {
         releasePoolLock(lockKey);
         return res.status(400).json({
@@ -5908,35 +6063,20 @@ exports.addCoatedQty = async (req, res) => {
         });
       }
 
-      // Get pool's available plain stock
-      const availableStock = await computeLivePlainStock(plainBottleName, companyId, freshPlan.planDate);
+      const planSources = (freshPlan.stockSources && freshPlan.stockSources.length > 0)
+        ? freshPlan.stockSources.map(s => (s._id || s).toString())
+        : [companyId];
+      const canonicalBottle = await resolveCanonicalPlainBottle(plainBottleName, companyId);
+      const stockRes = await computeLivePlainStock(
+        canonicalBottle,
+        planSources,
+        freshPlan.planDate,
+        id
+      );
+      const availableForThisPlan = Number(stockRes.available) || 0;
 
-      // Calculate current usage by this plan
-      const currentCoatedByThisPlan = freshPlan.coatingCompletedQty || 0;
-      // Available for this plan = total available - (all other coating by all plans in the pool)
-      // But we need to account for what THIS plan already took
-      const usedByOthers = await LacquerPlan.aggregate([
-        {
-          $match: {
-            companyId: new mongoose.Types.ObjectId(companyId),
-            bottleName: plainBottleName,
-            isDeleted: false,
-            _id: { $ne: new mongoose.Types.ObjectId(id) },
-            planDate: { $lte: new Date(freshPlan.planDate) }
-          }
-        },
-        {
-          $group: {
-            _id: null,
-            totalCoated: { $sum: '$coatingCompletedQty' }
-          }
-        }
-      ]);
-
-      const otherCoated = usedByOthers[0]?.totalCoated || 0;
-      const availableForThisPlan = availableStock - otherCoated;
-
-      if (quantity > 0 && newCoatedQty > availableForThisPlan) {
+      const newRejectedStockQty = getStockDeductibleRejectedQty(freshPlan.qtyEntries, freshPlan.boxQty) + rejectedQuantity;
+      if (quantity > 0 && newCoatedQty + newRejectedStockQty > availableForThisPlan) {
         releasePoolLock(lockKey);
         return res.status(400).json({
           success: false,
@@ -5946,21 +6086,20 @@ exports.addCoatedQty = async (req, res) => {
       }
 
       if (freshPlan.orderQtyInitial === null || freshPlan.orderQtyInitial === undefined) {
-        freshPlan.orderQtyInitial = freshPlan.orderQty || 0;
+        const activeOrderQty = (freshPlan.qtyEntries || [])
+          .filter(entry => !entry.isDeleted && (entry.subType === 'order' || entry.type === 'orderQty' || (entry.type === 'edit-adjustment' && entry.subType === 'order')))
+          .reduce((sum, entry) => sum + (Number(entry.qty) || 0), 0);
+        freshPlan.orderQtyInitial = (Number(freshPlan.orderQty) || 0) - activeOrderQty;
       }
       if (freshPlan.coatedQtyInitial === null || freshPlan.coatedQtyInitial === undefined) {
-        freshPlan.coatedQtyInitial = freshPlan.coatingCompletedQty ?? freshPlan.coatedQty ?? 0;
+        freshPlan.coatedQtyInitial = currentCoatedQty - getActiveCoatingEntryQty(freshPlan.qtyEntries);
       }
 
       // Determine entry stockAllocation
-      const planSources = (freshPlan.stockSources && freshPlan.stockSources.length > 0)
-        ? freshPlan.stockSources.map(s => (s._id || s).toString())
-        : [companyId];
-
       let entryAllocation = [];
       const userSplit = req.body.stockAllocation;
 
-      if (planSources.length > 1) {
+      if (quantity > 0 && planSources.length > 1) {
         if (!userSplit || !Array.isArray(userSplit) || userSplit.length === 0) {
           releasePoolLock(lockKey);
           return res.status(400).json({
@@ -5970,7 +6109,7 @@ exports.addCoatedQty = async (req, res) => {
         }
 
         const canonicalBottle = await resolveCanonicalPlainBottle(plainBottleName, companyId);
-        const stockRes = await computeLivePlainStock(canonicalBottle, planSources, freshPlan.planDate);
+        const stockRes = await computeLivePlainStock(canonicalBottle, planSources, freshPlan.planDate, id);
         const availMap = new Map();
         (stockRes.sources || []).forEach(s => {
           availMap.set(s.companyId?.toString(), Number(s.available) || 0);
@@ -6007,15 +6146,81 @@ exports.addCoatedQty = async (req, res) => {
             message: `Split must add up to ${quantity} (now ${splitSum})`
           });
         }
-      } else {
+
+        if (rejectedQuantity > 0) {
+          let rejectionRemaining = rejectedQuantity;
+          const positiveAllocations = entryAllocation.filter(allocation => allocation.qty > 0);
+          for (let index = 0; index < positiveAllocations.length; index += 1) {
+            const allocation = positiveAllocations[index];
+            const sourceId = allocation.companyId.toString();
+            const rejectionPart = index === positiveAllocations.length - 1
+              ? rejectionRemaining
+              : Math.floor(rejectedQuantity * allocation.qty / splitSum);
+            rejectionRemaining -= rejectionPart;
+            const sourceAvailable = availMap.get(sourceId) || 0;
+            if (allocation.qty + rejectionPart > sourceAvailable) {
+              releasePoolLock(lockKey);
+              return res.status(400).json({
+                success: false,
+                message: `Only ${sourceAvailable} bottles available from this source, including rejected quantity.`
+              });
+            }
+          }
+        }
+      } else if (quantity > 0) {
         const soleSource = planSources[0] || companyId;
         entryAllocation = [{ companyId: new mongoose.Types.ObjectId(soleSource), qty: quantity }];
+      } else {
+        const currentAllocationMap = new Map();
+        (freshPlan.stockAllocation || []).forEach(allocation => {
+          const sourceId = (allocation.companyId?._id || allocation.companyId)?.toString();
+          if (sourceId) currentAllocationMap.set(sourceId, (currentAllocationMap.get(sourceId) || 0) + (Number(allocation.qty) || 0));
+        });
+        if (currentAllocationMap.size === 0) {
+          (freshPlan.stockAllocationInitial || []).forEach(allocation => {
+            const sourceId = (allocation.companyId?._id || allocation.companyId)?.toString();
+            if (sourceId) currentAllocationMap.set(sourceId, (currentAllocationMap.get(sourceId) || 0) + (Number(allocation.qty) || 0));
+          });
+          (freshPlan.qtyEntries || []).filter(entry => !entry.isDeleted).forEach(entry => {
+            (entry.stockAllocation || []).forEach(allocation => {
+              const sourceId = (allocation.companyId?._id || allocation.companyId)?.toString();
+              if (sourceId) currentAllocationMap.set(sourceId, (currentAllocationMap.get(sourceId) || 0) + (Number(allocation.qty) || 0));
+            });
+          });
+        }
+        if (currentAllocationMap.size === 0 && currentCoatedQty > 0) {
+          currentAllocationMap.set(planSources[0] || companyId, currentCoatedQty);
+        }
+        const totalAllocated = Array.from(currentAllocationMap.values()).reduce((sum, allocated) => sum + allocated, 0);
+        if (totalAllocated < currentCoatedQty) {
+          const fallbackSource = planSources[0] || companyId;
+          currentAllocationMap.set(fallbackSource, (currentAllocationMap.get(fallbackSource) || 0) + currentCoatedQty - totalAllocated);
+        }
+        let remainingToRemove = Math.abs(quantity);
+        const reverseSourceIds = [...planSources].reverse();
+        for (const sourceId of currentAllocationMap.keys()) {
+          if (!reverseSourceIds.includes(sourceId)) reverseSourceIds.push(sourceId);
+        }
+        for (const sourceId of reverseSourceIds) {
+          const allocated = Math.max(0, currentAllocationMap.get(sourceId) || 0);
+          const removal = Math.min(remainingToRemove, allocated);
+          if (removal > 0) {
+            entryAllocation.push({ companyId: new mongoose.Types.ObjectId(sourceId), qty: -removal });
+            remainingToRemove -= removal;
+          }
+          if (remainingToRemove === 0) break;
+        }
+        if (remainingToRemove > 0) {
+          releasePoolLock(lockKey);
+          return res.status(400).json({
+            success: false,
+            message: 'Unable to subtract coating quantity because the current stock allocation history is inconsistent.'
+          });
+        }
       }
 
       if (freshPlan.stockAllocationInitial === null || freshPlan.stockAllocationInitial === undefined || freshPlan.stockAllocationInitial.length === 0) {
-        freshPlan.stockAllocationInitial = (freshPlan.stockAllocation && freshPlan.stockAllocation.length > 0)
-          ? freshPlan.stockAllocation
-          : ((freshPlan.coatedQtyInitial || 0) > 0 ? [{ companyId: new mongoose.Types.ObjectId(planSources[0] || companyId), qty: freshPlan.coatedQtyInitial }] : []);
+        freshPlan.stockAllocationInitial = getInitialStockAllocation(freshPlan, currentCoatedQty);
       }
 
       // Create entry with optional date
@@ -6037,7 +6242,7 @@ exports.addCoatedQty = async (req, res) => {
       // Update plan
       freshPlan.coatingCompletedQty = newCoatedQty;
       freshPlan.coatedQty = newCoatedQty; // Keep both in sync
-      freshPlan.balanceToMake = newCoatedQty - (freshPlan.orderQty || 0);
+      freshPlan.balanceToMake = calculateBalanceToMake(freshPlan.orderQty, newCoatedQty);
 
       // Update status based on completion
       const isCompleted = (freshPlan.orderQty || 0) > 0 && newCoatedQty >= (freshPlan.orderQty || 0);
@@ -6123,11 +6328,27 @@ exports.deleteQtyEntry = async (req, res) => {
     if (!plan) {
       return res.status(404).json({ success: false, message: 'Plan not found' });
     }
+    if (rejectExcelViewOnlyMutation(plan, res)) return;
 
     // Find entry to soft-delete
     const entry = (plan.qtyEntries || []).find(e => e._id?.toString() === entryId);
     if (!entry) {
       return res.status(404).json({ success: false, message: 'Entry not found' });
+    }
+
+    const currentCoatedQty = getCoatedQty(plan);
+    const activeOrderEntries = (plan.qtyEntries || [])
+      .filter(item => !item.isDeleted && (item.subType === 'order' || item.type === 'orderQty' || (item.type === 'edit-adjustment' && item.subType === 'order')));
+    const initialOrderQty = plan.orderQtyInitial !== null && plan.orderQtyInitial !== undefined
+      ? Number(plan.orderQtyInitial)
+      : (Number(plan.orderQty) || 0) - activeOrderEntries.reduce((sum, item) => sum + (Number(item.qty) || 0), 0);
+    const initialCoatedQty = plan.coatedQtyInitial !== null && plan.coatedQtyInitial !== undefined
+      ? Number(plan.coatedQtyInitial)
+      : currentCoatedQty - getActiveCoatingEntryQty(plan.qtyEntries);
+    if (plan.orderQtyInitial === null || plan.orderQtyInitial === undefined) plan.orderQtyInitial = initialOrderQty;
+    if (plan.coatedQtyInitial === null || plan.coatedQtyInitial === undefined) plan.coatedQtyInitial = initialCoatedQty;
+    if (!Array.isArray(plan.stockAllocationInitial) || plan.stockAllocationInitial.length === 0) {
+      plan.stockAllocationInitial = getInitialStockAllocation(plan, currentCoatedQty);
     }
 
     // Mark as soft-deleted
@@ -6136,8 +6357,8 @@ exports.deleteQtyEntry = async (req, res) => {
     entry.deletedBy = req.user?.email || req.user?.name || 'unknown';
 
     // Recompute totals from initial + active entries
-    let newOrderQty = (plan.orderQtyInitial !== null && plan.orderQtyInitial !== undefined) ? plan.orderQtyInitial : 0;
-    let newCoatedQty = (plan.coatedQtyInitial !== null && plan.coatedQtyInitial !== undefined) ? plan.coatedQtyInitial : 0;
+    let newOrderQty = Number(plan.orderQtyInitial) || 0;
+    let newCoatedQty = Number(plan.coatedQtyInitial) || 0;
 
     for (const e of plan.qtyEntries) {
       if (e.isDeleted) continue;
@@ -6167,7 +6388,7 @@ exports.deleteQtyEntry = async (req, res) => {
     plan.orderQty = newOrderQty;
     plan.coatingCompletedQty = newCoatedQty;
     plan.coatedQty = newCoatedQty;
-    plan.balanceToMake = newCoatedQty - newOrderQty;
+    plan.balanceToMake = calculateBalanceToMake(newOrderQty, newCoatedQty);
     plan.status = newOrderQty > 0 && newCoatedQty >= newOrderQty;
 
     // Recompute plan total stockAllocation from initial + active entries
@@ -6228,7 +6449,21 @@ exports.getOpeningStock = async (req, res) => {
       sources = [companyId];
     }
     const canonicalBottle = await resolveCanonicalPlainBottle(bottleName, companyId);
-    const stockRes = await computeLivePlainStock(canonicalBottle, sources, planDate, excludePlanIds);
+    const stockRes = await computeLivePlainStock(canonicalBottle, sources, planDate, excludePlanIds, null, {
+      includeNonSupplierSources: true
+    });
+    const allSourcesMap = new Map();
+    (stockRes.sources || []).forEach(s => allSourcesMap.set((s.companyId?._id || s.companyId)?.toString(), s));
+    (stockRes.eligibleSuppliers || []).forEach(s => {
+      const id = (s.companyId?._id || s.companyId)?.toString();
+      if (id && !allSourcesMap.has(id)) allSourcesMap.set(id, s);
+    });
+    (stockRes.eligibleIncomingCompanies || []).forEach(s => {
+      const id = (s.companyId?._id || s.companyId)?.toString();
+      if (id && !allSourcesMap.has(id)) allSourcesMap.set(id, s);
+    });
+    const mergedSources = Array.from(allSourcesMap.values());
+
     return res.json({
       success: true,
       plainStock: stockRes.plainStock,
@@ -6236,9 +6471,10 @@ exports.getOpeningStock = async (req, res) => {
       available: stockRes.available,
       totalStock: stockRes.totalStock,
       sameDayCoated: stockRes.sameDayCoated,
-      sources: stockRes.sources || [],
+      sources: mergedSources,
       hasSuppliers: stockRes.hasSuppliers || false,
-      eligibleSuppliers: stockRes.eligibleSuppliers || []
+      eligibleSuppliers: stockRes.eligibleSuppliers || [],
+      eligibleIncomingCompanies: stockRes.eligibleIncomingCompanies || []
     });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });

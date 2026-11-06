@@ -1,3 +1,5 @@
+import { derivePlainBottleName } from './derivePlainBottleName.js';
+
 export function extractBottleSize(bottleName) {
   if (!bottleName) return Infinity;
   const match = String(bottleName).match(/(\d+(?:\.\d+)?)/);
@@ -46,8 +48,8 @@ export function sortPrintingPlans(a, b) {
   if (companyCompare !== 0) return companyCompare;
 
   // 1. Plain Bottle (Group all variants belonging to the same plain bottle together)
-  const bottleA = a.plainBottle || a.bottleName;
-  const bottleB = b.plainBottle || b.bottleName;
+  const bottleA = a.plainBottle || a.plainBottleName || derivePlainBottleName(a.bottleName) || a.bottleName;
+  const bottleB = b.plainBottle || b.plainBottleName || derivePlainBottleName(b.bottleName) || b.bottleName;
   const bottleCompare = compareBottleNames(bottleA, bottleB);
   if (bottleCompare !== 0) return bottleCompare;
 

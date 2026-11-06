@@ -3,6 +3,8 @@ import { useParams, Link, useNavigate, useSearchParams } from 'react-router-dom'
 import API from '../../services/api';
 import Swal from 'sweetalert2';
 import * as XLSX from 'xlsx';
+import { useAbility } from '@casl/react';
+import { AbilityContext } from '../../context/AbilityContext';
 
 export default function ViewReadyToDispatch() {
   const { id } = useParams();
@@ -11,6 +13,7 @@ export default function ViewReadyToDispatch() {
   const isNewSend = searchParams.get('new') !== 'false';
 
   const navigate = useNavigate();
+  const ability = useAbility(AbilityContext);
   const [record, setRecord] = useState(null);
   const [loading, setLoading] = useState(true);
   const [onlyFocused, setOnlyFocused] = useState(false);
@@ -280,12 +283,14 @@ const getFormattedDescription = (vl) => {
           >
             <i className="bi bi-printer-fill me-2" /> Print Sheet
           </button>
-          <Link
-            to={`/ready-to-dispatch/edit/${record._id}`}
-            className="btn btn-outline-primary shadow-sm px-4 py-2 rounded-3"
-          >
-            <i className="bi bi-pencil-fill me-2" /> Edit
-          </Link>
+          {ability.can('edit', 'ready-to-dispatch') && (
+            <Link
+              to={`/ready-to-dispatch/edit/${record._id}`}
+              className="btn btn-outline-primary shadow-sm px-4 py-2 rounded-3"
+            >
+              <i className="bi bi-pencil-fill me-2" /> Edit
+            </Link>
+          )}
         </div>
       </div>
 

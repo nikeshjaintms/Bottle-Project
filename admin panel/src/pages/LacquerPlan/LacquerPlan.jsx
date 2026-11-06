@@ -16,7 +16,7 @@ import { useLacquerPlanLanguage } from '../../hooks/useLacquerPlanLanguage';
 import { useLacquerPlanInfiniteScroll } from '../../hooks/useLacquerPlanInfiniteScroll';
 import { sortLacquerPlans } from '../../utils/lacquerPlanSort';
 import { buildContiguousGroups, buildMultipleContiguousGroups } from '../../utils/tableGrouping';
-import { isPlanRowCompleted, getCoatedQty } from '../../utils/lacquerPlanUtils';
+import { getBalanceToMake, isPlanRowCompleted, getCoatedQty } from '../../utils/lacquerPlanUtils';
 import ZoomControl from '../../components/ZoomControl';
 import { downloadLacquerPlanExcel } from '../../utils/lacquerPlanExport';
 
@@ -320,6 +320,8 @@ export default function LacquerPlan() {
   };
 
   const handleSendToReadyToDispatch = async (plan) => {
+    if (!ability.can('send', 'lacquerplan')) return;
+
     try {
       const process = (plan.process || '').trim().toUpperCase();
       if (process !== 'C') {
@@ -352,7 +354,7 @@ export default function LacquerPlan() {
       const coated = Number(plan.coatingCompletedQty ?? plan.coatedQty ?? 0);
       const alreadySent = Number(plan.sentToReadyQty || 0);
       const sendable = Math.max(0, coated - alreadySent);
-      const balanceToMake = coated - orderQty;
+      const balanceToMake = getBalanceToMake(orderQty, coated);
 
       if (coated <= 0) {
         Swal.fire({
@@ -383,7 +385,7 @@ export default function LacquerPlan() {
       let selectedQty = sendable;
       let remainingOrderAfterDispatch = remainingUncoated;
       let remainingCoatedAfterDispatch = 0;
-      let balanceAfterDispatch = 0 - remainingUncoated;
+      let balanceAfterDispatch = getBalanceToMake(remainingUncoated, 0);
 
       if (remainingUncoated > 0) {
         // Partial production: order > coated. Present both production options!
@@ -407,7 +409,7 @@ export default function LacquerPlan() {
                 </div>
                 <div class="col-4">
                   <div class="text-muted text-uppercase" style="font-size: 10px; font-weight: 600;">Balance To Make</div>
-                  <div class="fw-bold ${balanceToMake >= 0 ? 'text-success' : 'text-danger'} fs-6">${balanceToMake}</div>
+                  <div class="fw-bold ${balanceToMake <= 0 ? 'text-success' : 'text-danger'} fs-6">${balanceToMake}</div>
                 </div>
                 <div class="col-6 mt-2">
                   <div class="text-muted text-uppercase" style="font-size: 10px; font-weight: 600;">Already Dispatched</div>
@@ -592,7 +594,7 @@ export default function LacquerPlan() {
         const totalDispatchedAfterAction = alreadySent + selectedQty;
         remainingOrderAfterDispatch = Math.max(0, orderQty - totalDispatchedAfterAction);
         remainingCoatedAfterDispatch = Math.max(0, coated - totalDispatchedAfterAction);
-        balanceAfterDispatch = remainingCoatedAfterDispatch - remainingOrderAfterDispatch;
+        balanceAfterDispatch = getBalanceToMake(remainingOrderAfterDispatch, remainingCoatedAfterDispatch);
 
         // Show confirmation dialog with exact dispatch and cancellation/remaining quantities (Section 4.1.6)
         const isOption1 = selectedOption === 'CLOSE_ENTIRE_ORDER';
@@ -646,7 +648,7 @@ export default function LacquerPlan() {
               </div>
               <div class="d-flex justify-content-between">
                 <span>New Active Balance To Make:</span>
-                <strong class="${balanceAfterDispatch >= 0 ? 'text-success' : 'text-danger'}">${balanceAfterDispatch} units</strong>
+                <strong class="${balanceAfterDispatch <= 0 ? 'text-success' : 'text-danger'}">${balanceAfterDispatch} units</strong>
               </div>
             </div>
             <div class="alert alert-info py-2 px-3 small mb-0">
@@ -1004,24 +1006,7 @@ export default function LacquerPlan() {
 
             let renderShadeGroupCell = true;
             let shadeRowSpan = 1;
-            const currentShade = plan.coatingShade || plan.colour;
-            const prevShade = prevPlan ? (prevPlan.coatingShade || prevPlan.colour) : null;
-
-            if (prevPlan && getBlockKey(prevPlan) === curBlockKey && prevShade === currentShade) {
-              renderShadeGroupCell = false;
-            } else {
-              let count = 1;
-              for (let i = index + 1; i < contiguousPlanList.length; i++) {
-                const nextPlan = contiguousPlanList[i];
-                const nextShade = nextPlan.coatingShade || nextPlan.colour;
-                if (getBlockKey(nextPlan) === curBlockKey && nextShade === currentShade) {
-                  count++;
-                } else {
-                  break;
-                }
-              }
-              shadeRowSpan = count;
-            }
+            // Coating shade grouping removed - each row will display its own shade
 
             const curProcessKey = getProcessKey(plan);
             const prevProcessKey = prevPlan ? getProcessKey(prevPlan) : null;
@@ -1109,7 +1094,7 @@ export default function LacquerPlan() {
                     <>
                       {isFirstInBottleVisualGroup && (
                         <td className={`py-3 text-center align-middle ${isBlockExceeding ? 'bg-warning text-dark' : ''}`} rowSpan={bottleVisualRowSpan} title={groupTooltip}>
-                          <div className="fw-bold">{plan.plainStock !== null && plan.plainStock !== undefined ? plan.plainStock : 0}</div>
+                          <div className="fw-bold">{plan.plainStock !== null && plan.plainStock !== undefined ? plan.plainStock : (plan.isExcelViewOnly ? '-' : 0)}</div>
                           {(() => {
                             const sourceBreakdown = Array.isArray(plan.sourceStockBreakdown) ? plan.sourceStockBreakdown : [];
                             const suppliers = (companies || []).filter(c => c.isStockSupplier).map(c => c._id.toString());
@@ -1156,18 +1141,18 @@ export default function LacquerPlan() {
                           )}
                         </td>
                       )}
-                      <td className={`py-3 text-center fw-bold ${isRowExceeding ? 'bg-warning text-dark' : ''}`} style={{ cursor: 'pointer' }} onClick={() => openOrderQtyModal(plan)} title={rowTooltip}>
+                      <td className={`py-3 text-center fw-bold ${isRowExceeding ? 'bg-warning text-dark' : ''}`} style={{ cursor: plan.isExcelViewOnly ? 'default' : 'pointer' }} onClick={plan.isExcelViewOnly ? undefined : () => openOrderQtyModal(plan)} title={plan.isExcelViewOnly ? 'Excel-imported value (view only)' : rowTooltip}>
                         {plan.orderQty !== null && plan.orderQty !== undefined ? plan.orderQty : '-'}
                       </td>
                     </>
                   );
                 })()}
-                <td className="py-3 text-center" style={{ cursor: 'pointer' }} onClick={() => openCoatingQtyModal(plan)} title={plan.usedFromTooltip || "Click to add Coating Completed Qty"}>
-                  <div>{getCoatedQty(plan)}</div>
+                <td className="py-3 text-center" style={{ cursor: plan.isExcelViewOnly ? 'default' : 'pointer' }} onClick={plan.isExcelViewOnly ? undefined : () => openCoatingQtyModal(plan)} title={plan.isExcelViewOnly ? 'Excel-imported value (view only)' : (plan.usedFromTooltip || "Click to add Coating Completed Qty")}>
+                  <div>{plan.isExcelViewOnly ? (plan.coatingCompletedQty ?? plan.coatedQty ?? '-') : getCoatedQty(plan)}</div>
                   {Number(plan.coatingRejectedQty) > 0 && (
                     <div className="small text-muted">Rejected: {plan.coatingRejectedQty}</div>
                   )}
-                  {(() => {
+                  {!plan.isExcelViewOnly && (() => {
                     if (!Array.isArray(plan.usedFrom) || plan.usedFrom.length === 0) return null;
                     const splitLine = plan.usedFrom.map(u => `${u.companyName} ${u.qty}`).join(' · ');
                     return (
@@ -1177,16 +1162,18 @@ export default function LacquerPlan() {
                     );
                   })()}
                 </td>
-                <td className={`py-3 text-center fw-bold ${plan.balanceToMake >= 0 ? 'text-success' : 'text-danger'}`}>
-                  {plan.balanceToMake !== null && plan.balanceToMake !== undefined ? plan.balanceToMake : '-'}
+                <td className={`py-3 text-center fw-bold ${plan.balanceToMake <= 0 ? 'text-success' : 'text-danger'}`}>
+                  {plan.balanceToMake !== null && plan.balanceToMake !== undefined ? -Number(plan.balanceToMake) : '-'}
                   {plan.isClosed || plan.productionStatus === 'CLOSED' ? (
                     <span className="d-block mt-1 badge bg-secondary" style={{ fontSize: 10 }}>CLOSED</span>
-                  ) : isPlanRowCompleted(plan) ? (
+                  ) : !plan.isExcelViewOnly && isPlanRowCompleted(plan) ? (
                     <span className="d-block mt-1 badge bg-success" style={{ fontSize: 10 }}>COMPLETED</span>
                   ) : null}
                 </td>
                 {isFirstInBottleVisualGroup && (
-                  <td className="py-3 text-center align-middle" rowSpan={bottleVisualRowSpan}>{plan.boxQty !== null && plan.boxQty !== undefined && plan.boxQty > 0 ? plan.boxQty : '-'}</td>
+                  <td className="py-3 text-center align-middle" rowSpan={bottleVisualRowSpan}>                  {plan.isExcelViewOnly
+                    ? (plan.boxQty !== null && plan.boxQty !== undefined ? plan.boxQty : '-')
+                    : (plan.boxQty !== null && plan.boxQty !== undefined && plan.boxQty > 0 ? plan.boxQty : '-')}</td>
                 )}
                 <td className="py-3 text-center">{plan.noOfBoxes !== null && plan.noOfBoxes !== undefined ? plan.noOfBoxes : '-'}</td>
                 <td className="py-3 text-center">
@@ -1195,31 +1182,36 @@ export default function LacquerPlan() {
                     <div className="small text-muted">Loose: {plan.looseQty}</div>
                   )}
                 </td>
-                <td className="py-3 text-center">{plan.dispatchPendingQty !== null && plan.dispatchPendingQty !== undefined ? plan.dispatchPendingQty : (plan.dispatchBalance || 0)}</td>
-                <td className="py-3 text-center">{plan.soldQty || 0}</td>
+                <td className="py-3 text-center">{plan.dispatchPendingQty !== null && plan.dispatchPendingQty !== undefined ? plan.dispatchPendingQty : (plan.isExcelViewOnly ? '-' : (plan.dispatchBalance || 0))}</td>
+                <td className="py-3 text-center">{plan.soldQty !== null && plan.soldQty !== undefined ? plan.soldQty : (plan.isExcelViewOnly ? '-' : 0)}</td>
                 <td className="py-3 text-center small text-muted">{plan.remarks || '-'}</td>
                 <td className="py-3 text-center text-nowrap" style={{ minWidth: 220 }}>
                   <div className="d-flex align-items-center gap-2 justify-content-center">
                     <Link to={`/lacquer-plan/view/${plan._id}`} className="btn btn-sm btn-outline-info border-0 rounded-3 shadow-none p-2" title="View">
                       <i className="bi bi-eye fs-6"></i>
                     </Link>
-                    {(() => {
-                      const bottlePlans = contiguousPlanList.filter(p =>
-                        plan.blockKey ? p.blockKey === plan.blockKey : p._id === plan._id
-                      );
+                    {!plan.isExcelViewOnly && (() => {
+                      const currentBrandKey = (plan.brandId?._id || plan.brandId || plan.brandName || '').toString().trim().toLowerCase();
+                      const currentProcess = String(plan.process || '').trim().toUpperCase();
+                      const bottlePlans = contiguousPlanList.filter(p => {
+                        const sameBlock = plan.blockKey ? p.blockKey === plan.blockKey : p._id === plan._id;
+                        const sameBrand = ((p.brandId?._id || p.brandId || p.brandName || '').toString().trim().toLowerCase() === currentBrandKey);
+                        const sameProcess = (String(p.process || '').trim().toUpperCase() === currentProcess);
+                        return sameBlock && sameBrand && sameProcess;
+                      });
                       const editUrl = `/lacquer-plan/edit/${bottlePlans.map(p => p._id).join(',')}`;
                       return (
                         <Link
                           to={editUrl}
                           state={{ groupVariantIds: bottlePlans.map(p => p.variantId?._id || p.variantId) }}
                           className="btn btn-sm btn-outline-primary border-0 rounded-3 shadow-none p-2"
-                          title="Edit Bottle Plan (All Brands)"
+                          title="Edit Bottle Plan"
                         >
                           <i className="bi bi-pencil-square fs-6"></i>
                         </Link>
                       );
                     })()}
-                    {(() => {
+                    {ability && ability.can('send', 'lacquerplan') && (() => {
                       const actions = plan.readyActions;
                       if (!actions || !actions.visible) return null;
 
@@ -1248,9 +1240,11 @@ export default function LacquerPlan() {
                         </>
                       );
                     })()}
-                    <button onClick={() => handleDelete(plan._id)} className="btn btn-sm btn-outline-danger border-0 rounded-3 shadow-none p-2" title="Delete">
-                      <i className="bi bi-trash fs-6"></i>
-                    </button>
+                    {!plan.isExcelViewOnly && (
+                      <button onClick={() => handleDelete(plan._id)} className="btn btn-sm btn-outline-danger border-0 rounded-3 shadow-none p-2" title="Delete">
+                        <i className="bi bi-trash fs-6"></i>
+                      </button>
+                    )}
                   </div>
                 </td>
               </tr>

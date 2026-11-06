@@ -24,7 +24,6 @@ const navItems = [
       { to: '/raw-materials', icon: 'bi-box-seam', label: 'Raw Material', action: 'sidebar', subject: 'raw-material' },
       { to: '/item-types', icon: 'bi-tags', label: 'Item Types', action: 'sidebar', subject: 'itemType' },
       { to: '/companies', icon: 'bi-building-fill', label: 'Companies', action: 'sidebar', subject: 'company' },
-      { to: '/company-addresses', icon: 'bi-geo-alt-fill', label: 'Company Addresses', action: 'sidebar', subject: 'company-address' },
       { to: '/brands', icon: 'bi-award-fill', label: 'Brands', action: 'sidebar', subject: 'brand' },
       { to: '/bottle-per-box', icon: 'bi-box-fill', label: 'Bottle Per Box', action: 'sidebar', subject: 'bottleperbox' },
 
@@ -59,6 +58,7 @@ const navItems = [
           { to: '/sg-labels-2', label: 'SG Label 2', icon: 'bi-sticky-fill', action: 'read', subject: 'sg-label-2' }
         ]
       },
+      { to: '/company-addresses', icon: 'bi-geo-alt-fill', label: 'Company Addresses', action: 'sidebar', subject: 'company-address' },
       {
         icon: 'bi-box-arrow-in-down-right',
         label: 'Incoming',
@@ -71,7 +71,6 @@ const navItems = [
       },
       { to: '/lacquer-plan', icon: 'bi-calendar-check-fill', label: 'Lacquer Plan', action: 'sidebar', subject: 'lacquerplan' },
       { to: '/printing-plan', icon: 'bi-printer-fill', label: 'Printing Plan', action: 'sidebar', subject: 'printingplan' },
-      { to: '/dispatch', icon: 'bi-truck', label: 'Dispatch', action: 'sidebar', subject: 'dispatch' },
       { to: '/ready-to-dispatch', icon: 'bi-box-seam', label: 'Ready to Dispatch', action: 'sidebar', subject: 'ready-to-dispatch' },
       {
         icon: 'bi-receipt-cutoff',
@@ -84,6 +83,7 @@ const navItems = [
           { to: '/delivery-challan/shayoona', label: 'Shayoona', icon: 'bi-file-earmark-text', action: 'read', subject: 'delivery-challan' }
         ]
       },
+      { to: '/dispatch', icon: 'bi-truck', label: 'Dispatch', action: 'sidebar', subject: 'dispatch' },
       { to: '/summary', icon: 'bi-file-earmark-diff', label: 'Summary', action: 'sidebar', subject: 'summary' },
     ],
   },

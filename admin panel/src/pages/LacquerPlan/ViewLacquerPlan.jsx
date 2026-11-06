@@ -178,29 +178,34 @@ export default function ViewLacquerPlan() {
                             <td><input type="text" className="form-control form-control-sm shadow-none bg-light text-center" disabled value={row.coatingShade || row.colour || '-'} /></td>
                             <td><input type="text" className="form-control form-control-sm shadow-none bg-light text-center" disabled value={row.process || '-'} /></td>
                             <td className={isGroupWarning ? 'bg-warning text-dark' : ''} title={groupTooltip}>
-                              <input type="text" className={`form-control form-control-sm shadow-none text-center ${isGroupWarning ? 'bg-warning text-dark fw-bold' : 'bg-light'}`} disabled value={row.plainStock ?? '0'} title={groupTooltip} />
+                              <input type="text" className={`form-control form-control-sm shadow-none text-center ${isGroupWarning ? 'bg-warning text-dark fw-bold' : 'bg-light'}`} disabled value={row.isExcelViewOnly ? (row.plainStock ?? '-') : (row.remainingPlainStock ?? row.plainStock ?? '0')} title={groupTooltip} />
+                              {!row.isExcelViewOnly && (
+                                <div className="small text-muted text-center mt-1">
+                                  Opening: {row.openingStock ?? '0'} · Remaining: {row.remainingPlainStock ?? row.plainStock ?? '0'}
+                                </div>
+                              )}
                             </td>
                             <td className={isRowWarning ? 'bg-warning text-dark' : ''} title={rowTooltip}>
-                              <input type="text" className={`form-control form-control-sm shadow-none text-center fw-bold ${isRowWarning ? 'bg-warning text-dark' : 'bg-light'}`} disabled value={row.orderQty ?? '0'} title={rowTooltip} />
+                              <input type="text" className={`form-control form-control-sm shadow-none text-center fw-bold ${isRowWarning ? 'bg-warning text-dark' : 'bg-light'}`} disabled value={row.isExcelViewOnly ? (row.orderQty ?? '-') : (row.orderQty ?? '0')} title={rowTooltip} />
                             </td>
                             <td>
-                              <input type="text" className="form-control form-control-sm shadow-none bg-light text-center" disabled value={row.coatingCompletedQty ?? row.coatedQty ?? '0'} />
+                              <input type="text" className="form-control form-control-sm shadow-none bg-light text-center" disabled value={row.isExcelViewOnly ? (row.coatingCompletedQty ?? row.coatedQty ?? '-') : (row.coatingCompletedQty ?? row.coatedQty ?? '0')} />
                               {Number(row.coatingRejectedQty) > 0 && (
                                 <div className="small text-danger mt-1">Rejected: {row.coatingRejectedQty}</div>
                               )}
                               {renderUsedFrom(row.stockAllocation)}
                             </td>
-                            <td><input type="text" className={`form-control form-control-sm shadow-none bg-light text-center fw-bold ${(row.balanceToMake ?? 0) >= 0 ? 'text-success' : 'text-danger'}`} disabled value={row.balanceToMake ?? '0'} /></td>
-                            <td><input type="text" className="form-control form-control-sm shadow-none bg-light text-center" disabled value={row.boxQty ?? '0'} /></td>
-                            <td><input type="text" className="form-control form-control-sm shadow-none bg-light text-center" disabled value={row.noOfBoxes ?? '0'} /></td>
+                            <td><input type="text" className={`form-control form-control-sm shadow-none bg-light text-center fw-bold ${(row.balanceToMake ?? 0) <= 0 ? 'text-success' : 'text-danger'}`} disabled value={row.isExcelViewOnly ? (row.balanceToMake ?? '-') : (row.balanceToMake ?? '0')} /></td>
+                            <td><input type="text" className="form-control form-control-sm shadow-none bg-light text-center" disabled value={row.isExcelViewOnly ? (row.boxQty ?? '-') : (row.boxQty ?? '0')} /></td>
+                            <td><input type="text" className="form-control form-control-sm shadow-none bg-light text-center" disabled value={row.isExcelViewOnly ? (row.noOfBoxes ?? '-') : (row.noOfBoxes ?? '0')} /></td>
                             <td className="text-center">
                               {row.readyBoxes !== null && row.readyBoxes !== undefined ? row.readyBoxes : '—'}
                               {row.showLooseQty && row.looseQty !== null && row.looseQty !== undefined && (
                                 <div className="small text-muted">Loose: {row.looseQty}</div>
                               )}
                             </td>
-                            <td><input type="text" className="form-control form-control-sm shadow-none bg-light text-center" disabled value={row.dispatchPendingQty ?? row.dispatchBalance ?? '0'} /></td>
-                            <td><input type="text" className="form-control form-control-sm shadow-none bg-light text-center" disabled value={row.soldQty ?? '0'} /></td>
+                            <td><input type="text" className="form-control form-control-sm shadow-none bg-light text-center" disabled value={row.isExcelViewOnly ? (row.dispatchPendingQty ?? row.dispatchBalance ?? '-') : (row.dispatchPendingQty ?? row.dispatchBalance ?? '0')} /></td>
+                            <td><input type="text" className="form-control form-control-sm shadow-none bg-light text-center" disabled value={row.isExcelViewOnly ? (row.soldQty ?? '-') : (row.soldQty ?? '0')} /></td>
                             <td><input type="text" className="form-control form-control-sm shadow-none bg-light" disabled value={row.remarks || '-'} /></td>
                           </tr>
                         );
@@ -344,7 +349,7 @@ export default function ViewLacquerPlan() {
                                               <td className={`fw-bold ${isDel ? 'text-decoration-line-through text-muted' : entry.displayQty?.startsWith('-') ? 'text-danger' : 'text-primary'}`}>
                                                 {entry.displayQty || entry.qtyChange}
                                               </td>
-                                              <td className={`fw-bold ${isDel ? 'text-decoration-line-through text-muted' : (entry.balance >= 0 ? 'text-success' : 'text-danger')}`}>
+                                              <td className={`fw-bold ${isDel ? 'text-decoration-line-through text-muted' : (entry.balance <= 0 ? 'text-success' : 'text-danger')}`}>
                                                 {entry.balance}
                                               </td>
                                             </tr>
@@ -356,7 +361,7 @@ export default function ViewLacquerPlan() {
                                             {labels.currentTotal || 'Current Total'}:
                                           </td>
                                           <td className="text-primary">{row.orderQty ?? orderSummary.current ?? 0}</td>
-                                          <td className={(row.balanceToMake ?? 0) >= 0 ? 'text-success' : 'text-danger'}>
+                                          <td className={(row.balanceToMake ?? 0) <= 0 ? 'text-success' : 'text-danger'}>
                                             {row.balanceToMake ?? 0}
                                           </td>
                                         </tr>
@@ -419,7 +424,7 @@ export default function ViewLacquerPlan() {
                                               <td className={`small ${isDel ? 'text-decoration-line-through text-muted' : ''}`}>
                                                 {entry.usedFromText || '-'}
                                               </td>
-                                              <td className={`fw-bold ${isDel ? 'text-decoration-line-through text-muted' : (entry.balance >= 0 ? 'text-success' : 'text-danger')}`}>
+                                              <td className={`fw-bold ${isDel ? 'text-decoration-line-through text-muted' : (entry.balance <= 0 ? 'text-success' : 'text-danger')}`}>
                                                 {entry.balance}
                                               </td>
                                             </tr>
@@ -433,7 +438,7 @@ export default function ViewLacquerPlan() {
                                           <td className="text-success">{row.coatingCompletedQty ?? row.coatedQty ?? coatingSummary.current ?? 0}</td>
                                           <td className="text-danger">{row.coatingRejectedQty ?? coatingSummary.rejectionQty ?? 0}</td>
                                           <td className="small text-muted">{coatingSummary.totalUsedFromText || '-'}</td>
-                                          <td className={(row.balanceToMake ?? 0) >= 0 ? 'text-success' : 'text-danger'}>
+                                          <td className={(row.balanceToMake ?? 0) <= 0 ? 'text-success' : 'text-danger'}>
                                             {row.balanceToMake ?? 0}
                                           </td>
                                         </tr>

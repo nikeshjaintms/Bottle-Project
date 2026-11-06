@@ -4,10 +4,13 @@ import API from '../../services/api';
 import Swal from 'sweetalert2';
 import * as XLSX from 'xlsx';
 import Select from 'react-select';
+import { useAbility } from '@casl/react';
+import { AbilityContext } from '../../context/AbilityContext';
 
 export default function ReadyToDispatchList() {
   const { companyId } = useParams();
   const navigate = useNavigate();
+  const ability = useAbility(AbilityContext);
 
   const [data, setData] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -636,21 +639,25 @@ export default function ReadyToDispatchList() {
                           >
                             <i className="bi bi-eye fs-6" />
                           </Link>
-                          <Link
-                            to={`/ready-to-dispatch/edit/${item._id}`}
-                            className="btn btn-sm btn-outline-primary border-0 rounded-3 shadow-none p-2"
-                            title="Edit Sheet"
-                          >
-                            <i className="bi bi-pencil-square fs-6" />
-                          </Link>
-                          <button
-                            type="button"
-                            className="btn btn-sm btn-outline-danger border-0 rounded-3 shadow-none p-2"
-                            onClick={() => handleDelete(item._id, item.sheetTitle)}
-                            title="Delete Sheet"
-                          >
-                            <i className="bi bi-trash fs-6" />
-                          </button>
+                          {ability.can('edit', 'ready-to-dispatch') && (
+                            <Link
+                              to={`/ready-to-dispatch/edit/${item._id}`}
+                              className="btn btn-sm btn-outline-primary border-0 rounded-3 shadow-none p-2"
+                              title="Edit Sheet"
+                            >
+                              <i className="bi bi-pencil-square fs-6" />
+                            </Link>
+                          )}
+                          {ability.can('delete', 'ready-to-dispatch') && (
+                            <button
+                              type="button"
+                              className="btn btn-sm btn-outline-danger border-0 rounded-3 shadow-none p-2"
+                              onClick={() => handleDelete(item._id, item.sheetTitle)}
+                              title="Delete Sheet"
+                            >
+                              <i className="bi bi-trash fs-6" />
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>

@@ -48,7 +48,32 @@ const matchBottleOption = (item, options, bottlePerBoxes = []) => {
     item?.suggestedName,
     typeof bottleRef === 'string' && !/^[a-f\d]{24}$/i.test(bottleRef) ? bottleRef : '',
   ].map(normalizeBottleName).filter(Boolean);
-  return options.find((option) => names.includes(normalizeBottleName(option.label))) || null;
+
+  const matchedOpt = options.find((option) => names.includes(normalizeBottleName(option.label)));
+  if (matchedOpt) return matchedOpt;
+
+  // Fallback: If not in current options, check if bottle already exists in master bottlePerBoxes
+  const matchedMaster = bottle || bottlePerBoxes.find((entry) => {
+    const entryNames = [
+      entry.plainBottleName,
+      entry.bottleName,
+      ...(entry.bottleNames || [])
+    ].map(normalizeBottleName).filter(Boolean);
+    return names.some(n => entryNames.includes(n));
+  });
+
+  if (matchedMaster) {
+    return {
+      value: String(matchedMaster._id),
+      label: matchedMaster.plainBottleName || matchedMaster.bottleName,
+      plainBottleName: matchedMaster.plainBottleName || matchedMaster.bottleName,
+      bottlePerBox: matchedMaster.bottlePerBox,
+      isOtherBottle: true,
+      bottlePerBoxData: matchedMaster
+    };
+  }
+
+  return null;
 };
 
 const getScannedBottleHint = (item, bottlePerBoxes = []) =>
@@ -533,24 +558,32 @@ export default function AddIncoming() {
         previousCompanyId.current = companyId;
         if (companyChanged) {
           const optionsByName = new Map(options.map((option) => [normalizeBottleName(option.label), option]));
-          const cleared = itemsRef.current.filter((item) => {
-            const scannedMatch = item.scanModeRow
-              ? matchBottleOption({ bottleName: item.scanBottleText }, options, bottlePerBoxes)
-              : null;
-            const bottleId = typeof item.bottleId === 'object' ? item.bottleId?._id : item.bottleId;
-            const bottleName = item.bottleLabel || getBottleLabel(item.bottleId);
-            return item.bottleId && !options.some((option) => option.value === String(bottleId)) &&
-              !optionsByName.has(normalizeBottleName(bottleName)) && !scannedMatch;
-          }).length;
           const nextItems = itemsRef.current.map((item) => {
+            const bottleId = typeof item.bottleId === 'object' ? item.bottleId?._id : item.bottleId;
+            const bottleName = item.bottleLabel || getBottleLabel(item.bottleId, bottlePerBoxes);
+            
+            // If already matched to options or exists in master Bottle Master, keep it
+            const inMaster = bottlePerBoxes.some(b => String(b._id) === String(bottleId));
+            if (options.some((option) => option.value === String(bottleId)) || inMaster) {
+              return item;
+            }
+
+            const matchingOption = matchBottleOption(
+              { bottleName: item.scanBottleText || bottleName, bottleId: item.bottleId },
+              options,
+              bottlePerBoxes
+            );
+            if (matchingOption) {
+              return {
+                ...item,
+                bottleId: matchingOption.value,
+                bottleLabel: matchingOption.label,
+                bottleHint: '',
+                scanModeRow: false,
+                scanUserResolved: true
+              };
+            }
             if (item.scanModeRow) {
-              const bottleId = typeof item.bottleId === 'object' ? item.bottleId?._id : item.bottleId;
-              if (item.scanUserResolved && item.bottleId &&
-                options.some((option) => option.value === String(bottleId))) return item;
-              const matchingOption = matchBottleOption({ bottleName: item.scanBottleText }, options, bottlePerBoxes);
-              if (matchingOption) {
-                return { ...item, bottleId: matchingOption.value, bottleLabel: matchingOption.label, bottleHint: '' };
-              }
               return {
                 ...item,
                 bottleId: '',
@@ -558,21 +591,18 @@ export default function AddIncoming() {
                 bottleHint: item.scanBottleText || item.bottleHint || '',
               };
             }
-            if (!item.bottleId) return item;
-            const bottleId = typeof item.bottleId === 'object' ? item.bottleId?._id : item.bottleId;
-            const bottleName = item.bottleLabel || getBottleLabel(item.bottleId);
-            if (options.some((option) => option.value === String(bottleId))) return item;
-            const matchingOption = optionsByName.get(normalizeBottleName(bottleName));
-            if (matchingOption) return { ...item, bottleId: matchingOption.value, bottleLabel: matchingOption.label, bottleHint: '' };
             return { ...item, bottleId: '', bottleLabel: '', bottleHint: '' };
           });
+          const cleared = itemsRef.current.filter((it, idx) => it.bottleId && !nextItems[idx]?.bottleId).length;
           itemsRef.current = nextItems;
           setItems(nextItems);
           setClearedBottleCount(cleared);
           const unresolvedRows = nextItems
             .map((item, index) => ({ item, index }))
             .filter(({ item }) => item.scanModeRow && !item.bottleId && item.scanBottleText);
-          showPlainBottleWarning(unresolvedRows, companyId);
+          if (unresolvedRows.length > 0) {
+            showPlainBottleWarning(unresolvedRows, companyId);
+          }
         }
       })
       .catch(() => {
@@ -932,9 +962,9 @@ export default function AddIncoming() {
           bottleId: option?.value || '',
           bottleLabel: option?.label || '',
           bottleHint: option ? '' : getScannedBottleHint(item, bottlePerBoxes),
-          scanModeRow: true,
+          scanModeRow: !option,
           scanBottleText: getScannedBottleHint(item, bottlePerBoxes),
-          scanUserResolved: false,
+          scanUserResolved: Boolean(option),
           scanRowId: `scan-${++nextScanRowId.current}`,
           box: defaultBox,
           qty: defaultQty,
@@ -954,18 +984,60 @@ export default function AddIncoming() {
           totalQty: item.totalQty || '',
         });
       });
+      const dedupedItems = [];
+      for (const item of itemsToSet) {
+        const itemTotal = Number(item.totalQty) || 0;
+        const itemBox = Number(item.box) || 0;
+        const itemQty = Number(item.qty) || 0;
+        const itemHint = (item.bottleLabel || item.bottleHint || item.scanBottleText || '').toLowerCase().replace(/[-_\s]+/g, ' ').trim();
+
+        const existingIdx = dedupedItems.findIndex(existing => {
+          const exTotal = Number(existing.totalQty) || 0;
+          const sameTotal = itemTotal > 0 && exTotal > 0 && itemTotal === exTotal;
+          const sameId = item.bottleId && existing.bottleId && item.bottleId === existing.bottleId;
+          const exHint = (existing.bottleLabel || existing.bottleHint || existing.scanBottleText || '').toLowerCase().replace(/[-_\s]+/g, ' ').trim();
+          const sameName = itemHint && exHint && (
+            itemHint === exHint ||
+            itemHint.replace(/\s*-\s*$/, '') === exHint.replace(/\s*-\s*$/, '')
+          );
+          return (sameTotal && sameName) || (sameTotal && (item.bottleId || existing.bottleId)) || (sameId && sameTotal) || (sameId && !sameTotal && !exTotal);
+        });
+
+        if (existingIdx !== -1) {
+          const existing = dedupedItems[existingIdx];
+          const exBox = Number(existing.box) || 0;
+          const exBoxInvalid = !exBox || exBox >= 50000;
+          const itemBoxValid = itemBox > 0 && itemBox < 50000;
+
+          if (!existing.bottleId && item.bottleId) {
+            existing.bottleId = item.bottleId;
+            existing.bottleLabel = item.bottleLabel;
+            existing.scanModeRow = false;
+            existing.scanUserResolved = true;
+          }
+
+          if (itemBoxValid && (exBoxInvalid || Math.abs(itemBox * itemQty - itemTotal) <= 2)) {
+            existing.box = item.box;
+            existing.qty = item.qty;
+            if (itemTotal > 0) existing.totalQty = item.totalQty;
+          }
+        } else {
+          dedupedItems.push(item);
+        }
+      }
+
       const replaceEmptyRow = items.length === 1 && !items[0].bottleId && !items[0].qty;
-      const nextItems = replaceEmptyRow && itemsToSet.length > 0 ? itemsToSet : [...items, ...itemsToSet];
+      const nextItems = replaceEmptyRow && dedupedItems.length > 0 ? dedupedItems : [...items, ...dedupedItems];
       itemsRef.current = nextItems;
       setItems(nextItems);
       const firstAddedIndex = replaceEmptyRow ? 0 : items.length;
-      const unmatchedRows = itemsToSet
+      const unmatchedRows = dedupedItems
         .map((item, index) => ({ item, index: firstAddedIndex + index }))
         .filter(({ item }) => item.scanModeRow && !item.bottleId && item.scanBottleText);
       if (unmatchedRows.length) {
         openPlainBottleQueue(unmatchedRows);
       } else {
-        Swal.fire({ icon: 'success', title: 'Invoice Parsed', text: 'Appended ' + itemsToSet.length + ' items from new document.' });
+        Swal.fire({ icon: 'success', title: 'Invoice Parsed', text: 'Appended ' + dedupedItems.length + ' items from new document.' });
       }
     } catch (err) {
       Swal.fire('Error', 'Failed to parse invoice: ' + err, 'error');
@@ -1031,9 +1103,9 @@ export default function AddIncoming() {
           bottleId: option?.value || '',
           bottleLabel: option?.label || '',
           bottleHint: option ? '' : getCleanScannedBottleName(getScannedBottleHint(item, bottlePerBoxes)),
-          scanModeRow: true,
+          scanModeRow: !option,
           scanBottleText: getCleanScannedBottleName(getScannedBottleHint(item, bottlePerBoxes)),
-          scanUserResolved: false,
+          scanUserResolved: Boolean(option),
           scanRowId: `scan-${++nextScanRowId.current}`,
           box: defaultBox,
           qty: defaultQty,
@@ -1077,9 +1149,52 @@ export default function AddIncoming() {
         });
       }
 
-      if (itemsToSet.length > 0) {
-        itemsRef.current = itemsToSet;
-        setItems(itemsToSet);
+      // Deduplicate itemsToSet dynamically
+      const dedupedItems = [];
+      for (const item of itemsToSet) {
+        const itemTotal = Number(item.totalQty) || 0;
+        const itemBox = Number(item.box) || 0;
+        const itemQty = Number(item.qty) || 0;
+        const itemHint = (item.bottleLabel || item.bottleHint || item.scanBottleText || '').toLowerCase().replace(/[-_\s]+/g, ' ').trim();
+
+        const existingIdx = dedupedItems.findIndex(existing => {
+          const exTotal = Number(existing.totalQty) || 0;
+          const sameTotal = itemTotal > 0 && exTotal > 0 && itemTotal === exTotal;
+          const sameId = item.bottleId && existing.bottleId && item.bottleId === existing.bottleId;
+          const exHint = (existing.bottleLabel || existing.bottleHint || existing.scanBottleText || '').toLowerCase().replace(/[-_\s]+/g, ' ').trim();
+          const sameName = itemHint && exHint && (
+            itemHint === exHint ||
+            itemHint.replace(/\s*-\s*$/, '') === exHint.replace(/\s*-\s*$/, '')
+          );
+          return (sameTotal && sameName) || (sameTotal && (item.bottleId || existing.bottleId)) || (sameId && sameTotal) || (sameId && !sameTotal && !exTotal);
+        });
+
+        if (existingIdx !== -1) {
+          const existing = dedupedItems[existingIdx];
+          const exBox = Number(existing.box) || 0;
+          const exBoxInvalid = !exBox || exBox >= 50000;
+          const itemBoxValid = itemBox > 0 && itemBox < 50000;
+
+          if (!existing.bottleId && item.bottleId) {
+            existing.bottleId = item.bottleId;
+            existing.bottleLabel = item.bottleLabel;
+            existing.scanModeRow = false;
+            existing.scanUserResolved = true;
+          }
+
+          if (itemBoxValid && (exBoxInvalid || Math.abs(itemBox * itemQty - itemTotal) <= 2)) {
+            existing.box = item.box;
+            existing.qty = item.qty;
+            if (itemTotal > 0) existing.totalQty = item.totalQty;
+          }
+        } else {
+          dedupedItems.push(item);
+        }
+      }
+
+      if (dedupedItems.length > 0) {
+        itemsRef.current = dedupedItems;
+        setItems(dedupedItems);
         
         // Only set poOrderQty if it was explicitly found in the document, otherwise leave blank
         setFormData(prev => ({ ...prev, poOrderQty: res.poOrderQty != null ? String(res.poOrderQty) : '' }));
@@ -1250,7 +1365,7 @@ export default function AddIncoming() {
                       onChange={e => {
                         const files = Array.from(e.target.files);
                         if ((scannedImageFiles?.length || 0) + files.length > 5) {
-                          import('sweetalert2').then(Swal => Swal.default.fire('Error', 'You can only upload up to 5 files.', 'error'));
+                          Swal.fire('Error', 'You can only upload up to 5 files.', 'error');
                           return;
                         }
                         if (files.length > 0) {

@@ -10,6 +10,7 @@ const LacquerPlan = require('../models/LacquerPlan');
 const BottlePerBox = require('../models/BottlePerBox');
 const Company = require('../models/Company');
 const { recomputePlainStock, computeLivePlainStock } = require('../utils/stockRecompute');
+const { calculateBalanceToMake } = require('../utils/lacquerPlanCalculations');
 
 async function repairImportedRows() {
   const isCommit = process.argv.includes('--commit');
@@ -90,7 +91,7 @@ async function repairImportedRows() {
     'Current Completed': q.row.coatingCompletedQty,
     'Source Completed': q.sourceRow.coatingCompletedQty,
     'New Coated': 0,
-    'New Balance': 0 - (Number(q.row.orderQty) || 0)
+    'New Balance': calculateBalanceToMake(q.row.orderQty, 0)
   })));
 
   // Export JSON backup
@@ -132,7 +133,7 @@ async function repairImportedRows() {
   for (const q of qualifyingRows) {
     const row = q.row;
     const orderQty = Number(row.orderQty) || 0;
-    const newBalance = 0 - orderQty;
+    const newBalance = calculateBalanceToMake(orderQty, 0);
 
     const originalValues = row.originalImportedValues || {};
     originalValues.coatingCompletedQty = 0;
